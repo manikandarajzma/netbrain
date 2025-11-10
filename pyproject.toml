@@ -1,0 +1,20 @@
+[project]
+name = "ai-netbrain"
+version = "0.1.0"
+description = "MCP Server and Client for NetBrain API with Ollama"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp>=1.0.0",
+    "fastmcp>=0.9.0",
+    "ollama>=0.1.0",
+    "streamlit>=1.28.0",
+    "langchain>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-community>=0.0.20",
+    "langchain-ollama>=0.1.0",
+    "jsonpatch>=1.32",
+    "aiohttp>=3.9.0",
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+]
