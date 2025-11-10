@@ -1,6 +1,6 @@
 # AI NetBrain - MCP Server and Client
 
-A simple Model Context Protocol (MCP) server and client implementation for querying network paths using the NetBrain API with Ollama running locally.
+A Model Context Protocol (MCP) server and client implementation for querying network paths using the NetBrain API with Ollama running locally.
 
 ## Overview
 
@@ -9,9 +9,9 @@ This project provides an MCP server that integrates with NetBrain API to query n
 ## Features
 
 - **Network Path Querying**: Query network paths between source and destination with protocol and port specifications
-- **AI-Enhanced Analysis**: Uses Ollama LLM for intelligent analysis of network path information
+- **AI-Enhanced Analysis**: Uses Ollama LLM (llama3.2:latest) for intelligent analysis of network path information
 - **Simple Web Interface**: Streamlit-based client with intuitive form inputs
-- **OAuth2 Authentication**: Secure authentication with NetBrain API using OAuth2 client credentials flow
+- **Session-based Authentication**: Secure authentication with NetBrain API using username/password
 
 ## Prerequisites
 
@@ -19,10 +19,10 @@ This project provides an MCP server that integrates with NetBrain API to query n
 2. **Ollama**: Make sure Ollama is installed and running locally
    - Download from: https://ollama.ai
    - Start Ollama service: `ollama serve`
-   - Pull the required model: `ollama pull llama3.3:latest`
+   - Pull the required model: `ollama pull llama3.2:latest`
 3. **NetBrain API Access**: 
    - NetBrain server URL
-   - OAuth2 Client ID and Client Secret configured in NetBrain
+   - Username and password for NetBrain authentication
 
 ## Installation
 
@@ -40,23 +40,31 @@ This project provides an MCP server that integrates with NetBrain API to query n
 
 ## Configuration
 
-Set the following environment variables before running:
+### NetBrain Credentials
+
+Edit `netbrainauth.py` directly to set your NetBrain credentials:
+
+```python
+# NetBrain username for authentication
+USERNAME = "your_username"
+
+# NetBrain password for authentication
+PASSWORD = "your_password"
+```
+
+### NetBrain URL (Optional)
+
+You can optionally set the NetBrain URL via environment variable:
 
 ```bash
-# NetBrain API Configuration
-export NETBRAIN_URL="https://your-netbrain-server.com"
-export NETBRAIN_CLIENT_ID="your_client_id"
-export NETBRAIN_CLIENT_SECRET="your_client_secret"
+# Linux/Mac
+export NETBRAIN_URL="http://your-netbrain-server.com"
+
+# Windows PowerShell
+$env:NETBRAIN_URL="http://your-netbrain-server.com"
 ```
 
-On Windows (PowerShell):
-```powershell
-$env:NETBRAIN_URL="https://your-netbrain-server.com"
-$env:NETBRAIN_CLIENT_ID="your_client_id"
-$env:NETBRAIN_CLIENT_SECRET="your_client_secret"
-```
-
-Alternatively, you can edit `netbrainauth.py` directly to set these values.
+If not set, it defaults to `http://localhost`.
 
 ## Usage
 
@@ -68,8 +76,14 @@ The MCP server runs via stdio transport and communicates with NetBrain API:
 python mcp_server.py
 ```
 
+Or using uv:
+
+```bash
+uv run python mcp_server.py
+```
+
 The server will:
-- Authenticate with NetBrain API using OAuth2
+- Authenticate with NetBrain API using username/password
 - Expose the `query_network_path` tool
 - Use Ollama for AI-enhanced analysis (if available)
 
@@ -81,10 +95,16 @@ The Streamlit client provides a web interface for network queries:
 streamlit run mcp_client.py
 ```
 
+Or using uv:
+
+```bash
+uv run streamlit run mcp_client.py
+```
+
 This will start a web server (typically at `http://localhost:8501`) where you can:
 
 1. Enter **Source** (IP address or hostname)
-2. Select **Protocol** from dropdown (TCP, UDP, ICMP, HTTP, HTTPS, SSH, FTP, SMTP, DNS, SNMP)
+2. Select **Protocol** from dropdown (TCP or UDP)
 3. Enter **Destination** (IP address or hostname)
 4. Enter **Port** number
 5. Click **Query** to submit the network path query
@@ -96,11 +116,11 @@ All fields marked with `*` are required.
 ```
 .
 ├── mcp_server.py          # MCP server implementation
-├── mcp_client.py          # Streamlit client interface
-├── netbrainauth.py        # NetBrain OAuth2 authentication module
-├── pyproject.toml         # Project dependencies and configuration
-├── README.md              # This file
-└── main.py                # Original project entry point
+├── mcp_client.py           # Streamlit client interface
+├── netbrainauth.py         # NetBrain authentication module
+├── pyproject.toml          # Project dependencies and configuration
+├── README.md               # This file
+└── main.py                 # Original project entry point
 ```
 
 ## MCP Server Tools
@@ -112,7 +132,7 @@ Queries the network path between source and destination.
 **Parameters:**
 - `source` (str, required): Source IP address or hostname
 - `destination` (str, required): Destination IP address or hostname
-- `protocol` (str, required): Protocol (TCP, UDP, ICMP, HTTP, HTTPS, SSH, FTP, SMTP, DNS, SNMP)
+- `protocol` (str, required): Protocol (TCP or UDP)
 - `port` (str, required): Port number
 
 **Returns:**
@@ -123,38 +143,45 @@ Queries the network path between source and destination.
   - `port`: Port number
   - `path_info`: Network path information from NetBrain API
   - `ai_analysis`: AI-enhanced analysis (if LLM is available)
+  - `error`: Error message if query fails
 
 ## API Endpoints
 
 The server communicates with the following NetBrain API endpoints:
 
-- **Authentication**: `POST /api/aaa/oauth2/token`
+- **Authentication**: `POST /ServicesAPI/API/V1/Session`
 - **Network Path Query**: `POST /api/network/path`
 
 ## Dependencies
 
 - `mcp>=1.0.0`: Model Context Protocol SDK
+- `fastmcp>=0.9.0`: FastMCP for building MCP servers
 - `ollama>=0.1.0`: Ollama Python client
-- `streamlit`: Web interface framework (for client)
-- `langchain`: LLM integration
-- `aiohttp`: Async HTTP client
-- `requests`: HTTP library
+- `streamlit>=1.28.0`: Web interface framework (for client)
+- `langchain>=0.1.0`: LLM integration framework
+- `langchain-core>=0.1.0`: LangChain core functionality
+- `langchain-community>=0.0.20`: LangChain community integrations
+- `langchain-ollama>=0.1.0`: LangChain Ollama integration
+- `jsonpatch>=1.32`: JSON patch support (required by langchain-core)
+- `aiohttp>=3.9.0`: Async HTTP client
+- `requests>=2.31.0`: HTTP library
+- `urllib3>=2.0.0`: HTTP client library
 
 ## Troubleshooting
 
 ### Authentication Errors
 
 If you encounter authentication errors:
-- Verify your `NETBRAIN_CLIENT_ID` and `NETBRAIN_CLIENT_SECRET` are correct
-- Ensure the OAuth client is properly configured in NetBrain
-- Check that the NetBrain server URL is accessible
+- Verify your username and password in `netbrainauth.py` are correct
+- Ensure the NetBrain server URL is accessible
+- Check that your account is not locked or expired
 
 ### LLM Not Available
 
 If Ollama is not running or the model is not available:
 - The server will continue to function but without AI-enhanced analysis
 - Ensure Ollama is running: `ollama serve`
-- Pull the required model: `ollama pull llama3.3:latest`
+- Pull the required model: `ollama pull llama3.2:latest`
 
 ### Connection Errors
 
@@ -163,6 +190,13 @@ If you encounter network errors:
 - Check firewall and network connectivity
 - Ensure SSL certificates are properly configured (self-signed certificates are handled)
 
+### Import Errors
+
+If you encounter import errors:
+- Make sure all dependencies are installed: `uv sync` or `pip install -e .`
+- Verify you're using the correct Python environment
+- Check that `fastmcp` and `langchain-ollama` packages are installed
+
 ## License
 
 [Add your license here]
@@ -170,4 +204,3 @@ If you encounter network errors:
 ## Contributing
 
 [Add contribution guidelines here]
-
