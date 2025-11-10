@@ -150,7 +150,9 @@ Queries the network path between source and destination.
 The server communicates with the following NetBrain API endpoints:
 
 - **Authentication**: `POST /ServicesAPI/API/V1/Session`
-- **Network Path Query**: `POST /api/network/path`
+- **Path Calculation**: `POST /ServicesAPI/API/V1/CMDB/Path/Calculation`
+
+**Note:** The Path Calculation API returns a `taskID` which can be used with the GetPath API to retrieve detailed hop-by-hop path information. See the [NetBrain API documentation](https://github.com/NetBrainAPI/NetBrain-REST-API-R11/blob/main/REST%20APIs%20Documentation/Path%20Management/Calculate%20Path%20API.md) for more details.
 
 ## Dependencies
 

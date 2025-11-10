@@ -17,7 +17,9 @@ import asyncio
 
 # Import ClientSession for managing MCP client connections
 # Import StdioServerParameters for configuring stdio-based server communication
+# Import stdio_client helper function for creating stdio transport streams
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 # Import ChatOllama for LLM integration (currently imported but not actively used in client)
 from langchain_ollama import ChatOllama
@@ -32,41 +34,24 @@ st.set_page_config(
     layout="centered"
 )
 
-async def get_client():
+def get_server_params():
     """
-    Get or create MCP client session.
+    Create server parameters for stdio communication.
     
-    This function manages the MCP client connection lifecycle:
-    - Checks if a client session already exists in Streamlit's session state
-    - If not, creates a new client session configured to connect to mcp_server.py via stdio
-    - Initializes the client connection asynchronously
-    - Returns the existing or newly created client session
+    This function creates the configuration needed to spawn the MCP server
+    as a subprocess via stdio transport.
     
     Returns:
-        ClientSession: The MCP client session ready to make tool calls
+        StdioServerParameters: Server parameters for stdio communication
     """
-    # Check if 'mcp_client' key exists in Streamlit's session state dictionary
-    # Session state persists across reruns, allowing us to reuse the connection
-    if 'mcp_client' not in st.session_state:
-        # Create server parameters for stdio communication:
-        # - command: The command to run (python interpreter)
-        # - args: Arguments to pass (the mcp_server.py script)
-        # This configures the client to spawn mcp_server.py as a subprocess
-        server_params = StdioServerParameters(
-            command="python",  # Use Python interpreter to run the server
-            args=["mcp_server.py"]  # Pass mcp_server.py as argument
-        )
-        # Create a new ClientSession instance with the server parameters
-        # This session will communicate with the MCP server via standard input/output
-        st.session_state.mcp_client = ClientSession(server_params)
-        # Enter the async context manager (equivalent to __enter__ but async)
-        # This establishes the connection to the server
-        await st.session_state.mcp_client.__aenter__()
-        # Initialize the MCP protocol handshake with the server
-        # This exchanges capabilities and sets up the communication protocol
-        await st.session_state.mcp_client.initialize()
-    # Return the client session (either existing or newly created)
-    return st.session_state.mcp_client
+    # Create server parameters for stdio communication:
+    # - command: The command to run (python interpreter)
+    # - args: Arguments to pass (the mcp_server.py script)
+    # This configures the client to spawn mcp_server.py as a subprocess
+    return StdioServerParameters(
+        command="python",  # Use Python interpreter to run the server
+        args=["mcp_server.py"]  # Pass mcp_server.py as argument
+    )
 
 def main():
     """
@@ -92,7 +77,7 @@ def main():
         with col1:
             # Create a text input field for source IP/hostname
             # "*" indicates required field, placeholder shows example format
-            source = st.text_input("Source *", placeholder="e.g., 192.168.1.1 or hostname")
+            source = st.text_input("Source IP *", placeholder="e.g., 10.10.3.253")
             
             # Create a dropdown selectbox for protocol selection
             # Options are TCP and UDP, default selection is TCP (index=0)
@@ -101,16 +86,32 @@ def main():
                 ["TCP", "UDP"],  # Available protocol options
                 index=0  # Default to first option (TCP)
             )
+            
+            # Create a text input field for gateway IP address (optional)
+            # This is optional - if not provided, will default to source IP
+            source_gw_ip = st.text_input("Gateway IP (optional)", placeholder="e.g., 10.10.3.253", help="Defaults to source IP if not provided")
+            
+            # Create a text input field for gateway device hostname (optional)
+            # This is optional - if not provided, will default to source
+            source_gw_dev = st.text_input("Gateway Device (optional)", placeholder="e.g., GW2Lab", help="Defaults to source if not provided")
         
         # Place input fields in the second column (right side)
         with col2:
             # Create a text input field for destination IP/hostname
             # "*" indicates required field, placeholder shows example format
-            destination = st.text_input("Destination *", placeholder="e.g., 192.168.1.100 or hostname")
+            destination = st.text_input("Destination IP *", placeholder="e.g., 172.24.32.225")
             
             # Create a text input field for port number
             # "*" indicates required field, placeholder shows example ports
             port = st.text_input("Port *", placeholder="e.g., 80, 443, 22")
+            
+            # Create a text input field for gateway interface name (optional)
+            # This is optional - if not provided, will default to "GigabitEthernet0/0"
+            source_gw_intf = st.text_input("Gateway Interface (optional)", placeholder="e.g., GigabitEthernet0/0.10", help="Defaults to GigabitEthernet0/0 if not provided")
+            
+            # Create a checkbox for live data access
+            # 0 = Baseline data, 1 = Live access
+            is_live = st.checkbox("Use Live Data", value=False, help="Check to use live access data instead of baseline")
         
         # Create a submit button for the form
         # use_container_width=True makes the button span the full width of its container
@@ -138,47 +139,76 @@ def main():
                     Execute the network path query asynchronously.
                     
                     This inner function:
-                    1. Gets or creates the MCP client session
+                    1. Creates MCP client session with proper context managers
                     2. Calls the query_network_path tool on the server
                     3. Extracts and parses the result
                     4. Returns the parsed result or None
+                    
+                    The context managers ensure proper cleanup of resources.
                     """
-                    # Get or create the MCP client session (reuses existing if available)
-                    # await is needed because get_client() is an async function
-                    client = await get_client()
+                    # Get server parameters for stdio communication
+                    server_params = get_server_params()
                     
-                    # Call the MCP tool named "query_network_path" on the server
-                    # This sends a request to the MCP server to execute the tool
-                    # await is needed because call_tool() is an async method
-                    tool_result = await client.call_tool(
-                        "query_network_path",  # Name of the tool to call (defined in mcp_server.py)
-                        arguments={  # Dictionary of arguments to pass to the tool
-                            "source": source,  # Source IP/hostname from form input
-                            "destination": destination,  # Destination IP/hostname from form input
-                            "protocol": protocol,  # Selected protocol (TCP or UDP)
-                            "port": port  # Port number from form input
-                        }
-                    )
-                    
-                    # Extract the result from the tool response
-                    # Check if tool_result exists and has content
-                    if tool_result and tool_result.content:
-                        # Import json module for parsing JSON strings
-                        import json
-                        # Extract the text content from the first content item in the response
-                        # MCP responses contain content as a list, we take the first item's text
-                        result_text = tool_result.content[0].text
-                        # Try to parse the text as JSON
-                        try:
-                            # Parse the JSON string into a Python dictionary
-                            return json.loads(result_text)
-                        except json.JSONDecodeError:
-                            # If parsing fails, return the text as a dictionary with a "result" key
-                            # This handles cases where the server returns plain text instead of JSON
-                            return {"result": result_text}
-                    else:
-                        # Return None if no content was returned from the tool
-                        return None
+                    # Use stdio_client helper to create read/write streams for stdio transport
+                    # stdio_client returns an async context manager that provides (read_stream, write_stream)
+                    # We use async with to properly manage the context lifecycle
+                    # This ensures the subprocess is properly cleaned up when done
+                    async with stdio_client(server_params) as (read_stream, write_stream):
+                        # Create a new ClientSession instance with the read and write streams
+                        # ClientSession requires both read_stream and write_stream for communication
+                        # We also use async with for ClientSession to properly manage its lifecycle
+                        async with ClientSession(read_stream, write_stream) as session:
+                            # Initialize the MCP protocol handshake with the server
+                            # This exchanges capabilities and sets up the communication protocol
+                            await session.initialize()
+                            
+                            # Call the MCP tool named "query_network_path" on the server
+                            # This sends a request to the MCP server to execute the tool
+                            # await is needed because call_tool() is an async method
+                            # Build arguments dictionary with required and optional parameters
+                            tool_arguments = {
+                                "source": source,  # Source IP/hostname from form input
+                                "destination": destination,  # Destination IP/hostname from form input
+                                "protocol": protocol,  # Selected protocol (TCP or UDP)
+                                "port": port,  # Port number from form input
+                                "is_live": 1 if is_live else 0  # Convert checkbox boolean to integer (0 or 1)
+                            }
+                            
+                            # Add optional gateway parameters if provided
+                            # Only include them in the arguments if they have values
+                            # This allows the server to use defaults if not provided
+                            if source_gw_ip:
+                                tool_arguments["source_gw_ip"] = source_gw_ip
+                            if source_gw_dev:
+                                tool_arguments["source_gw_dev"] = source_gw_dev
+                            if source_gw_intf:
+                                tool_arguments["source_gw_intf"] = source_gw_intf
+                            
+                            # Call the tool with all arguments
+                            tool_result = await session.call_tool(
+                                "query_network_path",  # Name of the tool to call (defined in mcp_server.py)
+                                arguments=tool_arguments  # Dictionary of arguments to pass to the tool
+                            )
+                            
+                            # Extract the result from the tool response
+                            # Check if tool_result exists and has content
+                            if tool_result and tool_result.content:
+                                # Import json module for parsing JSON strings
+                                import json
+                                # Extract the text content from the first content item in the response
+                                # MCP responses contain content as a list, we take the first item's text
+                                result_text = tool_result.content[0].text
+                                # Try to parse the text as JSON
+                                try:
+                                    # Parse the JSON string into a Python dictionary
+                                    return json.loads(result_text)
+                                except json.JSONDecodeError:
+                                    # If parsing fails, return the text as a dictionary with a "result" key
+                                    # This handles cases where the server returns plain text instead of JSON
+                                    return {"result": result_text}
+                            else:
+                                # Return None if no content was returned from the tool
+                                return None
                 
                 # Run the async execute_query function using asyncio.run()
                 # This executes the async function and waits for its completion
@@ -194,6 +224,15 @@ def main():
                         if 'error' in result:
                             # Display error message in red using st.error()
                             st.error(f"Error: {result['error']}")
+                            # Display detailed error information if available
+                            if 'details' in result:
+                                st.error("Error Details:")
+                                st.json(result['details'])
+                            if 'error_message' in result:
+                                st.error(f"Error Message: {result['error_message']}")
+                            if 'payload_sent' in result:
+                                with st.expander("View Payload Sent"):
+                                    st.json(result['payload_sent'])
                         else:
                             # Display success message in green using st.success()
                             st.success("Query completed successfully")
