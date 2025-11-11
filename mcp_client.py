@@ -66,54 +66,121 @@ def main():
     # Display the main page title as a large heading
     st.title("NetBrain Network Query")
     
-    # Create a form container named "network_query_form"
-    # Forms allow grouping inputs and submitting them together
+    # Create a form container for natural language input
     with st.form("network_query_form"):
-        # Create two columns side by side for better layout organization
-        # col1 and col2 each take 50% of the available width
-        col1, col2 = st.columns(2)
-        
-        # Place input fields in the first column (left side)
-        with col1:
-            # Create a text input field for source IP/hostname
-            # "*" indicates required field, placeholder shows example format
-            source = st.text_input("Source IP *", placeholder="e.g., 10.10.3.253")
-            
-            # Create a dropdown selectbox for protocol selection
-            # Options are TCP and UDP, default selection is TCP (index=0)
-            protocol = st.selectbox(
-                "Protocol *",  # Label with asterisk indicating required field
-                ["TCP", "UDP"],  # Available protocol options
-                index=0  # Default to first option (TCP)
-            )
-        
-        # Place input fields in the second column (right side)
-        with col2:
-            # Create a text input field for destination IP/hostname
-            # "*" indicates required field, placeholder shows example format
-            destination = st.text_input("Destination IP *", placeholder="e.g., 172.24.32.225")
-            
-            # Create a text input field for port number
-            # "*" indicates required field, placeholder shows example ports
-            port = st.text_input("Port *", placeholder="e.g., 80, 443, 22")
-            
-            # Create a checkbox for live data access
-            # 0 = Baseline data, 1 = Live access
-            is_live = st.checkbox("Use Live Data", value=False, help="Check to use live access data instead of baseline")
+        # Create a text area for natural language query
+        # Users can type queries like "Find path from 10.210.1.10 to 2.2.2.2 using TCP port 80"
+        query_text = st.text_area(
+            "Enter your network path query",
+            placeholder="Example: Find path from 10.210.1.10 to 2.2.2.2 using TCP port 80\nOr: Query path from 10.10.3.253 to 172.24.32.225 UDP port 53 with live data",
+            help="Enter your query in natural language. Include source IP, destination IP, protocol (TCP/UDP), port, and optionally 'live data' or 'use live data'",
+            height=100
+        )
         
         # Create a submit button for the form
-        # use_container_width=True makes the button span the full width of its container
         submitted = st.form_submit_button("Query", use_container_width=True)
     
     # Check if the form was submitted (button clicked)
     if submitted:
-        # Validate that all required fields are filled
-        # Check if source, destination, or port are empty strings or None
-        if not source or not destination or not port:
-            # Display an error message if any required field is missing
-            st.error("Please provide source, destination, and port (all fields marked with * are required)")
-            # Exit the function early if validation fails
+        # Parse natural language query to extract parameters
+        import re
+        
+        # Initialize variables
+        source = None
+        destination = None
+        protocol = "TCP"  # Default to TCP
+        port = "0"  # Default to port 0 if not specified
+        is_live = False
+        
+        # Convert query to lowercase for easier parsing
+        query_lower = query_text.lower()
+        
+        # Check for live data keywords
+        if any(keyword in query_lower for keyword in ['live data', 'use live', 'with live', 'live access']):
+            is_live = True
+        
+        # Extract IP addresses using regex
+        # Pattern matches IPv4 addresses (e.g., 10.210.1.10, 192.168.1.1)
+        ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+        ip_addresses = re.findall(ip_pattern, query_text)
+        
+        # Extract port number (optional - defaults to 0 if not specified)
+        # Look for "port" followed by a number, or port after colon
+        port_patterns = [
+            r'port\s+(\d{1,5})',  # "port 80" or "port 443"
+            r':(\d{1,5})(?:\s|$)',  # ":80" or ":443" (not part of IP)
+        ]
+        
+        port_found = False
+        for pattern in port_patterns:
+            port_match = re.search(pattern, query_text)
+            if port_match:
+                extracted_port = port_match.group(1)
+                # Validate port is in valid range (0-65535)
+                if extracted_port and 0 <= int(extracted_port) <= 65535:
+                    port = extracted_port
+                    port_found = True
+                    break
+        
+        # Extract protocol (TCP or UDP)
+        if 'udp' in query_lower:
+            protocol = "UDP"
+        elif 'tcp' in query_lower:
+            protocol = "TCP"
+        
+        # Extract source and destination IPs
+        # Look for keywords like "from", "to", "source", "destination"
+        if len(ip_addresses) >= 2:
+            # Find positions of keywords
+            from_pos = query_lower.find('from')
+            to_pos = query_lower.find('to')
+            source_pos = query_lower.find('source')
+            dest_pos = query_lower.find('destination')
+            
+            # Determine which IP is source and which is destination
+            if from_pos != -1 and to_pos != -1:
+                # "from X to Y" pattern
+                from_ip_pos = query_text.lower().find(ip_addresses[0])
+                to_ip_pos = query_text.lower().find(ip_addresses[1])
+                if from_pos < from_ip_pos < to_pos < to_ip_pos:
+                    source = ip_addresses[0]
+                    destination = ip_addresses[1]
+                else:
+                    source = ip_addresses[1]
+                    destination = ip_addresses[0]
+            elif source_pos != -1 or dest_pos != -1:
+                # "source X destination Y" pattern
+                source = ip_addresses[0]
+                destination = ip_addresses[1]
+            else:
+                # Default: first IP is source, second is destination
+                source = ip_addresses[0]
+                destination = ip_addresses[1]
+        elif len(ip_addresses) == 1:
+            # Only one IP found - assume it's source and ask for destination
+            source = ip_addresses[0]
+            st.error("Please provide both source and destination IP addresses in your query")
             return
+        
+        # Validate extracted parameters
+        if not source or not destination:
+            st.error("Could not extract source and destination IP addresses from your query. Please include both IPs.")
+            st.info("Example: 'Find path from 10.210.1.10 to 2.2.2.2 using TCP port 80'")
+            return
+        
+        # Port defaults to "0" if not specified (already set above)
+        # No need to validate or error if port is not found
+        
+        # Display parsed parameters for user confirmation
+        with st.expander("📋 Parsed Query Parameters", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Source:** {source}")
+                st.write(f"**Protocol:** {protocol}")
+                st.write(f"**Port:** {port}")
+            with col2:
+                st.write(f"**Destination:** {destination}")
+                st.write(f"**Use Live Data:** {'Yes' if is_live else 'No'}")
         
         # Display a spinner animation while the query is being processed
         # This provides visual feedback to the user that work is in progress
