@@ -5,6 +5,10 @@ FastMCP-based server that provides network path querying capabilities.
 This module:
 - Exposes a query_network_path tool via MCP protocol
 - Connects to NetBrain API for network path information
+- Follows the three-step Path Calculation API process:
+  1. Resolve device gateway
+  2. Calculate path
+  3. Get path details
 - Optionally uses Ollama LLM for AI-enhanced analysis
 - Handles authentication and error handling
 """
@@ -25,20 +29,12 @@ import json
 # Used to disable SSL verification for self-signed certificates
 import ssl
 
-# Import requests for synchronous HTTP requests (used in netbrainauth)
-# Note: This is imported but not directly used in this file
-import requests
-
 # Import type hints for better code documentation and IDE support
 # Optional: indicates a value can be None
 # Dict, Any, List: type hints for dictionaries, any type, and lists
 from typing import Optional, Dict, Any, List
 
-# Import datetime utilities for time-based operations
-# Currently imported but not actively used in this file
-from datetime import datetime, timedelta
-
-# Import the local netbrainauth module for OAuth2 authentication
+# Import the local netbrainauth module for authentication
 # This module handles getting access tokens from NetBrain API
 import netbrainauth
 
@@ -91,6 +87,7 @@ except Exception:
 # This should match the URL used in netbrainauth.py
 NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 
+
 # Register a tool with the MCP server using the @mcp.tool() decorator
 # This makes the function callable via MCP protocol from clients
 @mcp.tool()
@@ -99,28 +96,21 @@ async def query_network_path(
     destination: str, 
     protocol: str, 
     port: str,
-    source_gw_ip: Optional[str] = None,
-    source_gw_dev: Optional[str] = None,
-    source_gw_intf: Optional[str] = None,
     is_live: int = 0
 ):
     """
     Query network path between source and destination using NetBrain Path Calculation API.
     
-    This function:
-    1. Authenticates with NetBrain API
-    2. Sends a network path calculation request to NetBrain API
-    3. Processes the response (returns taskID which can be used with GetPath API)
-    4. Optionally enhances results with AI analysis
+    This function follows the three-step process from NetBrain API documentation:
+    1. Resolve device gateway (GET /V1/CMDB/Path/Gateways)
+    2. Calculate path (POST /V1/CMDB/Path/Calculation)
+    3. Get path details (GET /V1/CMDB/Path/Calculation/{taskID}/OverView)
     
     Args:
-        source: Source IP address (e.g., "192.168.1.1")
+        source: Source IP address or hostname (e.g., "192.168.1.1")
         destination: Destination IP address (e.g., "192.168.1.100")
         protocol: Network protocol to query (e.g., "TCP" or "UDP")
         port: Port number to query (e.g., "80", "443", "22")
-        source_gw_ip: Gateway IP address (optional, defaults to source IP)
-        source_gw_dev: Gateway device hostname (optional, defaults to source)
-        source_gw_intf: Gateway interface name (optional, defaults to "GigabitEthernet0/0")
         is_live: Use live data (0=Baseline, 1=Live access, default=0)
     
     Returns:
@@ -129,14 +119,14 @@ async def query_network_path(
             - destination: Destination endpoint
             - protocol: Protocol used
             - port: Port number
-            - taskID: Task ID from NetBrain API (use with GetPath API to get hop information)
-            - path_info: Response from NetBrain API
+            - taskID: Task ID from NetBrain API
+            - path_details: Detailed hop-by-hop path information
             - ai_analysis: Optional AI-enhanced analysis (if LLM available)
             - error: Error message if query fails
-    
-    Note: The NetBrain API returns a taskID. Use the GetPath API with this taskID
-    to retrieve detailed hop-by-hop path information.
     """
+    # Debug: Print function entry and parameters
+    print(f"DEBUG: query_network_path called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}")
+    
     # Get authentication token from netbrainauth module
     # This token is required for all NetBrain API requests
     auth_token = netbrainauth.get_auth_token()
@@ -144,28 +134,21 @@ async def query_network_path(
     # Check if authentication token was successfully obtained
     # If not, return an error dictionary immediately
     if not auth_token:
-        # Return error dictionary with error message
-        # This will be sent back to the MCP client
+        print("DEBUG: Failed to get authentication token")
         return {"error": "Failed to get authentication token"}
     
-    # Prepare HTTP headers for the API request
-    # Headers specify content type and include authentication
-    # NetBrain API uses "Token" header for authentication (not Bearer Authorization)
-    # Note: Using "Token" (capital T) to match the example from NetBrain API documentation
+    print(f"DEBUG: Authentication token obtained: {auth_token[:20]}...")
+    
+    # Prepare HTTP headers for all API requests
+    # NetBrain API uses "token" header (lowercase) based on cURL example in documentation
     headers = {
         "Content-Type": "application/json",  # Indicates we're sending JSON data
         "Accept": "application/json",  # Indicates we want JSON response
-        "Token": auth_token  # NetBrain API uses "Token" header for authentication (capital T per example)
+        "token": auth_token  # NetBrain API uses "token" header for authentication
     }
-    
-    # Construct the NetBrain API endpoint URL for path calculation
-    # According to NetBrain API documentation:
-    # POST /ServicesAPI/API/V1/CMDB/Path/Calculation
-    api_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Calculation"
     
     # Map protocol string to protocol number
     # Protocol numbers: 4=IPv4, 6=TCP, 17=UDP
-    # Default to IPv4 (4) if protocol is not recognized
     protocol_map = {
         "TCP": 6,  # TCP protocol number
         "UDP": 17,  # UDP protocol number
@@ -179,246 +162,332 @@ async def query_network_path(
         source_port = int(port) if port else 0
         dest_port = int(port) if port else 0
     except ValueError:
-        # If port conversion fails, default to 0
         source_port = 0
         dest_port = 0
     
-    # Build the request payload (body) for the API call
-    # According to NetBrain API documentation, required fields are:
-    # - sourceIP* (required): Source IP address
-    # - sourceGwIP* (required): Gateway IP address (using source IP as default if not provided)
-    # - sourceGwDev* (required): Gateway device hostname (using source as default if not provided)
-    # - sourceGwIntf* (required): Gateway interface name (using default interface if not provided)
-    # - destIP* (required): Destination IP address
-    # - destPort* (required): Destination port (can be 0)
-    # - pathAnalysisSet* (required): 1=L3 Path, 2=L2 Path, 3=L3 Active Path
-    # - protocol* (required): Protocol number (4=IPv4, 6=TCP, 17=UDP)
-    # Optional fields:
-    # - sourcePort: Source port (default to 0)
-    # - isLive: 0=Baseline, 1=Live access (default to 0)
-    # Note: Field order matches the example from NetBrain API documentation
-    # Prepare gateway values - ensure they are not empty strings
-    # The API requires all gateway fields to be valid (not empty)
-    source_gw_ip_value = source_gw_ip if source_gw_ip and source_gw_ip.strip() else source
-    source_gw_dev_value = source_gw_dev if source_gw_dev and source_gw_dev.strip() else source
-    source_gw_intf_value = source_gw_intf if source_gw_intf and source_gw_intf.strip() else "GigabitEthernet0/0"
+    # Trim source and destination to remove whitespace
+    source_trimmed = source.strip() if source else ""
+    destination_trimmed = destination.strip() if destination else ""
     
-    # Validate that gateway fields are not empty
-    # The API error suggests SourceGateway is required, which likely means all gateway fields must be valid
-    if not source_gw_ip_value or not source_gw_dev_value or not source_gw_intf_value:
-        return {
-            "error": "Missing required gateway information",
-            "details": {
-                "statusCode": 791009,
-                "statusDescription": "The parameter 'SourceGateway' is invalid value. The SourceGateway field is required.",
-                "missing_fields": {
-                    "sourceGwIP": not bool(source_gw_ip_value),
-                    "sourceGwDev": not bool(source_gw_dev_value),
-                    "sourceGwIntf": not bool(source_gw_intf_value)
-                }
-            },
-            "payload_sent": {
-                "sourceIP": source,
-                "sourceGwIP": source_gw_ip_value,
-                "sourceGwDev": source_gw_dev_value,
-                "sourceGwIntf": source_gw_intf_value
-            }
-        }
+    # Create SSL context for HTTPS connections
+    # Disable SSL verification for self-signed certificates
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
     
-    # Use provided gateway values or fall back to defaults
-    # Note: Field names match the example from NetBrain API documentation
-    # The API expects these exact field names (camelCase)
-    # The order matches the example: sourceIP, sourcePort, sourceGwIP, sourceGwDev, sourceGwIntf, destIP, destPort, pathAnalysisSet, protocol, isLive
-    payload = {
-        "sourceIP": source,  # Source IP address (required)
-        "sourcePort": source_port,  # Source port (optional, default 0)
-        "sourceGwIP": source_gw_ip_value,  # Gateway IP address (required)
-        "sourceGwDev": source_gw_dev_value,  # Gateway device hostname (required)
-        "sourceGwIntf": source_gw_intf_value,  # Gateway interface name (required)
-        "destIP": destination,  # Destination IP address (required)
-        "destPort": dest_port,  # Destination port (required, can be 0)
-        "pathAnalysisSet": 1,  # Path type: 1=L3 Path, 2=L2 Path, 3=L3 Active Path
-        "protocol": protocol_num,  # Protocol number (4=IPv4, 6=TCP, 17=UDP)
-        "isLive": is_live  # Use live data (0=Baseline, 1=Live access) - must be integer, not boolean
-    }
+    # Create an async HTTP client session with timeout
+    timeout = aiohttp.ClientTimeout(total=60, connect=30, sock_read=30)
     
-    # Debug: Print payload for troubleshooting (can be removed in production)
-    # This helps verify the payload structure matches the API requirements
-    print(f"DEBUG: Sending payload to {api_url}: {json.dumps(payload, indent=2)}")
-    
-    # Wrap API call in try-except to handle various error conditions
     try:
-        # Create SSL context for HTTPS connections
-        # ssl.create_default_context() creates a default SSL context
-        ssl_context = ssl.create_default_context()
-        
-        # Disable hostname verification (allows self-signed certificates)
-        # This is necessary for development/testing with self-signed certs
-        ssl_context.check_hostname = False
-        
-        # Disable certificate verification (allows self-signed certificates)
-        # CERT_NONE means no certificate verification will be performed
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # Create an async HTTP client session using aiohttp with timeout
-        # Timeout prevents requests from hanging indefinitely
-        # total timeout: 60 seconds (30s connect + 30s read)
-        timeout = aiohttp.ClientTimeout(total=60, connect=30, sock_read=30)
-        # async with ensures the session is properly closed after use
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            # Make an async POST request to the NetBrain API
-            # async with ensures the response is properly closed after use
-            async with session.post(api_url, headers=headers, json=payload, ssl=ssl_context) as response:
-                # Check if the HTTP response status is not 200 (OK)
-                if response.status != 200:
-                    # Read the error response text
-                    # await is needed because response.text() is async
-                    # Try to parse as JSON first, then get text if that fails
-                    try:
-                        # Try to parse as JSON to get more detailed error information
-                        error_json = await response.json()
-                        # Print error details to console for debugging
-                        print(f"ERROR: HTTP {response.status} from {api_url}")
-                        print(f"ERROR DETAILS: {json.dumps(error_json, indent=2)}")
-                        print(f"PAYLOAD SENT: {json.dumps(payload, indent=2)}")
-                        # Return error dictionary with status code, endpoint, and error details
-                        # Include parsed JSON for better debugging
-                        return {
-                            "error": f"HTTP error {response.status}",
-                            "endpoint": api_url,  # Include the endpoint that was called
-                            "details": error_json,  # Parsed error JSON
-                            "error_message": str(error_json),  # String representation of error
-                            "payload_sent": payload  # Include the payload that was sent for debugging
-                        }
-                    except Exception as e:
-                        # If JSON parsing fails, read as text
-                        error_text = await response.text()
-                        # Print error details to console for debugging
-                        print(f"ERROR: HTTP {response.status} from {api_url}")
-                        print(f"ERROR DETAILS (text): {error_text}")
-                        print(f"JSON PARSE ERROR: {str(e)}")
-                        print(f"PAYLOAD SENT: {json.dumps(payload, indent=2)}")
-                        return {
-                            "error": f"HTTP error {response.status}",
-                            "endpoint": api_url,  # Include the endpoint that was called
-                            "details": error_text,  # Raw error text
-                            "payload_sent": payload  # Include the payload that was sent for debugging
-                        }
+            # ====================================================================
+            # STEP 1: Resolve Device Gateway
+            # GET /V1/CMDB/Path/Gateways?ipOrHost=<source>
+            # ====================================================================
+            print(f"DEBUG: Step 1 - Resolving gateway for source: {source_trimmed}")
+            gateway_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Gateways"
+            gateway_params = {"ipOrHost": source_trimmed}
+            
+            async with session.get(gateway_url, headers=headers, params=gateway_params, ssl=ssl_context) as gateway_response:
+                if gateway_response.status != 200:
+                    error_text = await gateway_response.text()
+                    print(f"ERROR: Step 1 failed - HTTP {gateway_response.status}: {error_text}")
+                    return {
+                        "error": f"Failed to resolve gateway: HTTP {gateway_response.status}",
+                        "step": 1,
+                        "details": error_text
+                    }
                 
-                # Parse the JSON response body into a Python dictionary
-                # await is needed because response.json() is async
-                data = await response.json()
-        
-        # Check if the API call was successful
-        # NetBrain API returns statusCode 790200 for success
-        if data.get("statusCode") != 790200:
-            # If status code is not success, return error
-            status_code = data.get("statusCode", "Unknown")
-            status_description = data.get("statusDescription", "No description")
-            return {
-                "error": f"NetBrain API error: statusCode={status_code}",
-                "statusDescription": status_description,
-                "response": data
+                gateway_data = await gateway_response.json()
+                
+                # Check if gateway resolution was successful
+                if gateway_data.get("statusCode") != 790200:
+                    status_code = gateway_data.get("statusCode", "Unknown")
+                    status_desc = gateway_data.get("statusDescription", "No description")
+                    print(f"ERROR: Step 1 failed - statusCode={status_code}: {status_desc}")
+                    return {
+                        "error": f"Gateway resolution failed: statusCode={status_code}",
+                        "step": 1,
+                        "statusDescription": status_desc,
+                        "response": gateway_data
+                    }
+                
+                # Get the gateway list from the response
+                gateway_list = gateway_data.get("gatewayList", [])
+                if not gateway_list:
+                    print("ERROR: Step 1 - No gateways found")
+                    return {
+                        "error": "No gateways found for source device",
+                        "step": 1,
+                        "response": gateway_data
+                    }
+                
+                # Use the first gateway from the list
+                # The gateway object contains: gatewayName, type, payload
+                source_gateway = gateway_list[0]
+                print(f"DEBUG: Step 1 - Gateway resolved: {source_gateway.get('gatewayName')}")
+            
+            # ====================================================================
+            # STEP 2: Calculate Path
+            # POST /V1/CMDB/Path/Calculation
+            # ====================================================================
+            print(f"DEBUG: Step 2 - Calculating path from {source_trimmed} to {destination_trimmed}")
+            calc_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Calculation"
+            
+            # Build payload for path calculation
+            # sourceGateway must be the object from Step 1, not separate fields
+            payload = {
+                "sourceIP": source_trimmed,  # IP address of the source device
+                "sourcePort": source_port,  # Source port (0 if not provided)
+                "sourceGateway": source_gateway,  # Gateway object from Step 1 (required as object)
+                "destIP": destination_trimmed,  # IP address of the destination device
+                "destPort": dest_port,  # Destination port (0 if not provided)
+                "pathAnalysisSet": 1,  # 1=L3 Path; 2=L2 Path; 3=L3 Active Path
+                "protocol": protocol_num,  # Protocol number (4=IPv4, 6=TCP, 17=UDP)
+                "isLive": 1 if is_live else 0  # 0=Current Baseline; 1=Live access
             }
-        
-        # Format the response into a structured result dictionary
-        # This organizes the data for easier consumption by clients
-        # The API returns a taskID which can be used with GetPath API to get hop information
-        result = {
-            "source": source,  # Include source from parameters
-            "destination": destination,  # Include destination from parameters
-            "protocol": protocol,  # Include protocol from parameters
-            "port": port,  # Include port from parameters
-            "taskID": data.get("taskID"),  # Task ID from NetBrain API (use with GetPath API)
-            "statusCode": data.get("statusCode"),  # Status code from API response
-            "statusDescription": data.get("statusDescription"),  # Status description from API response
-            "path_info": data  # Full API response for reference
-        }
-        
-        # Try to enhance with LLM analysis if available
-        # Check if MCP server has an LLM instance and it's not None
-        if hasattr(mcp, 'llm') and mcp.llm is not None:
-            # Wrap LLM analysis in try-except to handle LLM errors gracefully
-            # If LLM analysis fails, we still return the basic result
+            
+            print(f"DEBUG: Step 2 - Payload: {json.dumps(payload, indent=2)}")
+            
+            async with session.post(calc_url, headers=headers, json=payload, ssl=ssl_context) as calc_response:
+                if calc_response.status != 200:
+                    error_text = await calc_response.text()
+                    print(f"ERROR: Step 2 failed - HTTP {calc_response.status}: {error_text}")
+                    return {
+                        "error": f"Path calculation failed: HTTP {calc_response.status}",
+                        "step": 2,
+                        "details": error_text,
+                        "payload_sent": payload,
+                        "auth_token": auth_token
+                    }
+                
+                calc_data = await calc_response.json()
+                
+                # Check if path calculation was successful
+                if calc_data.get("statusCode") != 790200:
+                    status_code = calc_data.get("statusCode", "Unknown")
+                    status_desc = calc_data.get("statusDescription", "No description")
+                    print(f"ERROR: Step 2 failed - statusCode={status_code}: {status_desc}")
+                    return {
+                        "error": f"Path calculation failed: statusCode={status_code}",
+                        "step": 2,
+                        "statusDescription": status_desc,
+                        "response": calc_data,
+                        "payload_sent": payload,
+                        "auth_token": auth_token
+                    }
+                
+                # Get taskID from the response
+                # Ensure taskID is a string (JSON may return it as different type)
+                task_id = calc_data.get("taskID")
+                if not task_id:
+                    print("ERROR: Step 2 - No taskID in response")
+                    return {
+                        "error": "No taskID returned from path calculation",
+                        "step": 2,
+                        "response": calc_data
+                    }
+                
+                # Convert taskID to string to ensure it's in the correct format
+                task_id = str(task_id)
+                
+                print(f"DEBUG: Step 2 - Path calculation successful, taskID: {task_id}")
+            
+            # ====================================================================
+            # STEP 3: Get Path Details (Optional)
+            # GET /V1/CMDB/Path/Calculation/{taskID}/OverView
+            # Note: This step is optional - path calculation (Step 2) is the main operation
+            # Path details may not be immediately available or may require different endpoint
+            # The taskID from Step 2 can be used to query path details separately if needed
+            # ====================================================================
+            print(f"DEBUG: Step 3 - Attempting to get path details for taskID: {task_id} (optional)")
+            
+            path_data = None
+            step3_error = None
+            
+            # Try to get path details, but don't fail if this step doesn't work
+            # Some NetBrain versions may have different endpoint formats or timing requirements
             try:
-                # Create a system prompt for the LLM
-                # This defines the role and expected output format
-                analysis_prompt = {
-                    "role": "system",  # System message sets the context
-                    "content": """You are a network analysis assistant. Analyze the network path information and provide:
-                    1. A summary of the path
-                    2. Connectivity status
-                    3. Key devices in the path
-                    4. Any potential issues or recommendations
+                # Wait a moment for path calculation to complete
+                # Path calculation is asynchronous, so we need to wait for it to finish
+                await asyncio.sleep(3)
+                
+                # Primary endpoint from documentation
+                path_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Calculation/{task_id}/OverView"
+                
+                print(f"DEBUG: Step 3 - Trying endpoint: {path_url}")
+                async with session.get(path_url, headers=headers, ssl=ssl_context) as path_response:
+                    # Read the response text first (can only read once)
+                    response_text = await path_response.text()
                     
-                    Format your response as a JSON object with these fields:
-                    {
-                        "summary": "string",
-                        "connectivity": "string",
-                        "key_devices": ["string"],
-                        "recommendations": ["string"]
-                    }"""
-                }
+                    # Try to parse as JSON regardless of status code
+                    # The API may return path data even with non-200 status codes
+                    try:
+                        response_json = json.loads(response_text)
+                        
+                        # Check if response contains path data (path_overview, path_list, etc.)
+                        if "path_overview" in response_json or "path_list" in response_json or "hop_detail_list" in response_json:
+                            # Response contains path data, use it even if status is not 200
+                            path_data = response_json
+                            print(f"DEBUG: Step 3 - Path details retrieved (status {path_response.status})")
+                            
+                            # If status is not 200, note it but still use the data
+                            if path_response.status != 200:
+                                print(f"INFO: Step 3 - Path details available but HTTP status is {path_response.status}")
+                                # Store the status code in the data for reference
+                                path_data["_http_status"] = path_response.status
+                        elif path_response.status == 200:
+                            # Standard success case
+                            path_data = response_json
+                            print(f"DEBUG: Step 3 - Path details retrieved successfully")
+                        else:
+                            # No path data in response
+                            print(f"DEBUG: Step 3 - HTTP {path_response.status}: No path data in response")
+                            step3_error = f"HTTP {path_response.status}: {response_text[:200]}"
+                    except json.JSONDecodeError:
+                        # Response is not valid JSON
+                        if path_response.status == 200:
+                            # Try to use it anyway
+                            path_data = {"raw_response": response_text}
+                        else:
+                            print(f"DEBUG: Step 3 - HTTP {path_response.status}: Invalid JSON response")
+                            step3_error = f"HTTP {path_response.status}: {response_text[:200]}"
+            except Exception as e:
+                print(f"DEBUG: Step 3 - Exception during path details retrieval: {str(e)}")
+                step3_error = str(e)
+            
+            # Step 3 is optional - if it fails, we still return success from Step 2
+            # The taskID can be used to query path details separately
+            if path_data is None:
+                print(f"INFO: Step 3 - Path details not available, but path calculation (Step 2) succeeded")
+            
+            # Build result dictionary
+            result = {
+                "source": source_trimmed,
+                "destination": destination_trimmed,
+                "protocol": protocol,
+                "port": port,
+                "taskID": task_id,
+                "statusCode": calc_data.get("statusCode"),
+                "statusDescription": calc_data.get("statusDescription"),
+                "gateway_used": source_gateway.get("gatewayName"),
+                "path_info": calc_data  # Original calculation response
+            }
+            
+            # Add path details if Step 3 succeeded
+            if path_data is not None:
+                # Extract simplified hop information: device name, status, and reason
+                simplified_hops = []
+                path_status_overall = "Unknown"
+                path_failure_reason = None
                 
-                # Create a user message with the network path data
-                # json.dumps() converts the result dictionary to a formatted JSON string
-                # indent=2 makes it human-readable
-                user_message = {
-                    "role": "user",  # User message contains the actual query
-                    "content": f"Analyze this network path:\n{json.dumps(result, indent=2)}"
-                }
-                
-                # Combine system and user messages into a messages list
-                # This is the format expected by the LLM chat interface
-                messages = [analysis_prompt, user_message]
-                
-                # Call the LLM's async chat method to get AI analysis
-                # await is needed because achat() is an async method
-                llm_response = await mcp.llm.achat(messages=messages)
-                
-                # Parse the LLM response
-                # Check if response is a string (needs JSON parsing)
-                if isinstance(llm_response, str):
-                    # Parse the JSON string into a dictionary
-                    analysis = json.loads(llm_response)
-                else:
-                    # If already a dictionary, use it directly
-                    analysis = llm_response
-                
-                # Add the AI analysis to the result dictionary
-                # This enhances the result with intelligent insights
-                result["ai_analysis"] = analysis
-            except Exception:
-                # If LLM analysis fails, silently continue without AI analysis
-                # The basic result will still be returned
-                pass
-        
-        # Return the complete result dictionary
-        # This includes path info and optionally AI analysis
-        return result
-        
-    # Catch aiohttp-specific client errors (network issues, connection problems)
+                try:
+                    # Navigate through the path_overview structure
+                    path_overview = path_data.get("path_overview", [])
+                    for path_group in path_overview:
+                        path_list = path_group.get("path_list", [])
+                        for path in path_list:
+                            # Get path-level status and description
+                            path_status_overall = path.get("status", "Unknown")
+                            path_description = path.get("description", "")
+                            
+                            branch_list = path.get("branch_list", [])
+                            for branch in branch_list:
+                                branch_status = branch.get("status", "Unknown")
+                                branch_failure_reason = branch.get("failure_reason", None)
+                                
+                                hop_detail_list = branch.get("hop_detail_list", [])
+                                for hop in hop_detail_list:
+                                    from_dev = hop.get("fromDev", {})
+                                    to_dev = hop.get("toDev", {})
+                                    
+                                    from_dev_name = from_dev.get("devName", "Unknown")
+                                    to_dev_name = to_dev.get("devName") if to_dev.get("devName") else None
+                                    
+                                    # Only add if we have device information
+                                    if from_dev_name != "Unknown" or to_dev_name:
+                                        hop_info = {
+                                            "hop_sequence": hop.get("sequnce", len(simplified_hops)),
+                                            "from_device": from_dev_name,
+                                            "to_device": to_dev_name,
+                                            "status": branch_status,
+                                            "failure_reason": branch_failure_reason
+                                        }
+                                        simplified_hops.append(hop_info)
+                                
+                                # If branch has failure reason, use it for path-level
+                                if branch_failure_reason and not path_failure_reason:
+                                    path_failure_reason = branch_failure_reason
+                    
+                    # If we found hops, use simplified format
+                    if simplified_hops:
+                        result["path_hops"] = simplified_hops
+                        result["path_status"] = path_status_overall
+                        result["path_status_description"] = path_data.get("statusDescription", path_failure_reason or "")
+                        if path_failure_reason:
+                            result["path_failure_reason"] = path_failure_reason
+                    else:
+                        # Fallback to full path_data if we couldn't parse it
+                        result["path_details"] = path_data
+                except Exception as e:
+                    # If parsing fails, include full data and note the error
+                    print(f"DEBUG: Error parsing path details: {str(e)}")
+                    result["path_details"] = path_data
+                    result["parse_error"] = str(e)
+            else:
+                # Add note about using taskID to query path details separately
+                result["note"] = f"Path calculation succeeded. Use taskID '{task_id}' to query detailed path information separately if needed."
+                if step3_error:
+                    result["step3_info"] = f"Path details endpoint returned: {step3_error}. This is optional - path calculation was successful."
+            
+            # Try to enhance with LLM analysis if available
+            if hasattr(mcp, 'llm') and mcp.llm is not None:
+                try:
+                    analysis_prompt = {
+                        "role": "system",
+                        "content": """You are a network analysis assistant. Analyze the network path information and provide:
+                        1. A summary of the path
+                        2. Connectivity status
+                        3. Key devices in the path
+                        4. Any potential issues or recommendations
+                        
+                        Format your response as a JSON object with these fields:
+                        {
+                            "summary": "string",
+                            "connectivity": "string",
+                            "key_devices": ["string"],
+                            "recommendations": ["string"]
+                        }"""
+                    }
+                    user_message = {
+                        "role": "user",
+                        "content": f"Analyze this network path:\n{json.dumps(result, indent=2)}"
+                    }
+                    messages = [analysis_prompt, user_message]
+                    llm_response = await mcp.llm.achat(messages=messages)
+                    if isinstance(llm_response, str):
+                        analysis = json.loads(llm_response)
+                    else:
+                        analysis = llm_response
+                    result["ai_analysis"] = analysis
+                except Exception:
+                    pass
+            
+            return result
+            
     except aiohttp.ClientError as e:
-        # Return error dictionary with network error message
-        # str(e) converts the exception to a readable string
         return {"error": f"Network error: {str(e)}"}
-    
-    # Catch timeout errors (request took too long)
     except asyncio.TimeoutError:
-        # Return error dictionary with timeout message
         return {"error": "Request timed out. Please try again later."}
-    
-    # Catch any other unexpected exceptions
     except Exception as e:
-        # Return error dictionary with generic error message
-        # This is a catch-all for any unhandled exceptions
         return {"error": f"An unexpected error occurred: {str(e)}"}
+
 
 # Check if this script is being run directly (not imported as a module)
 # __name__ will be "__main__" when the script is executed directly
 # This allows the script to be both runnable and importable
 if __name__ == "__main__":
-    # Start the MCP server with stdio transport
-    # transport="stdio" means the server communicates via standard input/output
-    # This allows the server to be spawned as a subprocess by MCP clients
+    # Run the MCP server using stdio transport
+    # stdio transport means the server communicates via standard input/output
+    # This is the standard way MCP servers communicate with clients
     mcp.run(transport="stdio")

@@ -86,14 +86,6 @@ def main():
                 ["TCP", "UDP"],  # Available protocol options
                 index=0  # Default to first option (TCP)
             )
-            
-            # Create a text input field for gateway IP address (optional)
-            # This is optional - if not provided, will default to source IP
-            source_gw_ip = st.text_input("Gateway IP (optional)", placeholder="e.g., 10.10.3.253", help="Defaults to source IP if not provided")
-            
-            # Create a text input field for gateway device hostname (optional)
-            # This is optional - if not provided, will default to source
-            source_gw_dev = st.text_input("Gateway Device (optional)", placeholder="e.g., GW2Lab", help="Defaults to source if not provided")
         
         # Place input fields in the second column (right side)
         with col2:
@@ -104,10 +96,6 @@ def main():
             # Create a text input field for port number
             # "*" indicates required field, placeholder shows example ports
             port = st.text_input("Port *", placeholder="e.g., 80, 443, 22")
-            
-            # Create a text input field for gateway interface name (optional)
-            # This is optional - if not provided, will default to "GigabitEthernet0/0"
-            source_gw_intf = st.text_input("Gateway Interface (optional)", placeholder="e.g., GigabitEthernet0/0.10", help="Defaults to GigabitEthernet0/0 if not provided")
             
             # Create a checkbox for live data access
             # 0 = Baseline data, 1 = Live access
@@ -165,7 +153,8 @@ def main():
                             # Call the MCP tool named "query_network_path" on the server
                             # This sends a request to the MCP server to execute the tool
                             # await is needed because call_tool() is an async method
-                            # Build arguments dictionary with required and optional parameters
+                            # Build arguments dictionary with required parameters
+                            # Gateway is now automatically resolved by the API (Step 1)
                             tool_arguments = {
                                 "source": source,  # Source IP/hostname from form input
                                 "destination": destination,  # Destination IP/hostname from form input
@@ -173,16 +162,6 @@ def main():
                                 "port": port,  # Port number from form input
                                 "is_live": 1 if is_live else 0  # Convert checkbox boolean to integer (0 or 1)
                             }
-                            
-                            # Add optional gateway parameters if provided
-                            # Only include them in the arguments if they have values
-                            # This allows the server to use defaults if not provided
-                            if source_gw_ip:
-                                tool_arguments["source_gw_ip"] = source_gw_ip
-                            if source_gw_dev:
-                                tool_arguments["source_gw_dev"] = source_gw_dev
-                            if source_gw_intf:
-                                tool_arguments["source_gw_intf"] = source_gw_intf
                             
                             # Call the tool with all arguments
                             tool_result = await session.call_tool(
@@ -228,17 +207,102 @@ def main():
                             if 'details' in result:
                                 st.error("Error Details:")
                                 st.json(result['details'])
+                            if 'full_response' in result:
+                                with st.expander("Full API Response"):
+                                    st.text(result['full_response'])
                             if 'error_message' in result:
                                 st.error(f"Error Message: {result['error_message']}")
+                            # Show token prominently at the top if available
+                            if 'debug_info' in result and 'auth_token' in result.get('debug_info', {}):
+                                st.text(f"🔑 Token: {result['debug_info']['auth_token']}")
+                            if 'debug_info' in result:
+                                with st.expander("Debug Information"):
+                                    st.json(result['debug_info'])
+                            if 'troubleshooting' in result:
+                                st.info(f"💡 {result['troubleshooting']}")
                             if 'payload_sent' in result:
                                 with st.expander("View Payload Sent"):
                                     st.json(result['payload_sent'])
                         else:
                             # Display success message in green using st.success()
                             st.success("Query completed successfully")
-                            # Display the result dictionary as formatted JSON
-                            # st.json() pretty-prints JSON with syntax highlighting
-                            st.json(result)
+                            
+                            # Display path hops if available (simplified visual representation)
+                            if 'path_hops' in result:
+                                st.subheader("Network Path")
+                                
+                                # Display path status
+                                path_status = result.get('path_status_description', result.get('path_status', 'Unknown'))
+                                if 'Failed' in str(path_status) or result.get('path_status') != 790200:
+                                    st.error(f"Path Status: {path_status}")
+                                else:
+                                    st.success(f"Path Status: {path_status}")
+                                
+                                # Display hops visually
+                                st.markdown("### Path Hops")
+                                
+                                # Helper function to get device icon (matching NetBrain UI style)
+                                def get_device_icon(device_name):
+                                    """Return an icon based on device name or type, matching NetBrain UI"""
+                                    if not device_name or device_name == "Unknown":
+                                        return "🌐"  # Unknown device
+                                    # Check if it's an IP address (endpoint) - use network device icon
+                                    # IP addresses are numeric with dots/colons
+                                    if device_name.replace('.', '').replace(':', '').replace('/', '').isdigit():
+                                        return "📱"  # Network device/endpoint icon (like NetBrain's IP device)
+                                    # Check for router indicators - use router icon
+                                    if any(keyword in device_name.lower() for keyword in ['router', 'rtr', 'rt', 'gw', 'gateway']):
+                                        return "🖥️"  # Router/server icon (like NetBrain's router icon)
+                                    # Default to network device icon for other network devices
+                                    return "📱"  # Network device icon
+                                
+                                for i, hop in enumerate(result['path_hops']):
+                                    # Create a visual representation of each hop
+                                    col1, col2, col3 = st.columns([2, 1, 3])
+                                    
+                                    with col1:
+                                        # From device with icon
+                                        from_dev = hop.get('from_device', 'Unknown')
+                                        from_icon = get_device_icon(from_dev)
+                                        st.markdown(f"{from_icon} **{from_dev}**")
+                                    
+                                    with col2:
+                                        # Arrow
+                                        st.markdown("→")
+                                    
+                                    with col3:
+                                        # To device and status
+                                        to_dev = hop.get('to_device')
+                                        if to_dev:
+                                            to_icon = get_device_icon(to_dev)
+                                            st.markdown(f"{to_icon} **{to_dev}**")
+                                        else:
+                                            st.markdown("🎯 *Destination*")
+                                        
+                                        # Status and failure reason
+                                        status = hop.get('status', 'Unknown')
+                                        failure_reason = hop.get('failure_reason')
+                                        
+                                        if status == 'Failed' or failure_reason:
+                                            st.error(f"❌ {status}")
+                                            if failure_reason:
+                                                st.caption(f"Reason: {failure_reason}")
+                                        elif status == 'Success':
+                                            st.success(f"✓ {status}")
+                                        else:
+                                            st.info(f"Status: {status}")
+                                    
+                                    # Add separator between hops
+                                    if i < len(result['path_hops']) - 1:
+                                        st.divider()
+                                
+                                # Show full details in expander
+                                with st.expander("View Full Path Details"):
+                                    st.json(result)
+                            else:
+                                # Display the result dictionary as formatted JSON
+                                # st.json() pretty-prints JSON with syntax highlighting
+                                st.json(result)
                     # Check if result is a string
                     elif isinstance(result, str):
                         # Display success message
