@@ -46,6 +46,10 @@ from fastmcp import FastMCP
 # This allows AI-enhanced analysis of network path data
 from langchain_ollama import ChatOllama
 
+# Import LangChain prompt templates for structured prompt management
+# ChatPromptTemplate provides better maintainability, reusability, and variable substitution
+from langchain_core.prompts import ChatPromptTemplate
+
 # Import os for environment variable access
 # Used to read NETBRAIN_URL from environment variables
 import os
@@ -443,34 +447,50 @@ async def query_network_path(
             # Try to enhance with LLM analysis if available
             if hasattr(mcp, 'llm') and mcp.llm is not None:
                 try:
-                    analysis_prompt = {
-                        "role": "system",
-                        "content": """You are a network analysis assistant. Analyze the network path information and provide:
+                    # Use LangChain ChatPromptTemplate for structured prompt management
+                    # This provides better maintainability, reusability, and variable substitution
+                    analysis_prompt_template = ChatPromptTemplate.from_messages([
+                        ("system", """You are a network analysis assistant. Analyze the network path information and provide:
                         1. A summary of the path
                         2. Connectivity status
                         3. Key devices in the path
                         4. Any potential issues or recommendations
                         
                         Format your response as a JSON object with these fields:
-                        {
+                        {{
                             "summary": "string",
                             "connectivity": "string",
                             "key_devices": ["string"],
                             "recommendations": ["string"]
-                        }"""
-                    }
-                    user_message = {
-                        "role": "user",
-                        "content": f"Analyze this network path:\n{json.dumps(result, indent=2)}"
-                    }
-                    messages = [analysis_prompt, user_message]
-                    llm_response = await mcp.llm.achat(messages=messages)
-                    if isinstance(llm_response, str):
-                        analysis = json.loads(llm_response)
+                        }}"""),
+                        ("human", "Analyze this network path:\n{path_data}")
+                    ])
+                    
+                    # Format the prompt with the path data
+                    formatted_messages = analysis_prompt_template.format_messages(
+                        path_data=json.dumps(result, indent=2)
+                    )
+                    
+                    # Invoke the LLM with the formatted prompt
+                    llm_response = await mcp.llm.ainvoke(formatted_messages)
+                    
+                    # Extract content from the response
+                    if hasattr(llm_response, 'content'):
+                        response_content = llm_response.content
                     else:
-                        analysis = llm_response
+                        response_content = str(llm_response)
+                    
+                    # Try to parse as JSON, fallback to string if not valid JSON
+                    try:
+                        analysis = json.loads(response_content)
+                    except json.JSONDecodeError:
+                        # If response is not valid JSON, wrap it in a summary field
+                        analysis = {"summary": response_content}
+                    
                     result["ai_analysis"] = analysis
-                except Exception:
+                except Exception as e:
+                    # Log the error for debugging but don't fail the entire request
+                    print(f"DEBUG: LLM analysis failed: {str(e)}")
                     pass
             
             return result
