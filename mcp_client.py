@@ -24,6 +24,13 @@ from mcp.client.stdio import stdio_client
 # Import ChatOllama for LLM integration (currently imported but not actively used in client)
 from langchain_ollama import ChatOllama
 
+# Import pandas for reading spreadsheet files (CSV, Excel)
+import pandas as pd
+
+# Import matplotlib and networkx for graph visualization
+import matplotlib.pyplot as plt
+import networkx as nx
+
 # Configure Streamlit page settings:
 # - page_title: Sets the browser tab title to "NetBrain Network Query"
 # - page_icon: Sets the browser tab icon to a globe emoji (🌐)
@@ -33,6 +40,318 @@ st.set_page_config(
     page_icon="🌐",
     layout="centered"
 )
+
+def create_path_graph(path_hops, source, destination):
+    """
+    Create a network graph visualization of the path hops using matplotlib and networkx.
+    
+    Args:
+        path_hops: List of hop dictionaries with from_device, to_device, status, failure_reason
+        source: Source IP/device name
+        destination: Destination IP/device name
+    
+    Returns:
+        matplotlib figure object or None if no valid hops
+    """
+    if not path_hops or len(path_hops) == 0:
+        return None
+    
+    # Create a directed graph
+    G = nx.DiGraph()
+    
+    # Track all unique devices
+    devices = set()
+    edges = []
+    
+    # Add source node
+    if source:
+        devices.add(source)
+    
+    # Process each hop
+    for hop in path_hops:
+        from_dev = hop.get('from_device', 'Unknown')
+        to_dev = hop.get('to_device')
+        status = hop.get('status', 'Unknown')
+        failure_reason = hop.get('failure_reason')
+        
+        if from_dev and from_dev != 'Unknown':
+            devices.add(from_dev)
+        if to_dev:
+            devices.add(to_dev)
+        
+        # Determine edge color and style based on status
+        if status == 'Failed' or failure_reason:
+            edge_color = 'red'
+            edge_style = 'dashed'
+            edge_width = 2.5
+        elif status == 'Success':
+            edge_color = 'green'
+            edge_style = 'solid'
+            edge_width = 2.0
+        else:
+            edge_color = 'gray'
+            edge_style = 'solid'
+            edge_width = 1.5
+        
+        # Add edge with attributes
+        if from_dev and to_dev:
+            edges.append((from_dev, to_dev, {
+                'color': edge_color,
+                'style': edge_style,
+                'width': edge_width,
+                'status': status,
+                'failure_reason': failure_reason
+            }))
+        elif from_dev and not to_dev:
+            # Last hop - connect to destination
+            if destination:
+                edges.append((from_dev, destination, {
+                    'color': edge_color,
+                    'style': edge_style,
+                    'width': edge_width,
+                    'status': status,
+                    'failure_reason': failure_reason
+                }))
+                devices.add(destination)
+    
+    # Add destination if not already added
+    if destination and destination not in devices:
+        devices.add(destination)
+    
+    # Add nodes and edges to graph
+    G.add_nodes_from(devices)
+    for from_dev, to_dev, attrs in edges:
+        G.add_edge(from_dev, to_dev, **attrs)
+    
+    if len(G.nodes()) == 0:
+        return None
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Use hierarchical layout for better path visualization
+    try:
+        # Try to create a hierarchical layout
+        pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+        # If we have a clear path, try to arrange it linearly
+        if len(path_hops) > 0:
+            # Create a more linear layout for path visualization
+            pos = {}
+            x_pos = 0
+            y_center = 0
+            
+            # Position source
+            if source and source in G.nodes():
+                pos[source] = (x_pos, y_center)
+                x_pos += 2
+            
+            # Position intermediate devices
+            for hop in path_hops:
+                from_dev = hop.get('from_device', 'Unknown')
+                to_dev = hop.get('to_device')
+                
+                if from_dev and from_dev != 'Unknown' and from_dev not in pos:
+                    pos[from_dev] = (x_pos, y_center)
+                    x_pos += 2
+                
+                if to_dev and to_dev not in pos:
+                    pos[to_dev] = (x_pos, y_center)
+                    x_pos += 2
+            
+            # Position destination
+            if destination and destination not in pos:
+                pos[destination] = (x_pos, y_center)
+            
+            # Fill in any missing positions
+            for node in G.nodes():
+                if node not in pos:
+                    pos[node] = (x_pos, y_center)
+                    x_pos += 2
+    except:
+        # Fallback to spring layout
+        pos = nx.spring_layout(G, seed=42)
+    
+    # Draw nodes
+    node_colors = []
+    for node in G.nodes():
+        if node == source:
+            node_colors.append('#4CAF50')  # Green for source
+        elif node == destination:
+            node_colors.append('#FF9800')  # Orange for destination
+        else:
+            node_colors.append('#2196F3')  # Blue for intermediate devices
+    
+    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=1500, 
+                           alpha=0.9, ax=ax)
+    
+    # Draw edges with colors and styles
+    for from_dev, to_dev, data in G.edges(data=True):
+        edge_color = data.get('color', 'gray')
+        edge_style = data.get('style', 'solid')
+        edge_width = data.get('width', 1.5)
+        
+        nx.draw_networkx_edges(G, pos, edgelist=[(from_dev, to_dev)], 
+                              edge_color=edge_color, style=edge_style,
+                              width=edge_width, alpha=0.7, arrows=True,
+                              arrowsize=20, ax=ax, connectionstyle='arc3,rad=0.1')
+    
+    # Draw labels
+    labels = {node: node[:15] + '...' if len(node) > 15 else node for node in G.nodes()}
+    nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
+    
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#4CAF50', label='Source'),
+        Patch(facecolor='#2196F3', label='Intermediate Device'),
+        Patch(facecolor='#FF9800', label='Destination'),
+        plt.Line2D([0], [0], color='green', linewidth=2, label='Success'),
+        plt.Line2D([0], [0], color='red', linewidth=2, linestyle='--', label='Failed'),
+        plt.Line2D([0], [0], color='gray', linewidth=1.5, label='Unknown')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+    
+    ax.set_title("Network Path Visualization", fontsize=14, fontweight='bold', pad=20)
+    ax.axis('off')
+    plt.tight_layout()
+    
+    return fig
+
+def display_result(result):
+    """
+    Display network path query result in the Streamlit UI.
+    
+    This function handles both error and success cases, displaying:
+    - Error messages and debug information for failed queries
+    - Path hops visualization for successful queries
+    - Full JSON details in expandable sections
+    
+    Args:
+        result: Dictionary containing the query result from the MCP server
+    """
+    if isinstance(result, dict):
+        # Check if the result contains an error key
+        if 'error' in result:
+            # Display error message in red using st.error()
+            st.error(f"Error: {result['error']}")
+            # Display detailed error information if available
+            if 'details' in result:
+                st.error("Error Details:")
+                st.json(result['details'])
+            if 'full_response' in result:
+                with st.expander("Full API Response"):
+                    st.text(result['full_response'])
+            if 'error_message' in result:
+                st.error(f"Error Message: {result['error_message']}")
+            # Show token prominently at the top if available
+            if 'debug_info' in result and 'auth_token' in result.get('debug_info', {}):
+                st.text(f"🔑 Token: {result['debug_info']['auth_token']}")
+            if 'debug_info' in result:
+                with st.expander("Debug Information"):
+                    st.json(result['debug_info'])
+            if 'troubleshooting' in result:
+                st.info(f"💡 {result['troubleshooting']}")
+            if 'payload_sent' in result:
+                with st.expander("View Payload Sent"):
+                    st.json(result['payload_sent'])
+        else:
+            # Display success message in green using st.success()
+            st.success("Query completed successfully")
+            
+            # Display path hops if available (simplified visual representation)
+            if 'path_hops' in result:
+                st.subheader("Network Path")
+                
+                # Display path status
+                path_status = result.get('path_status_description', result.get('path_status', 'Unknown'))
+                if 'Failed' in str(path_status) or result.get('path_status') != 790200:
+                    st.error(f"Path Status: {path_status}")
+                else:
+                    st.success(f"Path Status: {path_status}")
+                
+                # Create and display graph visualization
+                try:
+                    graph_fig = create_path_graph(result['path_hops'], result.get('source', 'Source'), result.get('destination', 'Destination'))
+                    if graph_fig:
+                        st.markdown("### Network Path Graph")
+                        st.pyplot(graph_fig)
+                        plt.close(graph_fig)
+                except Exception as e:
+                    st.warning(f"Could not generate graph visualization: {str(e)}")
+                
+                # Display hops visually
+                st.markdown("### Path Hops")
+                
+                # Helper function to get device icon (matching NetBrain UI style)
+                def get_device_icon(device_name):
+                    """Return an icon based on device name or type, matching NetBrain UI"""
+                    if not device_name or device_name == "Unknown":
+                        return "🌐"  # Unknown device
+                    # Check if it's an IP address (endpoint) - use network device icon
+                    # IP addresses are numeric with dots/colons
+                    if device_name.replace('.', '').replace(':', '').replace('/', '').isdigit():
+                        return "📱"  # Network device/endpoint icon (like NetBrain's IP device)
+                    # Check for router indicators - use router icon
+                    if any(keyword in device_name.lower() for keyword in ['router', 'rtr', 'rt', 'gw', 'gateway']):
+                        return "🖥️"  # Router/server icon (like NetBrain's router icon)
+                    # Default to network device icon for other network devices
+                    return "📱"  # Network device icon
+                
+                for i, hop in enumerate(result['path_hops']):
+                    # Create a visual representation of each hop
+                    col1, col2, col3 = st.columns([2, 1, 3])
+                    
+                    with col1:
+                        # From device with icon
+                        from_dev = hop.get('from_device', 'Unknown')
+                        from_icon = get_device_icon(from_dev)
+                        st.markdown(f"{from_icon} **{from_dev}**")
+                    
+                    with col2:
+                        # Arrow
+                        st.markdown("→")
+                    
+                    with col3:
+                        # To device and status
+                        to_dev = hop.get('to_device')
+                        if to_dev:
+                            to_icon = get_device_icon(to_dev)
+                            st.markdown(f"{to_icon} **{to_dev}**")
+                        else:
+                            st.markdown("🎯 *Destination*")
+                        
+                        # Status and failure reason
+                        status = hop.get('status', 'Unknown')
+                        failure_reason = hop.get('failure_reason')
+                        
+                        if status == 'Failed' or failure_reason:
+                            st.error(f"❌ {status}")
+                            if failure_reason:
+                                st.caption(f"Reason: {failure_reason}")
+                        elif status == 'Success':
+                            st.success(f"✓ {status}")
+                        else:
+                            st.info(f"Status: {status}")
+                    
+                    # Add separator between hops
+                    if i < len(result['path_hops']) - 1:
+                        st.divider()
+                
+                # Show full details in expander
+                with st.expander("View Full Path Details"):
+                    st.json(result)
+            else:
+                # Display the result dictionary as formatted JSON
+                # st.json() pretty-prints JSON with syntax highlighting
+                st.json(result)
+    elif isinstance(result, str):
+        # Display success message
+        st.success("Query completed")
+        # Display the string result as plain text
+        st.text(result)
+    else:
+        # Display result as JSON for any other type
+        st.json(result)
 
 def get_server_params():
     """
@@ -66,8 +385,8 @@ def main():
     # Display the main page title as a large heading
     st.title("NetBrain Network Query")
     
-    # Create tabs to switch between natural language and form input
-    tab1, tab2 = st.tabs(["Natural Language Query", "Form Input"])
+    # Create tabs to switch between natural language, form input, and spreadsheet upload
+    tab1, tab2, tab3 = st.tabs(["Natural Language Query", "Form Input", "Spreadsheet Upload"])
     
     # Initialize variables
     source = None
@@ -217,6 +536,346 @@ def main():
                 port = port_form.strip() if port_form and port_form.strip() else "0"
                 is_live = is_live_form
     
+    # Tab 3: Spreadsheet Upload
+    with tab3:
+        st.markdown("### Upload Spreadsheet")
+        st.info("Upload a CSV or Excel file with columns: Source IP, Destination IP, Protocol, Port (optional), Use Live Data (optional)")
+        
+        # Create a file uploader for spreadsheet files
+        uploaded_file = st.file_uploader(
+            "Choose a file",
+            type=['csv', 'xlsx', 'xls'],
+            help="Upload a CSV or Excel file. Expected columns: Source IP (or source_ip, source), Destination IP (or destination_ip, destination), Protocol (TCP/UDP), Port (optional, defaults to 0), Use Live Data (optional, Yes/No, True/False, 1/0)"
+        )
+        
+        if uploaded_file is not None:
+            # Display file details
+            st.success(f"File uploaded: {uploaded_file.name}")
+            
+            # Read the spreadsheet based on file type
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    # Read CSV file
+                    df = pd.read_csv(uploaded_file)
+                elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                    # Read Excel file
+                    # First, read without headers to inspect the structure
+                    df_temp = pd.read_excel(uploaded_file, header=None)
+                    
+                    # Check if row 0 has headers (text like "Source IP", "Destination", etc.)
+                    row0_values = df_temp.iloc[0].astype(str).str.lower().tolist()
+                    has_header_keywords = any(
+                        any(keyword in str(val) for keyword in ['source', 'destination', 'dest', 'protocol', 'port', 'ip'])
+                        for val in row0_values
+                    )
+                    
+                    # Check if row 1 has headers (in case row 0 is empty or has different content)
+                    if len(df_temp) > 1:
+                        row1_values = df_temp.iloc[1].astype(str).str.lower().tolist()
+                        has_header_keywords_row1 = any(
+                            any(keyword in str(val) for keyword in ['source', 'destination', 'dest', 'protocol', 'port', 'ip'])
+                            for val in row1_values
+                        )
+                    else:
+                        has_header_keywords_row1 = False
+                    
+                    # Determine which row to use as header
+                    if has_header_keywords:
+                        # Use row 0 as header
+                        df = pd.read_excel(uploaded_file, header=0)
+                    elif has_header_keywords_row1:
+                        # Use row 1 as header
+                        df = pd.read_excel(uploaded_file, header=1)
+                    else:
+                        # Default: use row 0 as header
+                        df = pd.read_excel(uploaded_file, header=0)
+                else:
+                    st.error("Unsupported file type. Please upload a CSV or Excel file.")
+                    df = None
+                
+                if df is not None and not df.empty:
+                    # Display the uploaded data preview
+                    st.markdown("### Preview of Uploaded Data")
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Normalize column names (case-insensitive, handle variations)
+                    df.columns = df.columns.str.strip().str.lower()
+                    
+                    # Map common column name variations to standard names
+                    # This includes handling typos and common misspellings
+                    column_mapping = {
+                        'source ip': 'source',
+                        'source_ip': 'source',
+                        'sourceip': 'source',
+                        'src': 'source',
+                        'destination ip': 'destination',
+                        'destination_ip': 'destination',
+                        'destinationip': 'destination',
+                        'dest': 'destination',
+                        'desitnation ip': 'destination',  # Handle typo: "Desitnation"
+                        'desitnation_ip': 'destination',
+                        'desitnationip': 'destination',
+                        'destnation ip': 'destination',  # Handle typo: "Destnation"
+                        'destnation_ip': 'destination',
+                        'destnationip': 'destination',
+                        'protocol': 'protocol',
+                        'port': 'port',
+                        'use live data': 'is_live',
+                        'use_live_data': 'is_live',
+                        'uselivedata': 'is_live',
+                        'live': 'is_live',
+                        'live data': 'is_live'
+                    }
+                    
+                    # Rename columns based on mapping
+                    df.rename(columns=column_mapping, inplace=True)
+                    
+                    # Additional fuzzy matching for columns that might have typos
+                    # Check if we still have missing required columns and try fuzzy matching
+                    required_columns = ['source', 'destination', 'protocol']
+                    missing_columns = [col for col in required_columns if col not in df.columns]
+                    
+                    if missing_columns:
+                        # Try to find columns that might match with typos
+                        available_columns = df.columns.tolist()
+                        
+                        # Fuzzy match for destination (common typo: "Desitnation")
+                        if 'destination' in missing_columns:
+                            for col in available_columns:
+                                # Check if column name contains key parts of "destination"
+                                col_lower = col.lower()
+                                if 'dest' in col_lower and ('ip' in col_lower or 'address' in col_lower or len(col_lower) > 8):
+                                    df.rename(columns={col: 'destination'}, inplace=True)
+                                    if 'destination' in missing_columns:
+                                        missing_columns.remove('destination')
+                                    break
+                        
+                        # Fuzzy match for source
+                        if 'source' in missing_columns:
+                            for col in available_columns:
+                                col_lower = col.lower()
+                                if 'src' in col_lower or ('source' in col_lower and 'ip' in col_lower):
+                                    df.rename(columns={col: 'source'}, inplace=True)
+                                    if 'source' in missing_columns:
+                                        missing_columns.remove('source')
+                                    break
+                        
+                        # Fuzzy match for protocol
+                        if 'protocol' in missing_columns:
+                            for col in available_columns:
+                                col_lower = col.lower()
+                                if 'protocol' in col_lower or 'proto' in col_lower:
+                                    df.rename(columns={col: 'protocol'}, inplace=True)
+                                    if 'protocol' in missing_columns:
+                                        missing_columns.remove('protocol')
+                                    break
+                    
+                    # Check for required columns
+                    required_columns = ['source', 'destination', 'protocol']
+                    missing_columns = [col for col in required_columns if col not in df.columns]
+                    
+                    if missing_columns:
+                        st.error(f"Missing required columns: {', '.join(missing_columns)}")
+                        st.info("Required columns: Source IP, Destination IP, Protocol")
+                    else:
+                        # Process button with custom green background color
+                        st.markdown("""
+                            <style>
+                            div[data-testid="stButton"] > button[kind="primary"] {
+                                background-color: #4CAF50 !important;
+                                color: white !important;
+                                border: none !important;
+                                font-weight: bold !important;
+                            }
+                            div[data-testid="stButton"] > button[kind="primary"]:hover {
+                                background-color: #45a049 !important;
+                            }
+                            </style>
+                        """, unsafe_allow_html=True)
+                        if st.button("Process All Rows", use_container_width=True, type="primary"):
+                            submitted = True
+                            # Store the dataframe in session state for processing
+                            st.session_state['spreadsheet_df'] = df
+                            st.session_state['process_spreadsheet'] = True
+                
+            except Exception as e:
+                st.error(f"Error reading file: {str(e)}")
+                st.info("Please ensure the file is a valid CSV or Excel file with the correct format.")
+    
+    # Check if spreadsheet processing is requested
+    if st.session_state.get('process_spreadsheet', False) and 'spreadsheet_df' in st.session_state:
+        df = st.session_state['spreadsheet_df']
+        st.session_state['process_spreadsheet'] = False  # Reset flag
+        
+        # Process each row
+        st.markdown("### Processing Spreadsheet Queries")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        results_list = []
+        
+        for idx, row in df.iterrows():
+            # Update progress
+            progress = (idx + 1) / len(df)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing row {idx + 1} of {len(df)}: {row.get('source', 'N/A')} → {row.get('destination', 'N/A')}")
+            
+            # Extract values from row
+            source = str(row.get('source', '')).strip() if pd.notna(row.get('source')) else None
+            destination = str(row.get('destination', '')).strip() if pd.notna(row.get('destination')) else None
+            protocol = str(row.get('protocol', 'TCP')).strip().upper() if pd.notna(row.get('protocol')) else 'TCP'
+            port = str(row.get('port', '0')).strip() if pd.notna(row.get('port')) else '0'
+            
+            # Handle is_live column (can be Yes/No, True/False, 1/0, or boolean)
+            is_live_val = row.get('is_live', False)
+            if pd.isna(is_live_val):
+                is_live = False
+            elif isinstance(is_live_val, bool):
+                is_live = is_live_val
+            elif isinstance(is_live_val, str):
+                is_live_str = is_live_val.strip().lower()
+                is_live = is_live_str in ['yes', 'true', '1', 'y']
+            else:
+                is_live = bool(is_live_val)
+            
+            # Validate row data
+            if not source or not destination:
+                results_list.append({
+                    'row': idx + 1,
+                    'source': source,
+                    'destination': destination,
+                    'status': 'Error',
+                    'message': 'Missing source or destination IP'
+                })
+                continue
+            
+            # Set default port to "0" if empty
+            if not port or port == '':
+                port = "0"
+            
+            # Convert is_live to integer (0 or 1) for API
+            is_live_value = 1 if is_live else 0
+            
+            # Execute query for this row
+            try:
+                async def execute_query():
+                    """Execute the network path query asynchronously for a single row"""
+                    server_params = get_server_params()
+                    async with stdio_client(server_params) as (read_stream, write_stream):
+                        async with ClientSession(read_stream, write_stream) as session:
+                            await session.initialize()
+                            tool_arguments = {
+                                "source": source,
+                                "destination": destination,
+                                "protocol": protocol,
+                                "port": port,
+                                "is_live": is_live_value
+                            }
+                            tool_result = await session.call_tool(
+                                "query_network_path",
+                                arguments=tool_arguments
+                            )
+                            if tool_result and tool_result.content:
+                                import json
+                                result_text = tool_result.content[0].text
+                                try:
+                                    return json.loads(result_text)
+                                except json.JSONDecodeError:
+                                    return {"result": result_text}
+                            else:
+                                return None
+                
+                result = asyncio.run(execute_query())
+                
+                # Store result
+                results_list.append({
+                    'row': idx + 1,
+                    'source': source,
+                    'destination': destination,
+                    'protocol': protocol,
+                    'port': port,
+                    'is_live': is_live,
+                    'result': result
+                })
+                
+            except Exception as e:
+                results_list.append({
+                    'row': idx + 1,
+                    'source': source,
+                    'destination': destination,
+                    'status': 'Error',
+                    'message': str(e)
+                })
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Display results
+        st.markdown("### Results")
+        
+        # Create a summary table
+        summary_data = []
+        for res in results_list:
+            if 'result' in res and res['result']:
+                if 'error' in res['result']:
+                    query_status = 'Error'
+                    message = res['result'].get('error', 'Unknown error')
+                    # Extract path result (failure reason) from path_hops or path_failure_reason
+                    path_result = None
+                    if 'path_failure_reason' in res['result']:
+                        path_result = f"Reason: {res['result']['path_failure_reason']}"
+                    elif 'path_hops' in res['result']:
+                        # Look for failure reasons in path hops
+                        for hop in res['result']['path_hops']:
+                            if hop.get('failure_reason'):
+                                path_result = f"Reason: {hop.get('failure_reason')}"
+                                break
+                else:
+                    query_status = 'Success'
+                    message = res['result'].get('statusDescription', 'Query completed')
+                    # Extract path result from successful queries
+                    path_result = None
+                    if 'path_failure_reason' in res['result']:
+                        path_result = f"Reason: {res['result']['path_failure_reason']}"
+                    elif 'path_hops' in res['result']:
+                        # Check if any hop has a failure reason
+                        for hop in res['result']['path_hops']:
+                            if hop.get('failure_reason'):
+                                path_result = f"Reason: {hop.get('failure_reason')}"
+                                break
+                        # If no failure reason, path is successful
+                        if path_result is None:
+                            path_result = "Path calculation successful"
+            else:
+                query_status = res.get('status', 'Unknown')
+                message = res.get('message', 'No result')
+                path_result = None
+            
+            summary_data.append({
+                'Row': res['row'],
+                'Source': res.get('source', 'N/A'),
+                'Destination': res.get('destination', 'N/A'),
+                'Protocol': res.get('protocol', 'N/A'),
+                'Port': res.get('port', 'N/A'),
+                'Path result': path_result if path_result else message
+            })
+        
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True)
+        
+        # Display detailed results in expandable sections
+        for res in results_list:
+            with st.expander(f"Row {res['row']}: {res.get('source', 'N/A')} → {res.get('destination', 'N/A')}"):
+                if 'result' in res and res['result']:
+                    display_result(res['result'])
+                else:
+                    st.error(f"Error: {res.get('message', 'Unknown error')}")
+        
+        # Clear session state
+        if 'spreadsheet_df' in st.session_state:
+            del st.session_state['spreadsheet_df']
+    
     # Check if either form was submitted (button clicked)
     if submitted:
         # Validate that required fields are filled
@@ -315,124 +974,9 @@ def main():
                 # asyncio.run() is needed because main() is a synchronous function
                 result = asyncio.run(execute_query())
                 
-                # Display the results to the user
-                # Check if result exists (is not None and not empty)
+                # Display the results to the user using the helper function
                 if result:
-                    # Check if result is a dictionary
-                    if isinstance(result, dict):
-                        # Check if the result contains an error key
-                        if 'error' in result:
-                            # Display error message in red using st.error()
-                            st.error(f"Error: {result['error']}")
-                            # Display detailed error information if available
-                            if 'details' in result:
-                                st.error("Error Details:")
-                                st.json(result['details'])
-                            if 'full_response' in result:
-                                with st.expander("Full API Response"):
-                                    st.text(result['full_response'])
-                            if 'error_message' in result:
-                                st.error(f"Error Message: {result['error_message']}")
-                            # Show token prominently at the top if available
-                            if 'debug_info' in result and 'auth_token' in result.get('debug_info', {}):
-                                st.text(f"🔑 Token: {result['debug_info']['auth_token']}")
-                            if 'debug_info' in result:
-                                with st.expander("Debug Information"):
-                                    st.json(result['debug_info'])
-                            if 'troubleshooting' in result:
-                                st.info(f"💡 {result['troubleshooting']}")
-                            if 'payload_sent' in result:
-                                with st.expander("View Payload Sent"):
-                                    st.json(result['payload_sent'])
-                        else:
-                            # Display success message in green using st.success()
-                            st.success("Query completed successfully")
-                            
-                            # Display path hops if available (simplified visual representation)
-                            if 'path_hops' in result:
-                                st.subheader("Network Path")
-                                
-                                # Display path status
-                                path_status = result.get('path_status_description', result.get('path_status', 'Unknown'))
-                                if 'Failed' in str(path_status) or result.get('path_status') != 790200:
-                                    st.error(f"Path Status: {path_status}")
-                                else:
-                                    st.success(f"Path Status: {path_status}")
-                                
-                                # Display hops visually
-                                st.markdown("### Path Hops")
-                                
-                                # Helper function to get device icon (matching NetBrain UI style)
-                                def get_device_icon(device_name):
-                                    """Return an icon based on device name or type, matching NetBrain UI"""
-                                    if not device_name or device_name == "Unknown":
-                                        return "🌐"  # Unknown device
-                                    # Check if it's an IP address (endpoint) - use network device icon
-                                    # IP addresses are numeric with dots/colons
-                                    if device_name.replace('.', '').replace(':', '').replace('/', '').isdigit():
-                                        return "📱"  # Network device/endpoint icon (like NetBrain's IP device)
-                                    # Check for router indicators - use router icon
-                                    if any(keyword in device_name.lower() for keyword in ['router', 'rtr', 'rt', 'gw', 'gateway']):
-                                        return "🖥️"  # Router/server icon (like NetBrain's router icon)
-                                    # Default to network device icon for other network devices
-                                    return "📱"  # Network device icon
-                                
-                                for i, hop in enumerate(result['path_hops']):
-                                    # Create a visual representation of each hop
-                                    col1, col2, col3 = st.columns([2, 1, 3])
-                                    
-                                    with col1:
-                                        # From device with icon
-                                        from_dev = hop.get('from_device', 'Unknown')
-                                        from_icon = get_device_icon(from_dev)
-                                        st.markdown(f"{from_icon} **{from_dev}**")
-                                    
-                                    with col2:
-                                        # Arrow
-                                        st.markdown("→")
-                                    
-                                    with col3:
-                                        # To device and status
-                                        to_dev = hop.get('to_device')
-                                        if to_dev:
-                                            to_icon = get_device_icon(to_dev)
-                                            st.markdown(f"{to_icon} **{to_dev}**")
-                                        else:
-                                            st.markdown("🎯 *Destination*")
-                                        
-                                        # Status and failure reason
-                                        status = hop.get('status', 'Unknown')
-                                        failure_reason = hop.get('failure_reason')
-                                        
-                                        if status == 'Failed' or failure_reason:
-                                            st.error(f"❌ {status}")
-                                            if failure_reason:
-                                                st.caption(f"Reason: {failure_reason}")
-                                        elif status == 'Success':
-                                            st.success(f"✓ {status}")
-                                        else:
-                                            st.info(f"Status: {status}")
-                                    
-                                    # Add separator between hops
-                                    if i < len(result['path_hops']) - 1:
-                                        st.divider()
-                                
-                                # Show full details in expander
-                                with st.expander("View Full Path Details"):
-                                    st.json(result)
-                            else:
-                                # Display the result dictionary as formatted JSON
-                                # st.json() pretty-prints JSON with syntax highlighting
-                                st.json(result)
-                    # Check if result is a string
-                    elif isinstance(result, str):
-                        # Display success message
-                        st.success("Query completed")
-                        # Display the string result as plain text
-                        st.text(result)
-                    else:
-                        # For any other result type, display as JSON
-                        st.json(result)
+                    display_result(result)
                 else:
                     # Display a warning message if no results were returned
                     st.warning("No results returned")
