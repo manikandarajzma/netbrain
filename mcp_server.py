@@ -516,6 +516,140 @@ async def query_network_path(
                                         from_dev_name = from_dev.get("devName", "Unknown")
                                         to_dev_name = to_dev.get("devName") if to_dev.get("devName") else None
                                         
+                                        # Check if device is a firewall by examining device type and name
+                                        from_dev_type = str(from_dev.get("devType", "")).lower() if isinstance(from_dev, dict) else ""
+                                        to_dev_type = str(to_dev.get("devType", "")).lower() if isinstance(to_dev, dict) else ""
+                                        
+                                        # Debug: Print all device info for troubleshooting
+                                        print(f"DEBUG: Hop device check - from: '{from_dev_name}' (type: '{from_dev_type}'), to: '{to_dev_name}' (type: '{to_dev_type}')", file=sys.stderr, flush=True)
+                                        
+                                        # Check if from_device is a firewall
+                                        is_from_firewall = (
+                                            "firewall" in from_dev_type or 
+                                            "fw" in from_dev_type or
+                                            "fw" in from_dev_name.lower() or  # Check device name for "fw"
+                                            "palo" in from_dev_name.lower() or
+                                            "fortinet" in from_dev_name.lower() or
+                                            "checkpoint" in from_dev_name.lower() or
+                                            "asa" in from_dev_name.lower()
+                                        )
+                                        
+                                        # Check if to_device is a firewall
+                                        is_to_firewall = (
+                                            to_dev_name and (
+                                                "firewall" in to_dev_type or 
+                                                "fw" in to_dev_type or
+                                                "fw" in to_dev_name.lower() or  # Check device name for "fw"
+                                                "palo" in to_dev_name.lower() or
+                                                "fortinet" in to_dev_name.lower() or
+                                                "checkpoint" in to_dev_name.lower() or
+                                                "asa" in to_dev_name.lower()
+                                            )
+                                        )
+                                        
+                                        # Debug firewall detection
+                                        if is_from_firewall or is_to_firewall:
+                                            print(f"DEBUG: ✓ Firewall detected - from: {from_dev_name} (type: {from_dev_type}, is_fw: {is_from_firewall}), to: {to_dev_name} (type: {to_dev_type}, is_fw: {is_to_firewall})", file=sys.stderr, flush=True)
+                                        
+                                        # Extract interface information from hop (for firewalls)
+                                        # Interfaces should be from the firewall device's perspective
+                                        in_interface = None
+                                        out_interface = None
+                                        
+                                        if is_from_firewall or is_to_firewall:
+                                            # Determine which device is the firewall
+                                            firewall_dev = None
+                                            if is_from_firewall:
+                                                firewall_dev = from_dev
+                                            elif is_to_firewall:
+                                                firewall_dev = to_dev
+                                            
+                                            # Debug: print hop keys to see what's available
+                                            print(f"DEBUG: Firewall detected! Firewall device: {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'}", file=sys.stderr, flush=True)
+                                            print(f"DEBUG: Hop keys: {list(hop.keys())}", file=sys.stderr, flush=True)
+                                            print(f"DEBUG: Branch keys: {list(branch.keys())}", file=sys.stderr, flush=True)
+                                            
+                                            # Print full structures for debugging
+                                            print(f"DEBUG: Full hop structure: {json.dumps(hop, indent=2, default=str)}", file=sys.stderr, flush=True)
+                                            print(f"DEBUG: Full branch structure: {json.dumps(branch, indent=2, default=str)}", file=sys.stderr, flush=True)
+                                            
+                                            # Try various possible field names for interfaces
+                                            # Check hop level first - these should be the firewall's interfaces
+                                            in_interface = (
+                                                hop.get("inInterface") or 
+                                                hop.get("inIntf") or 
+                                                hop.get("inputInterface") or
+                                                hop.get("fromIntf") or
+                                                hop.get("inboundInterface") or
+                                                hop.get("inInterfaceName") or
+                                                hop.get("inboundIntf") or
+                                                hop.get("fromInterface") or
+                                                hop.get("fromInterfaceName") or
+                                                hop.get("in_interface") or
+                                                hop.get("input_interface")
+                                            )
+                                            
+                                            out_interface = (
+                                                hop.get("outInterface") or 
+                                                hop.get("outIntf") or 
+                                                hop.get("outputInterface") or
+                                                hop.get("toIntf") or
+                                                hop.get("outboundInterface") or
+                                                hop.get("outInterfaceName") or
+                                                hop.get("outboundIntf") or
+                                                hop.get("toInterface") or
+                                                hop.get("toInterfaceName") or
+                                                hop.get("out_interface") or
+                                                hop.get("output_interface")
+                                            )
+                                            
+                                            # Check firewall device object for interface information
+                                            if isinstance(firewall_dev, dict):
+                                                if not in_interface:
+                                                    in_interface = (
+                                                        firewall_dev.get("inInterface") or
+                                                        firewall_dev.get("inIntf") or
+                                                        firewall_dev.get("inputInterface") or
+                                                        firewall_dev.get("interface") or
+                                                        firewall_dev.get("intf") or
+                                                        firewall_dev.get("interfaceName") or
+                                                        firewall_dev.get("inInterfaceName")
+                                                    )
+                                                if not out_interface:
+                                                    out_interface = (
+                                                        firewall_dev.get("outInterface") or
+                                                        firewall_dev.get("outIntf") or
+                                                        firewall_dev.get("outputInterface") or
+                                                        firewall_dev.get("interface") or
+                                                        firewall_dev.get("intf") or
+                                                        firewall_dev.get("interfaceName") or
+                                                        firewall_dev.get("outInterfaceName")
+                                                    )
+                                            
+                                            # Also check branch level for interface information
+                                            if not in_interface:
+                                                in_interface = (
+                                                    branch.get("inInterface") or 
+                                                    branch.get("inIntf") or 
+                                                    branch.get("inputInterface") or
+                                                    branch.get("inInterfaceName") or
+                                                    branch.get("fromIntf") or
+                                                    branch.get("in_interface") or
+                                                    branch.get("input_interface")
+                                                )
+                                            if not out_interface:
+                                                out_interface = (
+                                                    branch.get("outInterface") or 
+                                                    branch.get("outIntf") or 
+                                                    branch.get("outputInterface") or
+                                                    branch.get("outInterfaceName") or
+                                                    branch.get("toIntf") or
+                                                    branch.get("out_interface") or
+                                                    branch.get("output_interface")
+                                                )
+                                            
+                                            print(f"DEBUG: Extracted interfaces for firewall {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'} - In: {in_interface}, Out: {out_interface}", file=sys.stderr, flush=True)
+                                        
                                         # Only add if we have device information
                                         if from_dev_name != "Unknown" or to_dev_name:
                                             hop_info = {
@@ -525,11 +659,65 @@ async def query_network_path(
                                                 "status": branch_status,
                                                 "failure_reason": branch_failure_reason
                                             }
+                                            
+                                            # Add firewall interface information if device is a firewall
+                                            # Based on debug output analysis:
+                                            # - When firewall is "to" device: out_interface is the firewall's IN interface
+                                            # - When firewall is "from" device: in_interface is the firewall's OUT interface
+                                            if is_from_firewall or is_to_firewall:
+                                                firewall_device_name = from_dev_name if is_from_firewall else to_dev_name
+                                                
+                                                if is_to_firewall:
+                                                    # Firewall is the "to" device
+                                                    # The out_interface from this hop is the firewall's IN interface
+                                                    if out_interface:
+                                                        hop_info["in_interface"] = out_interface
+                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'to') - IN interface from out_interface: {out_interface}", file=sys.stderr, flush=True)
+                                                
+                                                if is_from_firewall:
+                                                    # Firewall is the "from" device
+                                                    # The in_interface from this hop is the firewall's OUT interface
+                                                    if in_interface:
+                                                        hop_info["out_interface"] = in_interface
+                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'from') - OUT interface from in_interface: {in_interface}", file=sys.stderr, flush=True)
+                                                
+                                                hop_info["is_firewall"] = True
+                                                hop_info["firewall_device"] = firewall_device_name
+                                            
                                             simplified_hops.append(hop_info)
                                     
                                     # If branch has failure reason, use it for path-level
                                     if branch_failure_reason and not path_failure_reason:
                                         path_failure_reason = branch_failure_reason
+                    
+                    # Post-process: Combine firewall interfaces from multiple hops
+                    # A firewall appears in two hops (as "to" and "from"), and we need to combine them
+                    # Pattern from debug: When firewall is "to", out_interface is firewall's IN
+                    #                    When firewall is "from", in_interface is firewall's OUT
+                    firewall_interface_map = {}  # Map firewall device name to its complete interface info
+                    for hop_info in simplified_hops:
+                        if hop_info.get("is_firewall"):
+                            fw_name = hop_info.get("firewall_device")
+                            if fw_name:
+                                if fw_name not in firewall_interface_map:
+                                    firewall_interface_map[fw_name] = {}
+                                # Merge interface information
+                                if "in_interface" in hop_info:
+                                    firewall_interface_map[fw_name]["in_interface"] = hop_info["in_interface"]
+                                if "out_interface" in hop_info:
+                                    firewall_interface_map[fw_name]["out_interface"] = hop_info["out_interface"]
+                    
+                    # Update all firewall hops with complete interface information
+                    for hop_info in simplified_hops:
+                        if hop_info.get("is_firewall"):
+                            fw_name = hop_info.get("firewall_device")
+                            if fw_name and fw_name in firewall_interface_map:
+                                # Use the combined interface info
+                                if "in_interface" in firewall_interface_map[fw_name]:
+                                    hop_info["in_interface"] = firewall_interface_map[fw_name]["in_interface"]
+                                if "out_interface" in firewall_interface_map[fw_name]:
+                                    hop_info["out_interface"] = firewall_interface_map[fw_name]["out_interface"]
+                                print(f"DEBUG: Final interfaces for {fw_name}: In={hop_info.get('in_interface')}, Out={hop_info.get('out_interface')}", file=sys.stderr, flush=True)
                     
                     return simplified_hops, path_status_overall, path_failure_reason
                 except Exception as e:
