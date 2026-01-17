@@ -14,6 +14,7 @@ import streamlit as st
 
 # Import asyncio for handling asynchronous operations (needed for MCP client)
 import asyncio
+import sys
 
 # Import ClientSession for managing MCP client connections
 # Import StdioServerParameters for configuring stdio-based server communication
@@ -255,19 +256,57 @@ def display_result(result):
                 with st.expander("View Payload Sent"):
                     st.json(result['payload_sent'])
         else:
-            # Display success message in green using st.success()
-            st.success("Query completed successfully")
+            # Check if path calculation was successful or failed
+            path_status = result.get('path_status', 'Unknown')
+            path_status_description = result.get('path_status_description', '')
+            path_failure_reason = result.get('path_failure_reason', '')
+            
+            # Determine if path failed
+            path_failed = (
+                path_status == 'Failed' or 
+                'Failed' in str(path_status) or 
+                'failed' in str(path_status_description).lower() or
+                path_failure_reason or
+                (result.get('statusCode') and result.get('statusCode') != 790200)
+            )
+            
+            if path_failed:
+                # Display failure information prominently
+                st.error("❌ Network Path Calculation Failed")
+                
+                # Display path status description if available
+                if path_status_description:
+                    st.error(f"**Path Status:** {path_status_description}")
+                elif path_status and path_status != 'Unknown':
+                    st.error(f"**Path Status:** {path_status}")
+                
+                # Display failure reason prominently if available
+                if path_failure_reason:
+                    st.error(f"**Failure Reason:** {path_failure_reason}")
+                
+                # Show a warning box with the failure details
+                failure_details = []
+                if path_status_description:
+                    failure_details.append(f"Status: {path_status_description}")
+                if path_failure_reason:
+                    failure_details.append(f"Reason: {path_failure_reason}")
+                
+                if failure_details:
+                    st.warning("⚠️ " + " | ".join(failure_details))
+            else:
+                # Display success message in green using st.success()
+                st.success("✅ Query completed successfully")
             
             # Display path hops if available (simplified visual representation)
             if 'path_hops' in result:
                 st.subheader("Network Path")
                 
-                # Display path status
-                path_status = result.get('path_status_description', result.get('path_status', 'Unknown'))
-                if 'Failed' in str(path_status) or result.get('path_status') != 790200:
-                    st.error(f"Path Status: {path_status}")
-                else:
-                    st.success(f"Path Status: {path_status}")
+                # Display path status (if not already shown above)
+                if not path_failed:
+                    if path_status_description:
+                        st.success(f"Path Status: {path_status_description}")
+                    elif path_status and path_status != 'Unknown':
+                        st.success(f"Path Status: {path_status}")
                 
                 # Create and display graph visualization
                 try:
@@ -341,9 +380,25 @@ def display_result(result):
                 with st.expander("View Full Path Details"):
                     st.json(result)
             else:
-                # Display the result dictionary as formatted JSON
-                # st.json() pretty-prints JSON with syntax highlighting
-                st.json(result)
+                # No path hops available - show summary information
+                if path_failed:
+                    # Already displayed failure info above, but show additional details if available
+                    if 'taskID' in result:
+                        st.info(f"Task ID: {result['taskID']}")
+                    if 'gateway_used' in result:
+                        st.info(f"Gateway Used: {result['gateway_used']}")
+                else:
+                    # Show basic success information
+                    if 'taskID' in result:
+                        st.success(f"Task ID: {result['taskID']}")
+                    if 'gateway_used' in result:
+                        st.info(f"Gateway Used: {result['gateway_used']}")
+                    if path_status_description and path_status_description != 'Success.':
+                        st.info(f"Status: {path_status_description}")
+                
+                # Always show full details in expander
+                with st.expander("View Full Response Details"):
+                    st.json(result)
     elif isinstance(result, str):
         # Display success message
         st.success("Query completed")
@@ -363,633 +418,913 @@ def get_server_params():
     Returns:
         StdioServerParameters: Server parameters for stdio communication
     """
+    import os
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    server_path = os.path.join(script_dir, "mcp_server.py")
+    
     # Create server parameters for stdio communication:
     # - command: The command to run (python interpreter)
-    # - args: Arguments to pass (the mcp_server.py script)
+    # - args: Arguments to pass (the mcp_server.py script with full path)
     # This configures the client to spawn mcp_server.py as a subprocess
     return StdioServerParameters(
         command="python",  # Use Python interpreter to run the server
-        args=["mcp_server.py"]  # Pass mcp_server.py as argument
+        args=[server_path]  # Pass mcp_server.py with full path as argument
     )
+
+def parse_query(query_text, default_live_data=True):
+    """
+    Parse natural language query to extract network path parameters.
+    
+    Args:
+        query_text: Natural language query string
+        default_live_data: Default value for live data
+        
+    Returns:
+        dict: Parsed parameters (source, destination, protocol, port, is_live)
+    """
+    import re
+    
+    # Convert query to lowercase for easier parsing
+    query_lower = query_text.lower() if query_text else ""
+    
+    # Start with default live data setting
+    is_live = default_live_data
+    
+    # Check for live data keywords in query text
+    if any(keyword in query_lower for keyword in ['live data', 'use live', 'with live', 'live access']):
+        is_live = True
+    # Check for keywords that disable live data
+    elif any(keyword in query_lower for keyword in ['baseline', 'no live', 'disable live', 'use baseline']):
+        is_live = False
+    
+    # Extract IP addresses using regex
+    ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    ip_addresses = re.findall(ip_pattern, query_text) if query_text else []
+    
+    # Extract port number (optional - defaults to 0 if not specified)
+    port_patterns = [
+        r'port\s+(\d{1,5})',  # "port 80" or "port 443"
+        r':(\d{1,5})(?:\s|$)',  # ":80" or ":443" (not part of IP)
+    ]
+    
+    port = "0"
+    for pattern in port_patterns:
+        port_match = re.search(pattern, query_text) if query_text else None
+        if port_match:
+            extracted_port = port_match.group(1)
+            if extracted_port and 0 <= int(extracted_port) <= 65535:
+                port = extracted_port
+                break
+    
+    # Extract protocol (TCP or UDP)
+    protocol = "TCP"  # Default
+    if 'udp' in query_lower:
+        protocol = "UDP"
+    elif 'tcp' in query_lower:
+        protocol = "TCP"
+    
+    # Extract source and destination IPs
+    source = None
+    destination = None
+    
+    if len(ip_addresses) >= 2:
+        from_pos = query_lower.find('from')
+        to_pos = query_lower.find('to')
+        source_pos = query_lower.find('source')
+        dest_pos = query_lower.find('destination')
+        
+        if from_pos != -1 and to_pos != -1:
+            from_ip_pos = query_text.lower().find(ip_addresses[0])
+            to_ip_pos = query_text.lower().find(ip_addresses[1])
+            if from_pos < from_ip_pos < to_pos < to_ip_pos:
+                source = ip_addresses[0]
+                destination = ip_addresses[1]
+            else:
+                source = ip_addresses[1]
+                destination = ip_addresses[0]
+        elif source_pos != -1 or dest_pos != -1:
+            source = ip_addresses[0]
+            destination = ip_addresses[1]
+        else:
+            source = ip_addresses[0]
+            destination = ip_addresses[1]
+    elif len(ip_addresses) == 1:
+        source = ip_addresses[0]
+    
+    return {
+        'source': source,
+        'destination': destination,
+        'protocol': protocol,
+        'port': port,
+        'is_live': is_live
+    }
+
+def extract_hops_from_path_details(path_details):
+    """
+    Extract path hops from path_details structure (fallback extraction in client).
+    
+    Args:
+        path_details: Dictionary containing path_overview structure
+        
+    Returns:
+        List of hop dictionaries or None if extraction fails
+    """
+    try:
+        if not isinstance(path_details, dict):
+            return None
+        
+        simplified_hops = []
+        
+        # Check for path_overview structure
+        path_overview = path_details.get('path_overview', [])
+        if not path_overview:
+            return None
+        
+        if not isinstance(path_overview, list):
+            path_overview = [path_overview]
+        
+        # Process each path group
+        for path_group in path_overview:
+            if not isinstance(path_group, dict):
+                continue
+                
+            path_list = path_group.get('path_list', [])
+            if not isinstance(path_list, list):
+                path_list = [path_list] if path_list else []
+                
+            for path in path_list:
+                if not isinstance(path, dict):
+                    continue
+                    
+                branch_list = path.get('branch_list', [])
+                if not isinstance(branch_list, list):
+                    branch_list = [branch_list] if branch_list else []
+                    
+                for branch in branch_list:
+                    if not isinstance(branch, dict):
+                        continue
+                        
+                    hop_detail_list = branch.get('hop_detail_list', [])
+                    if not isinstance(hop_detail_list, list):
+                        hop_detail_list = [hop_detail_list] if hop_detail_list else []
+                    
+                    branch_status = branch.get('status', 'Unknown')
+                    branch_failure_reason = branch.get('failureReason') or branch.get('failure_reason')
+                    
+                    for hop in hop_detail_list:
+                        if not isinstance(hop, dict):
+                            continue
+                            
+                        from_dev = hop.get('fromDev', {})
+                        to_dev = hop.get('toDev', {})
+                        
+                        if not isinstance(from_dev, dict):
+                            from_dev = {}
+                        if not isinstance(to_dev, dict):
+                            to_dev = {}
+                        
+                        from_dev_name = from_dev.get('devName', 'Unknown')
+                        to_dev_name = to_dev.get('devName') if to_dev.get('devName') else None
+                        
+                        if from_dev_name != 'Unknown' or to_dev_name:
+                            hop_info = {
+                                'from_device': from_dev_name,
+                                'to_device': to_dev_name,
+                                'status': branch_status,
+                                'failure_reason': branch_failure_reason
+                            }
+                            simplified_hops.append(hop_info)
+        
+        return simplified_hops if simplified_hops else None
+    except Exception as e:
+        print(f"DEBUG: Error extracting hops from path_details: {e}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return None
+
+def display_result_chat(result, container):
+    """
+    Display network path query result in a chat message container.
+    
+    Args:
+        result: Dictionary containing the query result from the MCP server
+        container: Streamlit container to display results in
+    """
+    print(f"DEBUG: display_result_chat called with result type: {type(result)}", file=sys.stderr, flush=True)
+    if isinstance(result, dict):
+        print(f"DEBUG: Result is dict, checking for error key", file=sys.stderr, flush=True)
+        if 'error' in result:
+            container.error(f"❌ Error: {result['error']}")
+            if 'details' in result:
+                with container.expander("Error Details"):
+                    container.json(result['details'])
+        else:
+            print(f"DEBUG: No error in result, checking path status", file=sys.stderr, flush=True)
+            # Check if path calculation was successful or failed
+            path_status = result.get('path_status', 'Unknown')
+            path_status_description = result.get('path_status_description', '')
+            path_failure_reason = result.get('path_failure_reason', '')
+            
+            path_failed = (
+                path_status == 'Failed' or 
+                'Failed' in str(path_status) or 
+                'failed' in str(path_status_description).lower() or
+                path_failure_reason
+            )
+            
+            if path_failed:
+                container.error("❌ Network Path Calculation Failed")
+                # Show status
+                if path_status:
+                    container.error(f"**Status:** {path_status}")
+                elif path_status_description:
+                    container.error(f"**Status:** {path_status_description}")
+                # Show failure reason
+                if path_failure_reason:
+                    container.error(f"**Reason:** {path_failure_reason}")
+            
+            # Check for path hops in multiple possible locations
+            hops_to_display = None
+            if 'path_hops' in result and result['path_hops']:
+                hops_to_display = result['path_hops']
+                print(f"DEBUG: Using path_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
+            elif 'simplified_hops' in result and result['simplified_hops']:
+                hops_to_display = result['simplified_hops']
+                print(f"DEBUG: Using simplified_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
+            elif 'path_details' in result and result['path_details']:
+                # Try to extract hops from path_details as fallback
+                print(f"DEBUG: Attempting to extract hops from path_details", file=sys.stderr, flush=True)
+                hops_to_display = extract_hops_from_path_details(result['path_details'])
+                if hops_to_display:
+                    print(f"DEBUG: Extracted {len(hops_to_display)} hops from path_details", file=sys.stderr, flush=True)
+                else:
+                    print(f"DEBUG: Could not extract hops from path_details", file=sys.stderr, flush=True)
+            
+            # Display path hops if available (always show path details)
+            if hops_to_display:
+                container.markdown("### Network Path")
+                
+                # Create and display graph visualization
+                print(f"DEBUG: Creating graph with {len(hops_to_display)} hops", file=sys.stderr, flush=True)
+                try:
+                    graph_fig = create_path_graph(
+                        hops_to_display,
+                        result.get('source', 'Source'),
+                        result.get('destination', 'Destination')
+                    )
+                    if graph_fig:
+                        print(f"DEBUG: Graph created successfully", file=sys.stderr, flush=True)
+                        container.markdown("#### Path Visualization")
+                        container.pyplot(graph_fig)
+                        plt.close(graph_fig)
+                    else:
+                        print(f"DEBUG: Graph creation returned None", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"DEBUG: Graph generation exception: {e}", file=sys.stderr, flush=True)
+                    import traceback
+                    print(f"DEBUG: Graph traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    container.warning(f"Could not generate graph: {str(e)}")
+                
+                # Display hops
+                container.markdown("#### Path Hops")
+                for i, hop in enumerate(hops_to_display):
+                    from_dev = hop.get('from_device', 'Unknown')
+                    to_dev = hop.get('to_device', 'Destination')
+                    status = hop.get('status', 'Unknown')
+                    failure_reason = hop.get('failure_reason')
+                    
+                    if status == 'Failed' or failure_reason:
+                        container.error(f"**{from_dev}** → **{to_dev}**: ❌ {status}")
+                        if failure_reason:
+                            container.caption(f"Reason: {failure_reason}")
+                    elif status == 'Success':
+                        container.success(f"**{from_dev}** → **{to_dev}**: ✓ {status}")
+                    else:
+                        container.info(f"**{from_dev}** → **{to_dev}**: {status}")
+                
+                with container.expander("View Full Details"):
+                    container.json(result)
+            else:
+                # Show summary information even without path_hops
+                # Check if path failed first
+                path_failed_summary = (
+                    result.get('path_status') == 'Failed' or 
+                    'Failed' in str(result.get('path_status', '')) or 
+                    'failed' in str(result.get('path_status_description', '')).lower() or
+                    result.get('path_failure_reason') or result.get('failure_reason') or
+                    (result.get('statusCode') and result.get('statusCode') != 790200)
+                )
+                
+                if path_failed_summary:
+                    # For failures, show only status and failure reason
+                    container.error("❌ Network Path Calculation Failed")
+                    
+                    # Show status
+                    path_status = result.get('path_status', 'Failed')
+                    if path_status and path_status != 'Unknown':
+                        container.error(f"**Status:** {path_status}")
+                    elif result.get('statusCode'):
+                        status_code = result.get('statusCode')
+                        status_desc = result.get('statusDescription', '')
+                        if status_desc:
+                            container.error(f"**Status:** {status_desc}")
+                        else:
+                            container.error(f"**Status:** Failed (Status Code: {status_code})")
+                    
+                    # Show failure reason
+                    failure_reason = result.get('path_failure_reason') or result.get('failure_reason')
+                    if failure_reason:
+                        container.error(f"**Reason:** {failure_reason}")
+                else:
+                    # For successful queries without path_hops, check for simplified_hops
+                    # Check if we have simplified_hops or any path data
+                    hops_to_display = None
+                    if 'simplified_hops' in result and result['simplified_hops']:
+                        hops_to_display = result['simplified_hops']
+                    elif 'path_hops' in result and result['path_hops']:
+                        hops_to_display = result['path_hops']
+                    
+                    if hops_to_display:
+                        # Display path with graph visualization
+                        container.markdown("### Network Path")
+                        
+                        # Create and display graph visualization
+                        try:
+                            graph_fig = create_path_graph(
+                                hops_to_display,
+                                result.get('source', 'Source'),
+                                result.get('destination', 'Destination')
+                            )
+                            if graph_fig:
+                                container.markdown("#### Path Visualization")
+                                container.pyplot(graph_fig)
+                                plt.close(graph_fig)
+                        except Exception as e:
+                            container.warning(f"Could not generate graph: {str(e)}")
+                            import traceback
+                            print(f"DEBUG: Graph generation error: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                        
+                        # Display hops
+                        container.markdown("#### Path Hops")
+                        for hop in hops_to_display:
+                            from_dev = hop.get('from_device', 'Unknown')
+                            to_dev = hop.get('to_device', 'Destination')
+                            status = hop.get('status', 'Unknown')
+                            failure_reason = hop.get('failure_reason')
+                            
+                            if status == 'Failed' or failure_reason:
+                                container.error(f"**{from_dev}** → **{to_dev}**: ❌ {status}")
+                                if failure_reason:
+                                    container.caption(f"Reason: {failure_reason}")
+                            elif status == 'Success':
+                                container.success(f"**{from_dev}** → **{to_dev}**: ✓ {status}")
+                            else:
+                                container.info(f"**{from_dev}** → **{to_dev}**: {status}")
+                    else:
+                        # No path data available, show basic info
+                        container.info("✅ Path calculation completed successfully")
+                        if 'taskID' in result:
+                            container.info(f"📋 Task ID: {result['taskID']}")
+                        if 'gateway_used' in result:
+                            container.info(f"🔌 Gateway: {result['gateway_used']}")
+                        # Show full details in expander for debugging
+                        with container.expander("View Full Response Details"):
+                            container.json(result)
+    else:
+        # Fallback: display any result type
+        print(f"DEBUG: Result is not a dict, displaying as JSON", file=sys.stderr, flush=True)
+        container.json(result)
+    
+    print(f"DEBUG: display_result_chat completed", file=sys.stderr, flush=True)
+
+async def execute_network_query(source, destination, protocol, port, is_live):
+    """
+    Execute network path query asynchronously.
+    
+    Args:
+        source: Source IP/hostname
+        destination: Destination IP/hostname
+        protocol: Protocol (TCP/UDP)
+        port: Port number
+        is_live: Use live data (True/False)
+        
+    Returns:
+        dict: Query result
+    """
+    import sys
+    print(f"DEBUG: Starting network query: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
+    
+    try:
+        server_params = get_server_params()
+        print(f"DEBUG: Server params created, connecting to MCP server...", file=sys.stderr, flush=True)
+        
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            print(f"DEBUG: Connected to MCP server, initializing session...", file=sys.stderr, flush=True)
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                print(f"DEBUG: Session initialized, calling tool...", file=sys.stderr, flush=True)
+                
+                tool_arguments = {
+                    "source": source,
+                    "destination": destination,
+                    "protocol": protocol,
+                    "port": port,
+                    "is_live": 1 if is_live else 0,
+                    "continue_on_policy_denial": True  # Always continue even if denied by policy
+                }
+                print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
+                
+                tool_result = await session.call_tool(
+                    "query_network_path",
+                    arguments=tool_arguments
+                )
+                print(f"DEBUG: Tool call completed, processing result...", file=sys.stderr, flush=True)
+                
+                if tool_result and tool_result.content:
+                    import json
+                    result_text = tool_result.content[0].text
+                    print(f"DEBUG: Result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                    try:
+                        result = json.loads(result_text)
+                        print(f"DEBUG: Result parsed successfully", file=sys.stderr, flush=True)
+                        return result
+                    except json.JSONDecodeError as e:
+                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                        return {"result": result_text}
+                else:
+                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+                    return None
+    except asyncio.TimeoutError:
+        print(f"DEBUG: Query timed out", file=sys.stderr, flush=True)
+        return {"error": "Query timed out. The network path calculation is taking longer than expected."}
+    except Exception as e:
+        import traceback
+        print(f"DEBUG: Exception in execute_network_query: {e}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing query: {str(e)}"}
 
 def main():
     """
-    Main function that creates and manages the Streamlit web interface.
+    Main function that creates and manages the chatbot interface.
     
     This function:
-    1. Creates a form with input fields for network query parameters
-    2. Validates user input
-    3. Calls the MCP server tool to query network paths
-    4. Displays results or error messages to the user
+    1. Creates a chat interface for network path queries
+    2. Maintains conversation history
+    3. Parses natural language queries
+    4. Displays results in chat format
     """
-    # Display the main page title as a large heading
-    st.title("NetBrain Network Query")
+    print(f"DEBUG: main() function called", file=sys.stderr, flush=True)
+    # Display the main page title
+    st.title("🌐 NetBrain Network Assistant")
+    st.markdown("Ask me about network paths! Try: *'Find path from 10.0.0.1 to 10.0.1.1 using TCP port 80'*")
     
-    # Create tabs to switch between natural language, form input, and spreadsheet upload
-    tab1, tab2, tab3 = st.tabs(["Natural Language Query", "Form Input", "Spreadsheet Upload"])
-    
-    # Initialize variables
-    source = None
-    destination = None
-    protocol = "TCP"
-    port = "0"
-    is_live = False
-    submitted = False
-    
-    # Tab 1: Natural Language Query
-    with tab1:
-        with st.form("natural_language_form"):
-            # Create a text area for natural language query
-            # Users can type queries like "Find path from 10.210.1.10 to 2.2.2.2 using TCP port 80"
-            query_text = st.text_area(
-                "Enter your network path query",
-                placeholder="Example: Find path from 10.210.1.10 to 2.2.2.2 using TCP port 80\nOr: Query path from 10.10.3.253 to 172.24.32.225 UDP port 53 with live data",
-                help="Enter your query in natural language. Include source IP, destination IP, protocol (TCP/UDP), port (optional, defaults to 0), and optionally 'live data' or 'use live data'",
-                height=100
-            )
-            
-            # Create a submit button for the natural language form
-            submitted_nl = st.form_submit_button("Query", use_container_width=True)
-            
-            if submitted_nl:
-                submitted = True
-                # Parse natural language query to extract parameters
-                import re
-                
-                # Convert query to lowercase for easier parsing
-                query_lower = query_text.lower() if query_text else ""
-                
-                # Check for live data keywords
-                if any(keyword in query_lower for keyword in ['live data', 'use live', 'with live', 'live access']):
-                    is_live = True
-                
-                # Extract IP addresses using regex
-                # Pattern matches IPv4 addresses (e.g., 10.210.1.10, 192.168.1.1)
-                ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-                ip_addresses = re.findall(ip_pattern, query_text) if query_text else []
-                
-                # Extract port number (optional - defaults to 0 if not specified)
-                # Look for "port" followed by a number, or port after colon
-                port_patterns = [
-                    r'port\s+(\d{1,5})',  # "port 80" or "port 443"
-                    r':(\d{1,5})(?:\s|$)',  # ":80" or ":443" (not part of IP)
-                ]
-                
-                port_found = False
-                for pattern in port_patterns:
-                    port_match = re.search(pattern, query_text) if query_text else None
-                    if port_match:
-                        extracted_port = port_match.group(1)
-                        # Validate port is in valid range (0-65535)
-                        if extracted_port and 0 <= int(extracted_port) <= 65535:
-                            port = extracted_port
-                            port_found = True
-                            break
-                
-                # Extract protocol (TCP or UDP)
-                if 'udp' in query_lower:
-                    protocol = "UDP"
-                elif 'tcp' in query_lower:
-                    protocol = "TCP"
-                
-                # Extract source and destination IPs
-                # Look for keywords like "from", "to", "source", "destination"
-                if len(ip_addresses) >= 2:
-                    # Find positions of keywords
-                    from_pos = query_lower.find('from')
-                    to_pos = query_lower.find('to')
-                    source_pos = query_lower.find('source')
-                    dest_pos = query_lower.find('destination')
-                    
-                    # Determine which IP is source and which is destination
-                    if from_pos != -1 and to_pos != -1:
-                        # "from X to Y" pattern
-                        from_ip_pos = query_text.lower().find(ip_addresses[0])
-                        to_ip_pos = query_text.lower().find(ip_addresses[1])
-                        if from_pos < from_ip_pos < to_pos < to_ip_pos:
-                            source = ip_addresses[0]
-                            destination = ip_addresses[1]
-                        else:
-                            source = ip_addresses[1]
-                            destination = ip_addresses[0]
-                    elif source_pos != -1 or dest_pos != -1:
-                        # "source X destination Y" pattern
-                        source = ip_addresses[0]
-                        destination = ip_addresses[1]
-                    else:
-                        # Default: first IP is source, second is destination
-                        source = ip_addresses[0]
-                        destination = ip_addresses[1]
-                elif len(ip_addresses) == 1:
-                    # Only one IP found - assume it's source and ask for destination
-                    source = ip_addresses[0]
-                    st.error("Please provide both source and destination IP addresses in your query")
-                    return
-    
-    # Tab 2: Form Input
-    with tab2:
-        # Create a form container named "network_query_form"
-        # Forms allow grouping inputs and submitting them together
-        with st.form("network_query_form"):
-            # Create two columns side by side for better layout organization
-            # col1 and col2 each take 50% of the available width
-            col1, col2 = st.columns(2)
-            
-            # Place input fields in the first column (left side)
-            with col1:
-                # Create a text input field for source IP/hostname
-                # "*" indicates required field, placeholder shows example format
-                source_form = st.text_input("Source IP *", placeholder="e.g., 10.10.3.253")
-                
-                # Create a dropdown selectbox for protocol selection
-                # Options are TCP and UDP, default selection is TCP (index=0)
-                protocol_form = st.selectbox(
-                    "Protocol *",  # Label with asterisk indicating required field
-                    ["TCP", "UDP"],  # Available protocol options
-                    index=0  # Default to first option (TCP)
-                )
-            
-            # Place input fields in the second column (right side)
-            with col2:
-                # Create a text input field for destination IP/hostname
-                # "*" indicates required field, placeholder shows example format
-                destination_form = st.text_input("Destination IP *", placeholder="e.g., 172.24.32.225")
-                
-                # Create a text input field for port number
-                # Port is optional - defaults to 0 if not provided
-                port_form = st.text_input("Port", placeholder="e.g., 80, 443, 22 (default: 0)", value="0")
-                
-                # Create a checkbox for live data access
-                # 0 = Baseline data, 1 = Live access
-                is_live_form = st.checkbox("Use Live Data", value=False, help="Check to use live access data instead of baseline")
-            
-            # Create a submit button for the form
-            # use_container_width=True makes the button span the full width of its container
-            submitted_form = st.form_submit_button("Query", use_container_width=True)
-            
-            if submitted_form:
-                submitted = True
-                # Use form values
-                source = source_form
-                destination = destination_form
-                protocol = protocol_form
-                port = port_form.strip() if port_form and port_form.strip() else "0"
-                is_live = is_live_form
-    
-    # Tab 3: Spreadsheet Upload
-    with tab3:
-        st.markdown("### Upload Spreadsheet")
-        st.info("Upload a CSV or Excel file with columns: Source IP, Destination IP, Protocol, Port (optional), Use Live Data (optional)")
-        
-        # Create a file uploader for spreadsheet files
-        uploaded_file = st.file_uploader(
-            "Choose a file",
-            type=['csv', 'xlsx', 'xls'],
-            help="Upload a CSV or Excel file. Expected columns: Source IP (or source_ip, source), Destination IP (or destination_ip, destination), Protocol (TCP/UDP), Port (optional, defaults to 0), Use Live Data (optional, Yes/No, True/False, 1/0)"
+    # Sidebar for settings
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        default_live_data = st.checkbox(
+            "Default: Use Live Data",
+            value=True,
+            help="Default setting for live data access. Can be overridden in queries."
         )
+        st.session_state['default_live_data'] = default_live_data
         
-        if uploaded_file is not None:
-            # Display file details
-            st.success(f"File uploaded: {uploaded_file.name}")
-            
-            # Read the spreadsheet based on file type
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    # Read CSV file
-                    df = pd.read_csv(uploaded_file)
-                elif uploaded_file.name.endswith(('.xlsx', '.xls')):
-                    # Read Excel file
-                    # First, read without headers to inspect the structure
-                    df_temp = pd.read_excel(uploaded_file, header=None)
-                    
-                    # Check if row 0 has headers (text like "Source IP", "Destination", etc.)
-                    row0_values = df_temp.iloc[0].astype(str).str.lower().tolist()
-                    has_header_keywords = any(
-                        any(keyword in str(val) for keyword in ['source', 'destination', 'dest', 'protocol', 'port', 'ip'])
-                        for val in row0_values
-                    )
-                    
-                    # Check if row 1 has headers (in case row 0 is empty or has different content)
-                    if len(df_temp) > 1:
-                        row1_values = df_temp.iloc[1].astype(str).str.lower().tolist()
-                        has_header_keywords_row1 = any(
-                            any(keyword in str(val) for keyword in ['source', 'destination', 'dest', 'protocol', 'port', 'ip'])
-                            for val in row1_values
-                        )
-                    else:
-                        has_header_keywords_row1 = False
-                    
-                    # Determine which row to use as header
-                    if has_header_keywords:
-                        # Use row 0 as header
-                        df = pd.read_excel(uploaded_file, header=0)
-                    elif has_header_keywords_row1:
-                        # Use row 1 as header
-                        df = pd.read_excel(uploaded_file, header=1)
-                    else:
-                        # Default: use row 0 as header
-                        df = pd.read_excel(uploaded_file, header=0)
-                else:
-                    st.error("Unsupported file type. Please upload a CSV or Excel file.")
-                    df = None
-                
-                if df is not None and not df.empty:
-                    # Display the uploaded data preview
-                    st.markdown("### Preview of Uploaded Data")
-                    st.dataframe(df, use_container_width=True)
-                    
-                    # Normalize column names (case-insensitive, handle variations)
-                    df.columns = df.columns.str.strip().str.lower()
-                    
-                    # Map common column name variations to standard names
-                    # This includes handling typos and common misspellings
-                    column_mapping = {
-                        'source ip': 'source',
-                        'source_ip': 'source',
-                        'sourceip': 'source',
-                        'src': 'source',
-                        'destination ip': 'destination',
-                        'destination_ip': 'destination',
-                        'destinationip': 'destination',
-                        'dest': 'destination',
-                        'desitnation ip': 'destination',  # Handle typo: "Desitnation"
-                        'desitnation_ip': 'destination',
-                        'desitnationip': 'destination',
-                        'destnation ip': 'destination',  # Handle typo: "Destnation"
-                        'destnation_ip': 'destination',
-                        'destnationip': 'destination',
-                        'protocol': 'protocol',
-                        'port': 'port',
-                        'use live data': 'is_live',
-                        'use_live_data': 'is_live',
-                        'uselivedata': 'is_live',
-                        'live': 'is_live',
-                        'live data': 'is_live'
-                    }
-                    
-                    # Rename columns based on mapping
-                    df.rename(columns=column_mapping, inplace=True)
-                    
-                    # Additional fuzzy matching for columns that might have typos
-                    # Check if we still have missing required columns and try fuzzy matching
-                    required_columns = ['source', 'destination', 'protocol']
-                    missing_columns = [col for col in required_columns if col not in df.columns]
-                    
-                    if missing_columns:
-                        # Try to find columns that might match with typos
-                        available_columns = df.columns.tolist()
-                        
-                        # Fuzzy match for destination (common typo: "Desitnation")
-                        if 'destination' in missing_columns:
-                            for col in available_columns:
-                                # Check if column name contains key parts of "destination"
-                                col_lower = col.lower()
-                                if 'dest' in col_lower and ('ip' in col_lower or 'address' in col_lower or len(col_lower) > 8):
-                                    df.rename(columns={col: 'destination'}, inplace=True)
-                                    if 'destination' in missing_columns:
-                                        missing_columns.remove('destination')
-                                    break
-                        
-                        # Fuzzy match for source
-                        if 'source' in missing_columns:
-                            for col in available_columns:
-                                col_lower = col.lower()
-                                if 'src' in col_lower or ('source' in col_lower and 'ip' in col_lower):
-                                    df.rename(columns={col: 'source'}, inplace=True)
-                                    if 'source' in missing_columns:
-                                        missing_columns.remove('source')
-                                    break
-                        
-                        # Fuzzy match for protocol
-                        if 'protocol' in missing_columns:
-                            for col in available_columns:
-                                col_lower = col.lower()
-                                if 'protocol' in col_lower or 'proto' in col_lower:
-                                    df.rename(columns={col: 'protocol'}, inplace=True)
-                                    if 'protocol' in missing_columns:
-                                        missing_columns.remove('protocol')
-                                    break
-                    
-                    # Check for required columns
-                    required_columns = ['source', 'destination', 'protocol']
-                    missing_columns = [col for col in required_columns if col not in df.columns]
-                    
-                    if missing_columns:
-                        st.error(f"Missing required columns: {', '.join(missing_columns)}")
-                        st.info("Required columns: Source IP, Destination IP, Protocol")
-                    else:
-                        # Process button with custom green background color
-                        st.markdown("""
-                            <style>
-                            div[data-testid="stButton"] > button[kind="primary"] {
-                                background-color: #4CAF50 !important;
-                                color: white !important;
-                                border: none !important;
-                                font-weight: bold !important;
-                            }
-                            div[data-testid="stButton"] > button[kind="primary"]:hover {
-                                background-color: #45a049 !important;
-                            }
-                            </style>
-                        """, unsafe_allow_html=True)
-                        if st.button("Process All Rows", use_container_width=True, type="primary"):
-                            submitted = True
-                            # Store the dataframe in session state for processing
-                            st.session_state['spreadsheet_df'] = df
-                            st.session_state['process_spreadsheet'] = True
-                
-            except Exception as e:
-                st.error(f"Error reading file: {str(e)}")
-                st.info("Please ensure the file is a valid CSV or Excel file with the correct format.")
+        # Debug section
+        with st.expander("🔍 Debug Info"):
+            pending_keys = [k for k in st.session_state.keys() if k.startswith('pending_query_')]
+            st.write(f"Pending queries: {len(pending_keys)}")
+            for key in pending_keys:
+                query_data = st.session_state[key]
+                st.json({key: query_data})
+        
+        st.markdown("---")
+        st.markdown("### 💡 Example Queries")
+        st.markdown("""
+        - *Find path from 10.0.0.1 to 10.0.1.1*
+        - *Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443*
+        - *Show me the network path from 10.10.3.253 to 172.24.32.225 UDP port 53 with live data*
+        - *Check path from source 10.0.0.254 to destination 10.0.1.254 port 80*
+        """)
+        
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.messages = []
+            st.rerun()
     
-    # Check if spreadsheet processing is requested
-    if st.session_state.get('process_spreadsheet', False) and 'spreadsheet_df' in st.session_state:
-        df = st.session_state['spreadsheet_df']
-        st.session_state['process_spreadsheet'] = False  # Reset flag
-        
-        # Process each row
-        st.markdown("### Processing Spreadsheet Queries")
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        results_list = []
-        
-        for idx, row in df.iterrows():
-            # Update progress
-            progress = (idx + 1) / len(df)
-            progress_bar.progress(progress)
-            status_text.text(f"Processing row {idx + 1} of {len(df)}: {row.get('source', 'N/A')} → {row.get('destination', 'N/A')}")
-            
-            # Extract values from row
-            source = str(row.get('source', '')).strip() if pd.notna(row.get('source')) else None
-            destination = str(row.get('destination', '')).strip() if pd.notna(row.get('destination')) else None
-            protocol = str(row.get('protocol', 'TCP')).strip().upper() if pd.notna(row.get('protocol')) else 'TCP'
-            port = str(row.get('port', '0')).strip() if pd.notna(row.get('port')) else '0'
-            
-            # Handle is_live column (can be Yes/No, True/False, 1/0, or boolean)
-            is_live_val = row.get('is_live', False)
-            if pd.isna(is_live_val):
-                is_live = False
-            elif isinstance(is_live_val, bool):
-                is_live = is_live_val
-            elif isinstance(is_live_val, str):
-                is_live_str = is_live_val.strip().lower()
-                is_live = is_live_str in ['yes', 'true', '1', 'y']
+    # Initialize chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "Hello! I'm your NetBrain Network Assistant. I can help you query network paths between devices. Just tell me the source and destination IPs, and optionally the protocol and port. For example: *'Find path from 10.0.0.1 to 10.0.1.1'*"
+            }
+        ]
+    
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            if message["role"] == "user":
+                st.markdown(message["content"])
             else:
-                is_live = bool(is_live_val)
-            
-            # Validate row data
-            if not source or not destination:
-                results_list.append({
-                    'row': idx + 1,
-                    'source': source,
-                    'destination': destination,
-                    'status': 'Error',
-                    'message': 'Missing source or destination IP'
-                })
+                # Assistant messages can contain various content types
+                if isinstance(message["content"], dict):
+                    # Display result
+                    display_result_chat(message["content"], st.container())
+                else:
+                    st.markdown(message["content"])
+    
+    # Display buttons for all pending queries (so they're always visible and clickable)
+    for key in list(st.session_state.keys()):
+        if key.startswith('pending_query_') and isinstance(st.session_state[key], dict):
+            query_data = st.session_state[key]
+            # Ensure query_data is a dict
+            if not isinstance(query_data, dict):
+                print(f"DEBUG: Warning: {key} is not a dict: {type(query_data)}", file=sys.stderr, flush=True)
                 continue
-            
-            # Set default port to "0" if empty
-            if not port or port == '':
-                port = "0"
-            
-            # Convert is_live to integer (0 or 1) for API
-            is_live_value = 1 if is_live else 0
-            
-            # Execute query for this row
-            try:
-                async def execute_query():
-                    """Execute the network path query asynchronously for a single row"""
-                    server_params = get_server_params()
-                    async with stdio_client(server_params) as (read_stream, write_stream):
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
-                            tool_arguments = {
-                                "source": source,
-                                "destination": destination,
-                                "protocol": protocol,
-                                "port": port,
-                                "is_live": is_live_value
-                            }
-                            tool_result = await session.call_tool(
-                                "query_network_path",
-                                arguments=tool_arguments
-                            )
-                            if tool_result and tool_result.content:
-                                import json
-                                result_text = tool_result.content[0].text
-                                try:
-                                    return json.loads(result_text)
-                                except json.JSONDecodeError:
-                                    return {"result": result_text}
-                            else:
-                                return None
-                
-                result = asyncio.run(execute_query())
-                
-                # Store result
-                results_list.append({
-                    'row': idx + 1,
-                    'source': source,
-                    'destination': destination,
-                    'protocol': protocol,
-                    'port': port,
-                    'is_live': is_live,
-                    'result': result
-                })
-                
-            except Exception as e:
-                results_list.append({
-                    'row': idx + 1,
-                    'source': source,
-                    'destination': destination,
-                    'status': 'Error',
-                    'message': str(e)
-                })
-        
-        # Clear progress indicators
-        progress_bar.empty()
-        status_text.empty()
-        
-        # Display results
-        st.markdown("### Results")
-        
-        # Create a summary table
-        summary_data = []
-        for res in results_list:
-            if 'result' in res and res['result']:
-                if 'error' in res['result']:
-                    query_status = 'Error'
-                    message = res['result'].get('error', 'Unknown error')
-                    # Extract path result (failure reason) from path_hops or path_failure_reason
-                    path_result = None
-                    if 'path_failure_reason' in res['result']:
-                        path_result = f"Reason: {res['result']['path_failure_reason']}"
-                    elif 'path_hops' in res['result']:
-                        # Look for failure reasons in path hops
-                        for hop in res['result']['path_hops']:
-                            if hop.get('failure_reason'):
-                                path_result = f"Reason: {hop.get('failure_reason')}"
-                                break
-                else:
-                    query_status = 'Success'
-                    message = res['result'].get('statusDescription', 'Query completed')
-                    # Extract path result from successful queries
-                    path_result = None
-                    if 'path_failure_reason' in res['result']:
-                        path_result = f"Reason: {res['result']['path_failure_reason']}"
-                    elif 'path_hops' in res['result']:
-                        # Check if any hop has a failure reason
-                        for hop in res['result']['path_hops']:
-                            if hop.get('failure_reason'):
-                                path_result = f"Reason: {hop.get('failure_reason')}"
-                                break
-                        # If no failure reason, path is successful
-                        if path_result is None:
-                            path_result = "Path calculation successful"
-            else:
-                query_status = res.get('status', 'Unknown')
-                message = res.get('message', 'No result')
-                path_result = None
-            
-            summary_data.append({
-                'Row': res['row'],
-                'Source': res.get('source', 'N/A'),
-                'Destination': res.get('destination', 'N/A'),
-                'Protocol': res.get('protocol', 'N/A'),
-                'Port': res.get('port', 'N/A'),
-                'Path result': path_result if path_result else message
-            })
-        
-        summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True)
-        
-        # Display detailed results in expandable sections
-        for res in results_list:
-            with st.expander(f"Row {res['row']}: {res.get('source', 'N/A')} → {res.get('destination', 'N/A')}"):
-                if 'result' in res and res['result']:
-                    display_result(res['result'])
-                else:
-                    st.error(f"Error: {res.get('message', 'Unknown error')}")
-        
-        # Clear session state
-        if 'spreadsheet_df' in st.session_state:
-            del st.session_state['spreadsheet_df']
+            if not query_data.get('confirmed', False):
+                query_id = key.split('_')[-1]
+                # Display buttons for this pending query
+                with st.chat_message("assistant"):
+                    st.info(f"📋 Path query from **{query_data.get('source', 'Unknown')}** to **{query_data.get('destination', 'Unknown')}** using **{query_data.get('protocol', 'TCP')}** port **{query_data.get('port', '0')}**.")
+                    st.markdown("**Please choose the data source:**")
+                    col1, col2 = st.columns(2)
+                    
+                    suggested_live = query_data.get('suggested_live', True) if isinstance(query_data, dict) else True
+                    with col1:
+                        use_live = st.button(
+                            "🔴 Use Live Data",
+                            key=f"live_btn_{query_id}",
+                            use_container_width=True,
+                            type="primary" if suggested_live else "secondary",
+                            help="Use real-time live access data (may take longer but more current)"
+                        )
+                    
+                    with col2:
+                        use_baseline = st.button(
+                            "💾 Use Cached/Baseline Data",
+                            key=f"baseline_btn_{query_id}",
+                            use_container_width=True,
+                            type="primary" if not suggested_live else "secondary",
+                            help="Use cached baseline data (faster but may be older)"
+                        )
+                    
+                    # If user clicked a button, store the choice and trigger execution
+                    button_click_key = f"button_clicked_{query_id}"
+                    if use_live:
+                        print(f"DEBUG: Live button clicked! key={key}", file=sys.stderr, flush=True)
+                        st.session_state[button_click_key] = "live"
+                        st.session_state[key]['is_live'] = True
+                        st.session_state[key]['confirmed'] = True
+                        st.rerun()
+                    elif use_baseline:
+                        print(f"DEBUG: Baseline button clicked! key={key}", file=sys.stderr, flush=True)
+                        st.session_state[button_click_key] = "baseline"
+                        st.session_state[key]['is_live'] = False
+                        st.session_state[key]['confirmed'] = True
+                        st.rerun()
     
-    # Check if either form was submitted (button clicked)
-    if submitted:
-        # Validate that required fields are filled
-        # Check if source or destination are empty strings or None
-        if not source or not destination:
-            # Display an error message if any required field is missing
-            st.error("Please provide source and destination IP addresses (fields marked with * are required)")
-            # Exit the function early if validation fails
-            return
+    # Check for button clicks on ALL pending queries (runs on every rerun, BEFORE chat input)
+    # Also check button states directly since buttons reset after rerun
+    for key in list(st.session_state.keys()):
+        if key.startswith('pending_query_') and isinstance(st.session_state[key], dict):
+            query_id = key.split('_')[-1]
+            button_click_key = f"button_clicked_{query_id}"
+            
+            # Check if button was clicked (check button state directly)
+            live_btn_key = f"live_btn_{query_id}"
+            baseline_btn_key = f"baseline_btn_{query_id}"
+            
+            # Check if buttons exist in widget state (Streamlit's internal state)
+            if live_btn_key in st.session_state:
+                if st.session_state[live_btn_key]:
+                    print(f"DEBUG: Live button state is True for {key}", file=sys.stderr, flush=True)
+                    st.session_state[button_click_key] = "live"
+                    st.session_state[key]['is_live'] = True
+                    st.session_state[key]['confirmed'] = True
+                    print(f"DEBUG: Setting confirmed=True for {key}", file=sys.stderr, flush=True)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "Query confirmed. Using live data..."
+                    })
+                    st.rerun()
+            elif baseline_btn_key in st.session_state:
+                if st.session_state[baseline_btn_key]:
+                    print(f"DEBUG: Baseline button state is True for {key}", file=sys.stderr, flush=True)
+                    st.session_state[button_click_key] = "baseline"
+                    st.session_state[key]['is_live'] = False
+                    st.session_state[key]['confirmed'] = True
+                    print(f"DEBUG: Setting confirmed=True for {key}", file=sys.stderr, flush=True)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "Query confirmed. Using baseline data..."
+                    })
+                    st.rerun()
+            elif button_click_key in st.session_state:
+                # Button was clicked, set confirmed
+                data_type = st.session_state[button_click_key]
+                is_live_choice = (data_type == "live")
+                st.session_state[key]['is_live'] = is_live_choice
+                st.session_state[key]['confirmed'] = True
+                print(f"DEBUG: Button click detected for {key}: {data_type}, setting confirmed=True", file=sys.stderr, flush=True)
+                # Clear the button click tracker
+                del st.session_state[button_click_key]
+                # Add confirmation message
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": f"Query confirmed. Using {data_type} data..."
+                })
+                st.rerun()
+    
+    # Chat input
+    if prompt := st.chat_input("Ask about a network path..."):
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # Set default port to "0" if not provided or empty
-        if not port or port.strip() == "":
-            port = "0"
+        # Display user message
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        # Parse query
+        default_live = st.session_state.get('default_live_data', True)
+        parsed = parse_query(prompt, default_live)
+        
+        # Check if we have required information
+        if not parsed['source'] or not parsed['destination']:
+            with st.chat_message("assistant"):
+                st.warning("⚠️ I need both source and destination IP addresses to query the network path. Please provide both in your query.")
+                st.info("Example: *'Find path from 10.0.0.1 to 10.0.1.1'*")
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "I need both source and destination IP addresses. Please provide both in your query."
+                })
         else:
-            port = port.strip()
-        
-        # Convert is_live checkbox value to integer (0 or 1) for API
-        is_live_value = 1 if is_live else 0
-        
-        # Display a spinner animation while the query is being processed
-        # This provides visual feedback to the user that work is in progress
-        with st.spinner('Querying network...'):
-            # Wrap the query execution in a try-except block to handle errors gracefully
-            try:
-                # Define an inner async function to execute the network query
-                # This function handles the asynchronous MCP client communication
-                async def execute_query():
-                    """
-                    Execute the network path query asynchronously.
-                    
-                    This inner function:
-                    1. Creates MCP client session with proper context managers
-                    2. Calls the query_network_path tool on the server
-                    3. Extracts and parses the result
-                    4. Returns the parsed result or None
-                    
-                    The context managers ensure proper cleanup of resources.
-                    """
-                    # Get server parameters for stdio communication
-                    server_params = get_server_params()
-                    
-                    # Use stdio_client helper to create read/write streams for stdio transport
-                    # stdio_client returns an async context manager that provides (read_stream, write_stream)
-                    # We use async with to properly manage the context lifecycle
-                    # This ensures the subprocess is properly cleaned up when done
-                    async with stdio_client(server_params) as (read_stream, write_stream):
-                        # Create a new ClientSession instance with the read and write streams
-                        # ClientSession requires both read_stream and write_stream for communication
-                        # We also use async with for ClientSession to properly manage its lifecycle
-                        async with ClientSession(read_stream, write_stream) as session:
-                            # Initialize the MCP protocol handshake with the server
-                            # This exchanges capabilities and sets up the communication protocol
-                            await session.initialize()
-                            
-                            # Call the MCP tool named "query_network_path" on the server
-                            # This sends a request to the MCP server to execute the tool
-                            # await is needed because call_tool() is an async method
-                            # Build arguments dictionary with required parameters
-                            # Gateway is now automatically resolved by the API (Step 1)
-                            tool_arguments = {
-                                "source": source,  # Source IP/hostname from form input
-                                "destination": destination,  # Destination IP/hostname from form input
-                                "protocol": protocol,  # Selected protocol (TCP or UDP)
-                                "port": port,  # Port number from form input
-                                "is_live": is_live_value  # Convert checkbox boolean to integer (0 or 1)
-                            }
-                            
-                            # Call the tool with all arguments
-                            tool_result = await session.call_tool(
-                                "query_network_path",  # Name of the tool to call (defined in mcp_server.py)
-                                arguments=tool_arguments  # Dictionary of arguments to pass to the tool
-                            )
-                            
-                            # Extract the result from the tool response
-                            # Check if tool_result exists and has content
-                            if tool_result and tool_result.content:
-                                # Import json module for parsing JSON strings
-                                import json
-                                # Extract the text content from the first content item in the response
-                                # MCP responses contain content as a list, we take the first item's text
-                                result_text = tool_result.content[0].text
-                                # Try to parse the text as JSON
-                                try:
-                                    # Parse the JSON string into a Python dictionary
-                                    return json.loads(result_text)
-                                except json.JSONDecodeError:
-                                    # If parsing fails, return the text as a dictionary with a "result" key
-                                    # This handles cases where the server returns plain text instead of JSON
-                                    return {"result": result_text}
-                            else:
-                                # Return None if no content was returned from the tool
-                                return None
+            # Store pending query for confirmation
+            query_id = len(st.session_state.messages)
+            pending_key = f"pending_query_{query_id}"
+            
+            # Check if this query already exists (from previous rerun)
+            if pending_key not in st.session_state:
+                st.session_state[pending_key] = {
+                    'source': parsed['source'],
+                    'destination': parsed['destination'],
+                    'protocol': parsed['protocol'],
+                    'port': parsed['port'],
+                    'suggested_live': parsed['is_live']
+                }
+            
+            # Check for button clicks first (before displaying buttons)
+            button_click_key = f"button_clicked_{query_id}"
+            if button_click_key in st.session_state:
+                # Button was clicked, set confirmed
+                data_type = st.session_state[button_click_key]
+                is_live_choice = (data_type == "live")
+                st.session_state[pending_key]['is_live'] = is_live_choice
+                st.session_state[pending_key]['confirmed'] = True
+                print(f"DEBUG: Button click detected from previous run: {data_type}, setting confirmed=True", file=sys.stderr, flush=True)
+                # Clear the button click tracker
+                del st.session_state[button_click_key]
+                # Add confirmation message
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": f"Query confirmed. Using {data_type} data..."
+                })
+                st.rerun()
+            
+            # Ask user to confirm live data preference
+            with st.chat_message("assistant"):
+                st.info(f"📋 I found a path query from **{parsed['source']}** to **{parsed['destination']}** using **{parsed['protocol']}** port **{parsed['port']}**.")
                 
-                # Run the async execute_query function using asyncio.run()
-                # This executes the async function and waits for its completion
-                # asyncio.run() is needed because main() is a synchronous function
-                result = asyncio.run(execute_query())
+                # Determine suggested live data setting
+                suggested_live = parsed['is_live']
+                if 'live' in prompt.lower() or 'baseline' in prompt.lower():
+                    suggested_live = 'live' in prompt.lower() and 'baseline' not in prompt.lower()
                 
-                # Display the results to the user using the helper function
-                if result:
-                    display_result(result)
+                st.markdown("**Please choose the data source:**")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    use_live = st.button(
+                        "🔴 Use Live Data",
+                        key=f"live_btn_{query_id}",
+                        use_container_width=True,
+                        type="primary" if suggested_live else "secondary",
+                        help="Use real-time live access data (may take longer but more current)"
+                    )
+                
+                with col2:
+                    use_baseline = st.button(
+                        "💾 Use Cached/Baseline Data",
+                        key=f"baseline_btn_{query_id}",
+                        use_container_width=True,
+                        type="primary" if not suggested_live else "secondary",
+                        help="Use cached baseline data (faster but may be older)"
+                    )
+                
+                # If user clicked a button, store the choice and trigger execution
+                if use_live:
+                    print(f"DEBUG: Live button clicked! pending_key={pending_key}", file=sys.stderr, flush=True)
+                    st.session_state[button_click_key] = "live"
+                    st.rerun()
+                elif use_baseline:
+                    print(f"DEBUG: Baseline button clicked! pending_key={pending_key}", file=sys.stderr, flush=True)
+                    st.session_state[button_click_key] = "baseline"
+                    st.rerun()
+
+    # Check for confirmed pending queries to execute
+    print(f"DEBUG: Checking for pending queries. Session state keys: {[k for k in st.session_state.keys() if k.startswith('pending_query_')]}", file=sys.stderr, flush=True)
+    executed_query = False
+    for key in list(st.session_state.keys()):
+        if key.startswith('pending_query_') and isinstance(st.session_state[key], dict):
+            query_data = st.session_state[key]
+            confirmed = query_data.get('confirmed', False)
+            
+            # Also check if button was clicked using the button click tracker
+            query_id = key.split('_')[-1]
+            button_click_key = f"button_clicked_{query_id}"
+            print(f"DEBUG: Checking for button click tracker: {button_click_key}", file=sys.stderr, flush=True)
+            print(f"DEBUG: All session state keys: {[k for k in st.session_state.keys() if 'button' in k.lower() or 'clicked' in k.lower()]}", file=sys.stderr, flush=True)
+            
+            if button_click_key in st.session_state:
+                print(f"DEBUG: Button click detected via tracker: {st.session_state[button_click_key]}", file=sys.stderr, flush=True)
+                # Set confirmed based on button click
+                confirmed = True
+                query_data['confirmed'] = True
+                if st.session_state[button_click_key] == "live":
+                    query_data['is_live'] = True
                 else:
-                    # Display a warning message if no results were returned
-                    st.warning("No results returned")
+                    query_data['is_live'] = False
+                # Clear the tracker
+                del st.session_state[button_click_key]
+            
+            print(f"DEBUG: Found pending query {key}, confirmed={confirmed}, executed_query={executed_query}", file=sys.stderr, flush=True)
+            if confirmed and not executed_query:
+                # Copy query data before deleting
+                source = query_data['source']
+                destination = query_data['destination']
+                protocol = query_data['protocol']
+                port = query_data['port']
+                is_live = query_data['is_live']
+                
+                # Remove from pending
+                del st.session_state[key]
+                executed_query = True
+                
+                # Execute the query
+                print(f"DEBUG: Starting query execution for {source} -> {destination}", file=sys.stderr, flush=True)
+                
+                # Add status message to chat history first
+                data_type = "live" if is_live else "baseline"
+                status_msg = f"🔍 Querying network path using {data_type} data... This may take a moment."
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": status_msg
+                })
+                
+                # Display status message
+                with st.chat_message("assistant"):
+                    st.info(status_msg)
+                
+                try:
+                    print(f"DEBUG: About to execute async query", file=sys.stderr, flush=True)
+                    # Execute query with timeout
+                    # Use asyncio.wait_for to add a timeout (5 minutes max for live data)
+                    max_timeout = 300 if is_live else 120  # 5 min for live, 2 min for baseline
                     
-            # Catch any exceptions that occur during query execution
-            except Exception as e:
-                # Display the error message to the user
-                st.error(f"An error occurred: {e}")
-                # Import traceback module for detailed error information
-                import traceback
-                # Display the full traceback for debugging purposes
-                # This shows the complete call stack when an error occurs
-                st.error(traceback.format_exc())
+                    # Check if there's already an event loop running (Streamlit might have one)
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # If we're already in an async context, we can't use asyncio.run()
+                        # Instead, create a task
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(
+                                lambda: asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_network_query(
+                                            source,
+                                            destination,
+                                            protocol,
+                                            port,
+                                            is_live
+                                        ),
+                                        timeout=max_timeout
+                                    )
+                                )
+                            )
+                            result = future.result(timeout=max_timeout + 10)
+                    except RuntimeError:
+                        # No event loop running, we can use asyncio.run()
+                        result = asyncio.run(
+                            asyncio.wait_for(
+                                execute_network_query(
+                                    source,
+                                    destination,
+                                    protocol,
+                                    port,
+                                    is_live
+                                ),
+                                timeout=max_timeout
+                            )
+                        )
+                    
+                    print(f"DEBUG: Query execution completed, result type: {type(result)}", file=sys.stderr, flush=True)
+                    
+                    # Remove status message from history
+                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
+                        st.session_state.messages.pop()
+                    
+                    if result:
+                        # Debug: Print result keys to help diagnose
+                        if isinstance(result, dict):
+                            print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                            print(f"DEBUG: Result sample: {str(result)[:500]}", file=sys.stderr, flush=True)
+                        else:
+                            print(f"DEBUG: Result is not a dict: {type(result)}", file=sys.stderr, flush=True)
+                        
+                        # Check if result contains an error
+                        if isinstance(result, dict) and 'error' in result:
+                            print(f"DEBUG: Result contains error: {result['error']}", file=sys.stderr, flush=True)
+                            # Remove status message from history
+                            if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
+                                st.session_state.messages.pop()
+                            
+                            with st.chat_message("assistant"):
+                                st.error(f"❌ {result['error']}")
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result
+                            })
+                        else:
+                            print(f"DEBUG: Displaying result using display_result_chat", file=sys.stderr, flush=True)
+                            if isinstance(result, dict):
+                                print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                                print(f"DEBUG: Has path_hops: {'path_hops' in result}, Has simplified_hops: {'simplified_hops' in result}", file=sys.stderr, flush=True)
+                                if 'path_hops' in result:
+                                    print(f"DEBUG: path_hops type: {type(result['path_hops'])}, length: {len(result['path_hops']) if result['path_hops'] else 0}", file=sys.stderr, flush=True)
+                                if 'simplified_hops' in result:
+                                    print(f"DEBUG: simplified_hops type: {type(result['simplified_hops'])}, length: {len(result['simplified_hops']) if result['simplified_hops'] else 0}", file=sys.stderr, flush=True)
+                            # Display result in a new chat message
+                            with st.chat_message("assistant"):
+                                try:
+                                    display_result_chat(result, st.container())
+                                    print(f"DEBUG: display_result_chat completed", file=sys.stderr, flush=True)
+                                except Exception as display_error:
+                                    print(f"DEBUG: Error in display_result_chat: {display_error}", file=sys.stderr, flush=True)
+                                    import traceback
+                                    print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                                    # Fallback: show as JSON
+                                    st.json(result)
+                            
+                            # Add to chat history
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result
+                            })
+                            print(f"DEBUG: Result added to chat history", file=sys.stderr, flush=True)
+                    else:
+                        print(f"DEBUG: Result is None or empty", file=sys.stderr, flush=True)
+                        # Remove status message from history
+                        if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
+                            st.session_state.messages.pop()
+                        
+                        with st.chat_message("assistant"):
+                            st.warning("No results returned from the query.")
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": "No results returned from the query."
+                        })
+                except asyncio.TimeoutError:
+                    # Remove status message from history
+                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
+                        st.session_state.messages.pop()
+                    
+                    error_msg = f"⏱️ Query timed out after {max_timeout} seconds. The network path calculation is taking longer than expected. Please try again or use baseline data instead of live data."
+                    with st.chat_message("assistant"):
+                        st.error(error_msg)
+                        st.info("💡 Tip: Try using baseline data instead of live data for faster results, or check if the NetBrain server is responding.")
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
+                except Exception as e:
+                    # Remove status message from history
+                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
+                        st.session_state.messages.pop()
+                    
+                    error_msg = f"An error occurred: {str(e)}"
+                    print(f"DEBUG: Exception during query execution: {error_msg}", file=sys.stderr, flush=True)
+                    import traceback
+                    print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    with st.chat_message("assistant"):
+                        st.error(error_msg)
+                        with st.expander("Error Details"):
+                            st.code(traceback.format_exc())
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": error_msg
+                    })
+                # Break after executing one query to avoid multiple executions
+                break
+
 
 # Check if this script is being run directly (not imported as a module)
 # __name__ will be "__main__" when the script is executed directly
