@@ -102,28 +102,73 @@ def create_path_graph(path_hops, source, destination):
     devices = set()
     edges = []
     
+    # Track firewall interfaces for overlay
+    firewall_interfaces = {}  # {device_name: {'in': 'interface', 'out': 'interface'}}
+    
     # Add source node
     if source:
         devices.add(source)
     
-    # Process each hop
+    # Process each hop - filter out invalid hops (None/null values)
     for hop in path_hops:
         from_dev = hop.get('from_device', 'Unknown')
         to_dev = hop.get('to_device')
         status = hop.get('status', 'Unknown')
         failure_reason = hop.get('failure_reason')
         
+        # Skip hops with invalid/None/null device names
+        # Filter out None, 'None', empty strings, and 'Unknown' as from_device (unless it's the actual source)
+        if not from_dev or from_dev in [None, 'None', 'null', ''] or (from_dev == 'Unknown' and from_dev != source):
+            continue
+        
+        # Skip if to_dev is None, 'None', 'null', or empty (unless it's the destination)
+        if not to_dev or to_dev in [None, 'None', 'null', '']:
+            # Only allow None to_dev if we can connect to destination
+            if not destination:
+                continue
+        
+        # Skip failed hops - only show successful paths
+        if status == 'Failed' or failure_reason:
+            continue
+        
+        # Check if devices are firewalls and collect interface information
+        is_firewall = hop.get('is_firewall', False)
+        if is_firewall:
+            firewall_device = hop.get('firewall_device')
+            if not firewall_device:
+                # Determine firewall device name
+                if 'fw' in from_dev.lower() or 'palo' in from_dev.lower() or 'fortinet' in from_dev.lower():
+                    firewall_device = from_dev
+                elif to_dev and ('fw' in to_dev.lower() or 'palo' in to_dev.lower() or 'fortinet' in to_dev.lower()):
+                    firewall_device = to_dev
+            
+            if firewall_device:
+                # Extract interface names
+                in_interface = hop.get('in_interface')
+                out_interface = hop.get('out_interface')
+                
+                # Use extract_interface_name helper to get clean interface names
+                in_intf_name = extract_interface_name(in_interface) if in_interface else None
+                out_intf_name = extract_interface_name(out_interface) if out_interface else None
+                
+                # Store interface information for this firewall
+                if firewall_device not in firewall_interfaces:
+                    firewall_interfaces[firewall_device] = {'in': None, 'out': None}
+                
+                # Update interfaces if we have new information
+                if in_intf_name and not firewall_interfaces[firewall_device]['in']:
+                    firewall_interfaces[firewall_device]['in'] = in_intf_name
+                if out_intf_name and not firewall_interfaces[firewall_device]['out']:
+                    firewall_interfaces[firewall_device]['out'] = out_intf_name
+        
+        # Add valid devices
         if from_dev and from_dev != 'Unknown':
             devices.add(from_dev)
-        if to_dev:
+        if to_dev and to_dev not in [None, 'None', 'null', '']:
             devices.add(to_dev)
         
-        # Determine edge color and style based on status
-        if status == 'Failed' or failure_reason:
-            edge_color = 'red'
-            edge_style = 'dashed'
-            edge_width = 2.5
-        elif status == 'Success':
+        # Determine edge color and style based on status (only for successful hops now)
+        if status == 'Success':
             edge_color = 'green'
             edge_style = 'solid'
             edge_width = 2.0
@@ -132,8 +177,8 @@ def create_path_graph(path_hops, source, destination):
             edge_style = 'solid'
             edge_width = 1.5
         
-        # Add edge with attributes
-        if from_dev and to_dev:
+        # Add edge with attributes - only for valid device pairs and successful hops
+        if from_dev and to_dev and to_dev not in [None, 'None', 'null', '']:
             edges.append((from_dev, to_dev, {
                 'color': edge_color,
                 'style': edge_style,
@@ -141,8 +186,8 @@ def create_path_graph(path_hops, source, destination):
                 'status': status,
                 'failure_reason': failure_reason
             }))
-        elif from_dev and not to_dev:
-            # Last hop - connect to destination
+        elif from_dev and (not to_dev or to_dev in [None, 'None', 'null', '']):
+            # Last hop - connect to destination if available
             if destination:
                 edges.append((from_dev, destination, {
                     'color': edge_color,
@@ -184,16 +229,17 @@ def create_path_graph(path_hops, source, destination):
                 pos[source] = (x_pos, y_center)
                 x_pos += 2
             
-            # Position intermediate devices
+            # Position intermediate devices - only valid ones
             for hop in path_hops:
                 from_dev = hop.get('from_device', 'Unknown')
                 to_dev = hop.get('to_device')
                 
-                if from_dev and from_dev != 'Unknown' and from_dev not in pos:
+                # Skip invalid devices
+                if from_dev and from_dev not in [None, 'None', 'null', ''] and from_dev != 'Unknown' and from_dev not in pos:
                     pos[from_dev] = (x_pos, y_center)
                     x_pos += 2
                 
-                if to_dev and to_dev not in pos:
+                if to_dev and to_dev not in [None, 'None', 'null', ''] and to_dev not in pos:
                     pos[to_dev] = (x_pos, y_center)
                     x_pos += 2
             
@@ -238,15 +284,31 @@ def create_path_graph(path_hops, source, destination):
     labels = {node: node[:15] + '...' if len(node) > 15 else node for node in G.nodes()}
     nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
     
+    # Overlay firewall interface information
+    for firewall_device, interfaces in firewall_interfaces.items():
+        if firewall_device in pos:
+            x, y = pos[firewall_device]
+            
+            # Add in interface label on top (very close to node)
+            # Using minimal offset - nodes are large (size 1500), so small offset needed
+            if interfaces['in']:
+                ax.text(x, y + 0.05, f"In: {interfaces['in']}", 
+                       fontsize=6, ha='center', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.1', facecolor='lightblue', alpha=0.8))
+            
+            # Add out interface label at the bottom (very close to node)
+            if interfaces['out']:
+                ax.text(x, y - 0.05, f"Out: {interfaces['out']}", 
+                       fontsize=6, ha='center', va='top',
+                       bbox=dict(boxstyle='round,pad=0.1', facecolor='lightgreen', alpha=0.8))
+    
     # Add legend
     from matplotlib.patches import Patch
     legend_elements = [
         Patch(facecolor='#4CAF50', label='Source'),
         Patch(facecolor='#2196F3', label='Intermediate Device'),
         Patch(facecolor='#FF9800', label='Destination'),
-        plt.Line2D([0], [0], color='green', linewidth=2, label='Success'),
-        plt.Line2D([0], [0], color='red', linewidth=2, linestyle='--', label='Failed'),
-        plt.Line2D([0], [0], color='gray', linewidth=1.5, label='Unknown')
+        plt.Line2D([0], [0], color='green', linewidth=2, label='Success')
     ]
     ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
     
@@ -331,20 +393,20 @@ def display_result(result):
                 
                 if failure_details:
                     st.warning("⚠️ " + " | ".join(failure_details))
-        else:
-            # Display success message in green using st.success()
+            else:
+                # Display success message in green using st.success()
                 st.success("✅ Query completed successfully")
-            
-            # Display path hops if available (simplified visual representation)
-            if 'path_hops' in result:
-                st.subheader("Network Path")
                 
-                # Display path status (if not already shown above)
-                if not path_failed:
-                    if path_status_description:
-                        st.success(f"Path Status: {path_status_description}")
-                    elif path_status and path_status != 'Unknown':
-                    st.success(f"Path Status: {path_status}")
+                # Display path hops if available (simplified visual representation)
+                if 'path_hops' in result:
+                    st.subheader("Network Path")
+                    
+                    # Display path status (if not already shown above)
+                    if not path_failed:
+                        if path_status_description:
+                            st.success(f"Path Status: {path_status_description}")
+                        elif path_status and path_status != 'Unknown':
+                            st.success(f"Path Status: {path_status}")
                 
                 # Create and display graph visualization
                 try:
@@ -414,29 +476,29 @@ def display_result(result):
                     if i < len(result['path_hops']) - 1:
                         st.divider()
                 
-                # Show full details in expander
-                with st.expander("View Full Path Details"):
-                    st.json(result)
-            else:
-                # No path hops available - show summary information
-                if path_failed:
-                    # Already displayed failure info above, but show additional details if available
-                    if 'taskID' in result:
-                        st.info(f"Task ID: {result['taskID']}")
-                    if 'gateway_used' in result:
-                        st.info(f"Gateway Used: {result['gateway_used']}")
+                    # Show full details in expander
+                    with st.expander("View Full Path Details"):
+                        st.json(result)
                 else:
-                    # Show basic success information
-                    if 'taskID' in result:
-                        st.success(f"Task ID: {result['taskID']}")
-                    if 'gateway_used' in result:
-                        st.info(f"Gateway Used: {result['gateway_used']}")
-                    if path_status_description and path_status_description != 'Success.':
-                        st.info(f"Status: {path_status_description}")
+                    # No path hops available - show summary information
+                    if path_failed:
+                        # Already displayed failure info above, but show additional details if available
+                        if 'taskID' in result:
+                            st.info(f"Task ID: {result['taskID']}")
+                        if 'gateway_used' in result:
+                            st.info(f"Gateway Used: {result['gateway_used']}")
+                    else:
+                        # Show basic success information
+                        if 'taskID' in result:
+                            st.success(f"Task ID: {result['taskID']}")
+                        if 'gateway_used' in result:
+                            st.success(f"Gateway: {result['gateway_used']}")
+                        if path_status_description and path_status_description != 'Success.':
+                            st.info(f"Status: {path_status_description}")
                 
                 # Always show full details in expander
                 with st.expander("View Full Response Details"):
-                st.json(result)
+                    st.json(result)
     elif isinstance(result, str):
         # Display success message
         st.success("Query completed")
@@ -481,74 +543,74 @@ def parse_query(query_text, default_live_data=True):
     Returns:
         dict: Parsed parameters (source, destination, protocol, port, is_live)
     """
-                import re
-                
-                # Convert query to lowercase for easier parsing
-                query_lower = query_text.lower() if query_text else ""
-                
+    import re
+    
+    # Convert query to lowercase for easier parsing
+    query_lower = query_text.lower() if query_text else ""
+    
     # Start with default live data setting
     is_live = default_live_data
     
     # Check for live data keywords in query text
-                if any(keyword in query_lower for keyword in ['live data', 'use live', 'with live', 'live access']):
-                    is_live = True
+    if any(keyword in query_lower for keyword in ['live data', 'use live', 'with live', 'live access']):
+        is_live = True
     # Check for keywords that disable live data
     elif any(keyword in query_lower for keyword in ['baseline', 'no live', 'disable live', 'use baseline']):
         is_live = False
-                
-                # Extract IP addresses using regex
-                ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-                ip_addresses = re.findall(ip_pattern, query_text) if query_text else []
-                
-                # Extract port number (optional - defaults to 0 if not specified)
-                port_patterns = [
-                    r'port\s+(\d{1,5})',  # "port 80" or "port 443"
-                    r':(\d{1,5})(?:\s|$)',  # ":80" or ":443" (not part of IP)
-                ]
-                
+    
+    # Extract IP addresses using regex
+    ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    ip_addresses = re.findall(ip_pattern, query_text) if query_text else []
+    
+    # Extract port number (optional - defaults to 0 if not specified)
+    port_patterns = [
+        r'port\s+(\d{1,5})',  # "port 80" or "port 443"
+        r':(\d{1,5})(?:\s|$)',  # ":80" or ":443" (not part of IP)
+    ]
+    
     port = "0"
-                for pattern in port_patterns:
-                    port_match = re.search(pattern, query_text) if query_text else None
-                    if port_match:
-                        extracted_port = port_match.group(1)
-                        if extracted_port and 0 <= int(extracted_port) <= 65535:
-                            port = extracted_port
-                            break
-                
-                # Extract protocol (TCP or UDP)
+    for pattern in port_patterns:
+        port_match = re.search(pattern, query_text) if query_text else None
+        if port_match:
+            extracted_port = port_match.group(1)
+            if extracted_port and 0 <= int(extracted_port) <= 65535:
+                port = extracted_port
+                break
+    
+    # Extract protocol (TCP or UDP)
     protocol = "TCP"  # Default
-                if 'udp' in query_lower:
-                    protocol = "UDP"
-                elif 'tcp' in query_lower:
-                    protocol = "TCP"
-                
-                # Extract source and destination IPs
+    if 'udp' in query_lower:
+        protocol = "UDP"
+    elif 'tcp' in query_lower:
+        protocol = "TCP"
+    
+    # Extract source and destination IPs
     source = None
     destination = None
     
-                if len(ip_addresses) >= 2:
-                    from_pos = query_lower.find('from')
-                    to_pos = query_lower.find('to')
-                    source_pos = query_lower.find('source')
-                    dest_pos = query_lower.find('destination')
-                    
-                    if from_pos != -1 and to_pos != -1:
-                        from_ip_pos = query_text.lower().find(ip_addresses[0])
-                        to_ip_pos = query_text.lower().find(ip_addresses[1])
-                        if from_pos < from_ip_pos < to_pos < to_ip_pos:
-                            source = ip_addresses[0]
-                            destination = ip_addresses[1]
-                        else:
-                            source = ip_addresses[1]
-                            destination = ip_addresses[0]
-                    elif source_pos != -1 or dest_pos != -1:
-                        source = ip_addresses[0]
-                        destination = ip_addresses[1]
-                    else:
-                        source = ip_addresses[0]
-                        destination = ip_addresses[1]
-                elif len(ip_addresses) == 1:
-                    source = ip_addresses[0]
+    if len(ip_addresses) >= 2:
+        from_pos = query_lower.find('from')
+        to_pos = query_lower.find('to')
+        source_pos = query_lower.find('source')
+        dest_pos = query_lower.find('destination')
+        
+        if from_pos != -1 and to_pos != -1:
+            from_ip_pos = query_text.lower().find(ip_addresses[0])
+            to_ip_pos = query_text.lower().find(ip_addresses[1])
+            if from_pos < from_ip_pos < to_pos < to_ip_pos:
+                source = ip_addresses[0]
+                destination = ip_addresses[1]
+            else:
+                source = ip_addresses[1]
+                destination = ip_addresses[0]
+        elif source_pos != -1 or dest_pos != -1:
+            source = ip_addresses[0]
+            destination = ip_addresses[1]
+        else:
+            source = ip_addresses[0]
+            destination = ip_addresses[1]
+    elif len(ip_addresses) == 1:
+        source = ip_addresses[0]
     
     return {
         'source': source,
@@ -707,262 +769,121 @@ def extract_hops_from_path_details(path_details):
 
 def display_result_chat(result, container):
     """
-    Display network path query result in a chat message container.
+    Display graph visualization and firewall information from network path query result.
     
     Args:
         result: Dictionary containing the query result from the MCP server
         container: Streamlit container to display results in
     """
+    import sys
     print(f"DEBUG: display_result_chat called with result type: {type(result)}", file=sys.stderr, flush=True)
-    if isinstance(result, dict):
-        print(f"DEBUG: Result is dict, checking for error key", file=sys.stderr, flush=True)
-        if 'error' in result:
-            container.error(f"❌ Error: {result['error']}")
-            if 'details' in result:
-                with container.expander("Error Details"):
-                    container.json(result['details'])
-                    else:
-            print(f"DEBUG: No error in result, checking path status", file=sys.stderr, flush=True)
-            # Check if path calculation was successful or failed
-            path_status = result.get('path_status', 'Unknown')
-            path_status_description = result.get('path_status_description', '')
-            path_failure_reason = result.get('path_failure_reason', '')
-            
-            path_failed = (
-                path_status == 'Failed' or 
-                'Failed' in str(path_status) or 
-                'failed' in str(path_status_description).lower() or
-                path_failure_reason
-            )
-            
-            if path_failed:
-                container.error("❌ Network Path Calculation Failed")
-                # Show status
-                if path_status:
-                    container.error(f"**Status:** {path_status}")
-                elif path_status_description:
-                    container.error(f"**Status:** {path_status_description}")
-                # Show failure reason
-                if path_failure_reason:
-                    container.error(f"**Reason:** {path_failure_reason}")
-            
-            # Check for path hops in multiple possible locations
-            hops_to_display = None
-            if 'path_hops' in result and result['path_hops']:
-                hops_to_display = result['path_hops']
-                print(f"DEBUG: Using path_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
-            elif 'simplified_hops' in result and result['simplified_hops']:
-                hops_to_display = result['simplified_hops']
-                print(f"DEBUG: Using simplified_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
-            elif 'path_details' in result and result['path_details']:
-                # Try to extract hops from path_details as fallback
-                print(f"DEBUG: Attempting to extract hops from path_details", file=sys.stderr, flush=True)
-                hops_to_display = extract_hops_from_path_details(result['path_details'])
-                if hops_to_display:
-                    print(f"DEBUG: Extracted {len(hops_to_display)} hops from path_details", file=sys.stderr, flush=True)
-                    else:
-                    print(f"DEBUG: Could not extract hops from path_details", file=sys.stderr, flush=True)
-            
-            # Extract and display only firewall information
-            if hops_to_display:
-                firewalls_found = {}
-                for hop in hops_to_display:
-                    is_firewall = hop.get('is_firewall', False)
-                    if is_firewall:
-                        firewall_device = hop.get('firewall_device')
-                        if not firewall_device:
-                            # Fallback: determine firewall device name
-                            from_dev = hop.get('from_device', '')
-                            to_dev = hop.get('to_device', '')
-                            if 'fw' in from_dev.lower() or 'palo' in from_dev.lower() or 'fortinet' in from_dev.lower():
-                                firewall_device = from_dev
-                            elif to_dev and ('fw' in to_dev.lower() or 'palo' in to_dev.lower() or 'fortinet' in to_dev.lower()):
-                                firewall_device = to_dev
-                        
-                        if firewall_device and firewall_device not in firewalls_found:
-                            in_interface = hop.get('in_interface')
-                            out_interface = hop.get('out_interface')
-                            
-                            # Extract interface names (handle both string and dict formats)
-                            in_intf_name = extract_interface_name(in_interface)
-                            out_intf_name = extract_interface_name(out_interface)
-                            
-                            firewalls_found[firewall_device] = {
-                                'in_interface': in_intf_name,
-                                'out_interface': out_intf_name
-                            }
-                        elif firewall_device in firewalls_found:
-                            # Merge interface information if we have partial data
-                            in_interface = hop.get('in_interface')
-                            out_interface = hop.get('out_interface')
-                            in_intf_name = extract_interface_name(in_interface)
-                            out_intf_name = extract_interface_name(out_interface)
-                            
-                            if in_intf_name and not firewalls_found[firewall_device]['in_interface']:
-                                firewalls_found[firewall_device]['in_interface'] = in_intf_name
-                            if out_intf_name and not firewalls_found[firewall_device]['out_interface']:
-                                firewalls_found[firewall_device]['out_interface'] = out_intf_name
-                
-                # Display firewall information
-                if firewalls_found:
-                    container.markdown("#### 🔥 Firewalls in Path")
-                    for fw_name, fw_info in firewalls_found.items():
-                        interface_parts = []
-                        if fw_info['in_interface']:
-                            interface_parts.append(f"In: {fw_info['in_interface']}")
-                        if fw_info['out_interface']:
-                            interface_parts.append(f"Out: {fw_info['out_interface']}")
-                        
-                        if interface_parts:
-                            container.success(f"**{fw_name}**: {', '.join(interface_parts)}")
-                        else:
-                            container.info(f"**{fw_name}**: (interface information not available)")
-                else:
-                    container.info("No firewalls found in path")
-                
-                with container.expander("View Full Details"):
-                    container.json(result)
-            else:
-                # Show summary information even without path_hops
-                # Check if path failed first
-                path_failed_summary = (
-                    result.get('path_status') == 'Failed' or 
-                    'Failed' in str(result.get('path_status', '')) or 
-                    'failed' in str(result.get('path_status_description', '')).lower() or
-                    result.get('path_failure_reason') or result.get('failure_reason') or
-                    (result.get('statusCode') and result.get('statusCode') != 790200)
-                )
-                
-                if path_failed_summary:
-                    # For failures, show only status and failure reason
-                    container.error("❌ Network Path Calculation Failed")
-                    
-                    # Show status
-                    path_status = result.get('path_status', 'Failed')
-                    if path_status and path_status != 'Unknown':
-                        container.error(f"**Status:** {path_status}")
-                    elif result.get('statusCode'):
-                        status_code = result.get('statusCode')
-                        status_desc = result.get('statusDescription', '')
-                        if status_desc:
-                            container.error(f"**Status:** {status_desc}")
-                        else:
-                            container.error(f"**Status:** Failed (Status Code: {status_code})")
-                    
-                    # Show failure reason
-                    failure_reason = result.get('path_failure_reason') or result.get('failure_reason')
-                    if failure_reason:
-                        container.error(f"**Reason:** {failure_reason}")
-                    else:
-                    # For successful queries without path_hops, check for simplified_hops
-                    # Check if we have simplified_hops or any path data
-                    hops_to_display = None
-                    if 'simplified_hops' in result and result['simplified_hops']:
-                        hops_to_display = result['simplified_hops']
-                    elif 'path_hops' in result and result['path_hops']:
-                        hops_to_display = result['path_hops']
-                    
-                    print(f"DEBUG: Checking hops_to_display: {hops_to_display is not None}, type: {type(hops_to_display)}", file=sys.stderr, flush=True)
-                    if hops_to_display:
-                        print(f"DEBUG: hops_to_display has {len(hops_to_display)} items", file=sys.stderr, flush=True)
-                        # Display path with graph visualization
-                        container.markdown("### Network Path")
-                        
-                        # Create and display graph visualization
-                        try:
-                            graph_fig = create_path_graph(
-                                hops_to_display,
-                                result.get('source', 'Source'),
-                                result.get('destination', 'Destination')
-                            )
-                            if graph_fig:
-                                container.markdown("#### Path Visualization")
-                                container.pyplot(graph_fig)
-                                plt.close(graph_fig)
-            except Exception as e:
-                            container.warning(f"Could not generate graph: {str(e)}")
-                            import traceback
-                            print(f"DEBUG: Graph generation error: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                        
-                        # Display hops
-                        try:
-                            print(f"DEBUG: About to display {len(hops_to_display)} hops", file=sys.stderr, flush=True)
-                            sys.stderr.flush()
-                            container.markdown("#### Path Hops")
-                            if hops_to_display:
-                                first_hop_str = json.dumps(hops_to_display[0], indent=2, default=str)
-                                print(f"DEBUG: First hop structure: {first_hop_str}", file=sys.stderr, flush=True)
-                                sys.stderr.flush()
-                            
-                            hop_count = 0
-                            for hop in hops_to_display:
-                                hop_count += 1
-                                from_dev = hop.get('from_device', 'Unknown')
-                                to_dev = hop.get('to_device', 'Destination')
-                                status = hop.get('status', 'Unknown')
-                                failure_reason = hop.get('failure_reason')
-                                is_firewall = hop.get('is_firewall', False)
-                                in_interface = hop.get('in_interface')
-                                out_interface = hop.get('out_interface')
-                                
-                                # Debug: Print hop data to see what we have
-                                print(f"DEBUG: Hop #{hop_count} - from: {from_dev}, to: {to_dev}, is_firewall: {is_firewall}, in_intf: {in_interface}, out_intf: {out_interface}, all_keys: {list(hop.keys())}", file=sys.stderr, flush=True)
-                                sys.stderr.flush()
-                                
-                                if status == 'Failed' or failure_reason:
-                                    container.error(f"**{from_dev}** → **{to_dev}**: ❌ {status}")
-                                    if failure_reason:
-                                        container.caption(f"Reason: {failure_reason}")
-                                elif status == 'Success':
-                                    container.success(f"**{from_dev}** → **{to_dev}**: ✓ {status}")
-                                else:
-                                    container.info(f"**{from_dev}** → **{to_dev}**: {status}")
-                                
-                                # Display firewall interface information if available
-                                if is_firewall:
-                                    print(f"DEBUG: ✓ Firewall hop found - from: {from_dev}, to: {to_dev}, in_intf: {in_interface}, out_intf: {out_interface}", file=sys.stderr, flush=True)
-                                    sys.stderr.flush()
-                                    if in_interface or out_interface:
-                                        interface_info = []
-                                        # Extract interface names (handle both string and dict formats)
-                                        in_intf_name = extract_interface_name(in_interface)
-                                        out_intf_name = extract_interface_name(out_interface)
-                                        
-                                        if in_intf_name:
-                                            interface_info.append(f"In: {in_intf_name}")
-                                        if out_intf_name:
-                                            interface_info.append(f"Out: {out_intf_name}")
-                                        if interface_info:
-                                            container.caption(f"🔥 Firewall Interfaces: {', '.join(interface_info)}")
-            else:
-                                        print(f"DEBUG: ⚠️ Firewall detected but no interfaces found in hop data", file=sys.stderr, flush=True)
-                                        sys.stderr.flush()
-                                        container.caption("🔥 Firewall (interface information not available)")
-                                elif 'palo' in from_dev.lower() or 'palo' in (to_dev or '').lower() or 'fortinet' in from_dev.lower() or 'fortinet' in (to_dev or '').lower():
-                                    # Debug: Check if we should have detected this as a firewall
-                                    print(f"DEBUG: ⚠️ Device name suggests firewall but is_firewall=False - from: {from_dev}, to: {to_dev}", file=sys.stderr, flush=True)
-                                    sys.stderr.flush()
-                        except Exception as e:
-                            print(f"DEBUG: Exception in hop display loop: {e}", file=sys.stderr, flush=True)
-                            import traceback
-                            print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                            sys.stderr.flush()
-                    else:
-                        # No path data available, show basic info
-                        container.info("✅ Path calculation completed successfully")
-                        if 'taskID' in result:
-                            container.info(f"📋 Task ID: {result['taskID']}")
-                        if 'gateway_used' in result:
-                            container.info(f"🔌 Gateway: {result['gateway_used']}")
-                        # Show full details in expander for debugging
-                        with container.expander("View Full Response Details"):
-                            container.json(result)
-    else:
-        # Fallback: display any result type
-        print(f"DEBUG: Result is not a dict, displaying as JSON", file=sys.stderr, flush=True)
-        container.json(result)
     
-    print(f"DEBUG: display_result_chat completed", file=sys.stderr, flush=True)
+    if not isinstance(result, dict):
+        print(f"DEBUG: Result is not a dict, returning", file=sys.stderr, flush=True)
+        return
+    
+    print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+    
+    # Check for path hops in multiple possible locations FIRST
+    hops_to_display = None
+    if 'path_hops' in result and result['path_hops']:
+        hops_to_display = result['path_hops']
+        print(f"DEBUG: Using path_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
+    elif 'simplified_hops' in result and result['simplified_hops']:
+        hops_to_display = result['simplified_hops']
+        print(f"DEBUG: Using simplified_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
+    elif 'path_details' in result and result['path_details']:
+        print(f"DEBUG: Attempting to extract hops from path_details", file=sys.stderr, flush=True)
+        hops_to_display = extract_hops_from_path_details(result['path_details'])
+        if hops_to_display:
+            print(f"DEBUG: Extracted {len(hops_to_display)} hops from path_details", file=sys.stderr, flush=True)
+        else:
+            print(f"DEBUG: Could not extract hops from path_details", file=sys.stderr, flush=True)
+    
+    # Only skip if no path data AND failure reason is L2 connection discovery
+    if not hops_to_display:
+        path_failure_reason = result.get('path_failure_reason', '')
+        if path_failure_reason and 'L2 connections has not been discovered' in path_failure_reason:
+            print(f"DEBUG: Skipping display - no path data and L2 connection discovery issue", file=sys.stderr, flush=True)
+            return
+        print(f"DEBUG: No path hops found in result", file=sys.stderr, flush=True)
+    
+    # Display graph visualization of the full path if hops are available
+    if hops_to_display:
+        print(f"DEBUG: Displaying graph with {len(hops_to_display)} hops", file=sys.stderr, flush=True)
+        firewalls_found = {}
+        for hop in hops_to_display:
+            is_firewall = hop.get('is_firewall', False)
+            if is_firewall:
+                firewall_device = hop.get('firewall_device')
+                if not firewall_device:
+                    # Fallback: determine firewall device name
+                    from_dev = hop.get('from_device', '')
+                    to_dev = hop.get('to_device', '')
+                    if 'fw' in from_dev.lower() or 'palo' in from_dev.lower() or 'fortinet' in from_dev.lower():
+                        firewall_device = from_dev
+                    elif to_dev and ('fw' in to_dev.lower() or 'palo' in to_dev.lower() or 'fortinet' in to_dev.lower()):
+                        firewall_device = to_dev
+                
+                if firewall_device and firewall_device not in firewalls_found:
+                    in_interface = hop.get('in_interface')
+                    out_interface = hop.get('out_interface')
+                    
+                    # Extract interface names (handle both string and dict formats)
+                    in_intf_name = extract_interface_name(in_interface)
+                    out_intf_name = extract_interface_name(out_interface)
+                    
+                    firewalls_found[firewall_device] = {
+                        'in_interface': in_intf_name,
+                        'out_interface': out_intf_name
+                    }
+                elif firewall_device in firewalls_found:
+                    # Merge interface information if we have partial data
+                    in_interface = hop.get('in_interface')
+                    out_interface = hop.get('out_interface')
+                    in_intf_name = extract_interface_name(in_interface)
+                    out_intf_name = extract_interface_name(out_interface)
+                    
+                    if in_intf_name and not firewalls_found[firewall_device]['in_interface']:
+                        firewalls_found[firewall_device]['in_interface'] = in_intf_name
+                    if out_intf_name and not firewalls_found[firewall_device]['out_interface']:
+                        firewalls_found[firewall_device]['out_interface'] = out_intf_name
+        
+        # Display graph visualization of the full path
+        try:
+            graph_fig = create_path_graph(
+                hops_to_display,
+                result.get('source', 'Source'),
+                result.get('destination', 'Destination')
+            )
+            if graph_fig:
+                container.markdown("#### Network Path Visualization")
+                container.pyplot(graph_fig)
+                import matplotlib.pyplot as plt
+                plt.close(graph_fig)
+        except Exception as e:
+            # Silently fail if graph generation fails
+            import sys
+            print(f"DEBUG: Graph generation error: {str(e)}", file=sys.stderr, flush=True)
+        
+        # Display firewall information in the requested format
+        if firewalls_found:
+            print(f"DEBUG: Found {len(firewalls_found)} firewalls", file=sys.stderr, flush=True)
+            container.markdown("#### Firewalls in Path")
+            for fw_name, fw_info in firewalls_found.items():
+                interface_parts = []
+                if fw_info['in_interface']:
+                    interface_parts.append(f"In: {fw_info['in_interface']}")
+                if fw_info['out_interface']:
+                    interface_parts.append(f"Out: {fw_info['out_interface']}")
+                
+                if interface_parts:
+                    container.markdown(f"{fw_name}: {', '.join(interface_parts)}")
+        else:
+            print(f"DEBUG: No firewalls found in path", file=sys.stderr, flush=True)
+    else:
+        print(f"DEBUG: No hops to display - result may not have path data", file=sys.stderr, flush=True)
+        print(f"DEBUG: Result keys available: {list(result.keys())}", file=sys.stderr, flush=True)
 
 async def execute_network_query(source, destination, protocol, port, is_live):
     """
@@ -982,34 +903,34 @@ async def execute_network_query(source, destination, protocol, port, is_live):
     print(f"DEBUG: Starting network query: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
     
     try:
-                    server_params = get_server_params()
+        server_params = get_server_params()
         print(f"DEBUG: Server params created, connecting to MCP server...", file=sys.stderr, flush=True)
         
-                    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with stdio_client(server_params) as (read_stream, write_stream):
             print(f"DEBUG: Connected to MCP server, initializing session...", file=sys.stderr, flush=True)
-                        async with ClientSession(read_stream, write_stream) as session:
-                            await session.initialize()
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
                 print(f"DEBUG: Session initialized, calling tool...", file=sys.stderr, flush=True)
                 
-                            tool_arguments = {
-                                "source": source,
-                                "destination": destination,
-                                "protocol": protocol,
-                                "port": port,
+                tool_arguments = {
+                    "source": source,
+                    "destination": destination,
+                    "protocol": protocol,
+                    "port": port,
                     "is_live": 1 if is_live else 0,
                     "continue_on_policy_denial": True  # Always continue even if denied by policy
-                            }
+                }
                 print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
                 
-                            tool_result = await session.call_tool(
-                                "query_network_path",
-                                arguments=tool_arguments
-                            )
+                tool_result = await session.call_tool(
+                    "query_network_path",
+                    arguments=tool_arguments
+                )
                 print(f"DEBUG: Tool call completed, processing result...", file=sys.stderr, flush=True)
                 
-                            if tool_result and tool_result.content:
-                                import json
-                                result_text = tool_result.content[0].text
+                if tool_result and tool_result.content:
+                    import json
+                    result_text = tool_result.content[0].text
                     print(f"DEBUG: Result text length: {len(result_text)}", file=sys.stderr, flush=True)
                     try:
                         result = json.loads(result_text)
@@ -1017,10 +938,10 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                         return result
                     except json.JSONDecodeError as e:
                         print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
-                                    return {"result": result_text}
-                            else:
+                        return {"result": result_text}
+                else:
                     print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
-                                return None
+                    return None
     except asyncio.TimeoutError:
         print(f"DEBUG: Query timed out", file=sys.stderr, flush=True)
         return {"error": "Query timed out. The network path calculation is taking longer than expected."}
@@ -1082,12 +1003,12 @@ def main():
         with st.chat_message(message["role"]):
             if message["role"] == "user":
                 st.markdown(message["content"])
-                else:
+            else:
                 # Assistant messages can contain various content types
                 if isinstance(message["content"], dict):
                     # Display result
                     display_result_chat(message["content"], st.container())
-            else:
+                else:
                     st.markdown(message["content"])
     
     # Display buttons for all pending queries (so they're always visible and clickable)
@@ -1214,7 +1135,7 @@ def main():
                     "role": "assistant",
                     "content": "I need both source and destination IP addresses. Please provide both in your query."
                 })
-                else:
+        else:
             # Store pending query for confirmation
             query_id = len(st.session_state.messages)
             pending_key = f"pending_query_{query_id}"
@@ -1308,7 +1229,7 @@ def main():
                 query_data['confirmed'] = True
                 if st.session_state[button_click_key] == "live":
                     query_data['is_live'] = True
-        else:
+                else:
                     query_data['is_live'] = False
                 # Clear the tracker
                 del st.session_state[button_click_key]
@@ -1390,12 +1311,12 @@ def main():
                     if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
                         st.session_state.messages.pop()
                     
-                if result:
+                    if result:
                         # Debug: Print result keys to help diagnose
                         if isinstance(result, dict):
                             print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
                             print(f"DEBUG: Result sample: {str(result)[:500]}", file=sys.stderr, flush=True)
-                else:
+                        else:
                             print(f"DEBUG: Result is not a dict: {type(result)}", file=sys.stderr, flush=True)
                         
                         # Check if result contains an error
@@ -1463,14 +1384,14 @@ def main():
                         "role": "assistant",
                         "content": error_msg
                     })
-            except Exception as e:
+                except Exception as e:
                     # Remove status message from history
                     if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
                         st.session_state.messages.pop()
                     
                     error_msg = f"An error occurred: {str(e)}"
                     print(f"DEBUG: Exception during query execution: {error_msg}", file=sys.stderr, flush=True)
-                import traceback
+                    import traceback
                     print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
                     with st.chat_message("assistant"):
                         st.error(error_msg)
