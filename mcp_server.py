@@ -38,6 +38,10 @@ from typing import Optional, Dict, Any, List
 # This module handles getting access tokens from NetBrain API
 import netbrainauth
 
+# Import the local panoramaauth module for Panorama API integration
+# This module handles querying security zones from Panorama
+import panoramaauth
+
 # Import FastMCP for creating MCP servers easily
 # FastMCP provides decorators and utilities for MCP server development
 from fastmcp import FastMCP
@@ -91,6 +95,179 @@ except Exception:
 # os.getenv() reads environment variables, second parameter is the default value
 # This should match the URL used in netbrainauth.py
 NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
+
+
+async def _add_panorama_zones_to_hops(simplified_hops: List[Dict[str, Any]]) -> None:
+    """
+    Helper function to query Panorama for security zones and add them to firewall hops.
+    
+    Args:
+        simplified_hops: List of hop dictionaries to update with zone information
+    """
+    # Collect firewall interfaces to query
+    firewall_interface_map = {}
+    for hop_info in simplified_hops:
+        if hop_info.get("is_firewall"):
+            fw_name = hop_info.get("firewall_device")
+            if fw_name:
+                if fw_name not in firewall_interface_map:
+                    firewall_interface_map[fw_name] = {"interfaces": [], "hops": []}
+                in_intf = hop_info.get("in_interface")
+                out_intf = hop_info.get("out_interface")
+                
+                # Extract interface names (handle dict structures)
+                in_intf_name = None
+                out_intf_name = None
+                
+                if in_intf:
+                    if isinstance(in_intf, dict):
+                        in_intf_name = in_intf.get("intfDisplaySchemaObj", {}).get("value") or in_intf.get("PhysicalInftName") or in_intf.get("name")
+                    else:
+                        in_intf_name = str(in_intf)
+                
+                if out_intf:
+                    if isinstance(out_intf, dict):
+                        out_intf_name = out_intf.get("intfDisplaySchemaObj", {}).get("value") or out_intf.get("PhysicalInftName") or out_intf.get("name")
+                    else:
+                        out_intf_name = str(out_intf)
+                
+                if in_intf_name and in_intf_name not in firewall_interface_map[fw_name]["interfaces"]:
+                    firewall_interface_map[fw_name]["interfaces"].append(in_intf_name)
+                if out_intf_name and out_intf_name not in firewall_interface_map[fw_name]["interfaces"]:
+                    firewall_interface_map[fw_name]["interfaces"].append(out_intf_name)
+                
+                print(f"DEBUG: Server - Collected interfaces for {fw_name}: {firewall_interface_map[fw_name]['interfaces']}", file=sys.stderr, flush=True)
+                
+                firewall_interface_map[fw_name]["hops"].append(hop_info)
+    
+    # Query Panorama for zones
+    for fw_name, fw_data in firewall_interface_map.items():
+        if fw_data["interfaces"]:
+            try:
+                zones = await panoramaauth.get_zones_for_firewall_interfaces(
+                    firewall_name=fw_name,
+                    interfaces=fw_data["interfaces"],
+                    template="Global"  # Explicitly use "Global" template
+                )
+                
+                # Add zone information to firewall hops
+                print(f"DEBUG: Server - Adding zones to {len(fw_data['hops'])} hops for {fw_name}", file=sys.stderr, flush=True)
+                for hop_info in fw_data["hops"]:
+                    in_intf = hop_info.get("in_interface")
+                    out_intf = hop_info.get("out_interface")
+                    
+                    # Extract interface names again for matching
+                    in_intf_name = None
+                    out_intf_name = None
+                    
+                    if in_intf:
+                        if isinstance(in_intf, dict):
+                            in_intf_name = in_intf.get("intfDisplaySchemaObj", {}).get("value") or in_intf.get("PhysicalInftName") or in_intf.get("name")
+                        else:
+                            in_intf_name = str(in_intf)
+                    
+                    if out_intf:
+                        if isinstance(out_intf, dict):
+                            out_intf_name = out_intf.get("intfDisplaySchemaObj", {}).get("value") or out_intf.get("PhysicalInftName") or out_intf.get("name")
+                        else:
+                            out_intf_name = str(out_intf)
+                    
+                    print(f"DEBUG: Server - Matching zones for {fw_name}: in_intf_name={in_intf_name}, out_intf_name={out_intf_name}, zones={zones}", file=sys.stderr, flush=True)
+                    
+                    # Match zones with case-insensitive interface name matching
+                    if in_intf_name:
+                        # Try exact match first
+                        if in_intf_name in zones and zones[in_intf_name]:
+                            hop_info["in_zone"] = zones[in_intf_name]
+                            print(f"DEBUG: Server - Set in_zone for {fw_name} hop to {zones[in_intf_name]} (exact match)", file=sys.stderr, flush=True)
+                        else:
+                            # Try case-insensitive match
+                            in_intf_lower = in_intf_name.lower()
+                            matched_zone = None
+                            for zone_intf, zone_name in zones.items():
+                                if zone_intf and zone_intf.lower() == in_intf_lower:
+                                    matched_zone = zone_name
+                                    break
+                            
+                            if matched_zone:
+                                hop_info["in_zone"] = matched_zone
+                                print(f"DEBUG: Server - Set in_zone for {fw_name} hop to {matched_zone} (case-insensitive match)", file=sys.stderr, flush=True)
+                    
+                    if out_intf_name:
+                        # Try exact match first
+                        if out_intf_name in zones and zones[out_intf_name]:
+                            hop_info["out_zone"] = zones[out_intf_name]
+                            print(f"DEBUG: Server - Set out_zone for {fw_name} hop to {zones[out_intf_name]} (exact match)", file=sys.stderr, flush=True)
+                        else:
+                            # Try case-insensitive match
+                            out_intf_lower = out_intf_name.lower()
+                            matched_zone = None
+                            for zone_intf, zone_name in zones.items():
+                                if zone_intf and zone_intf.lower() == out_intf_lower:
+                                    matched_zone = zone_name
+                                    break
+                            
+                            if matched_zone:
+                                hop_info["out_zone"] = matched_zone
+                                print(f"DEBUG: Server - Set out_zone for {fw_name} hop to {matched_zone} (case-insensitive match)", file=sys.stderr, flush=True)
+                
+                print(f"DEBUG: Zones for {fw_name}: {zones}", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"DEBUG: Error querying Panorama for {fw_name}: {str(e)}", file=sys.stderr, flush=True)
+                import traceback
+                print(f"DEBUG: Panorama query traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+
+
+async def _add_panorama_device_groups_to_hops(simplified_hops: List[Dict[str, Any]]) -> None:
+    """
+    Helper function to query Panorama for device groups and add them to firewall hops.
+    
+    Args:
+        simplified_hops: List of hop dictionaries to update with device group information
+    """
+    # Collect unique firewall names
+    firewall_names = set()
+    firewall_hop_map = {}
+    
+    for hop_info in simplified_hops:
+        if hop_info.get("is_firewall"):
+            fw_name = hop_info.get("firewall_device")
+            if fw_name:
+                firewall_names.add(fw_name)
+                if fw_name not in firewall_hop_map:
+                    firewall_hop_map[fw_name] = []
+                firewall_hop_map[fw_name].append(hop_info)
+    
+    if not firewall_names:
+        print(f"DEBUG: Server - No firewalls found in hops for device group query", file=sys.stderr, flush=True)
+        return
+    
+    # Query Panorama for device groups
+    try:
+        firewall_list = list(firewall_names)
+        print(f"DEBUG: Server - Querying device groups for firewalls: {firewall_list}", file=sys.stderr, flush=True)
+        
+        device_groups = await panoramaauth.get_device_groups_for_firewalls(
+            firewall_names=firewall_list
+        )
+        
+        print(f"DEBUG: Server - Device groups returned: {device_groups}", file=sys.stderr, flush=True)
+        
+        # Add device group information to firewall hops
+        for fw_name, hops in firewall_hop_map.items():
+            device_group = device_groups.get(fw_name)
+            if device_group:
+                print(f"DEBUG: Server - Adding device group '{device_group}' to {len(hops)} hops for {fw_name}", file=sys.stderr, flush=True)
+                for hop_info in hops:
+                    hop_info["device_group"] = device_group
+                    print(f"DEBUG: Server - Set device_group for {fw_name} hop to {device_group}", file=sys.stderr, flush=True)
+            else:
+                print(f"DEBUG: Server - No device group found for {fw_name}", file=sys.stderr, flush=True)
+    
+    except Exception as e:
+        print(f"DEBUG: Error querying Panorama device groups: {str(e)}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"DEBUG: Panorama device group query traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
 
 
 # Register a tool with the MCP server using the @mcp.tool() decorator
@@ -338,7 +515,7 @@ async def query_network_path(
                 
                 max_wait_time = max_attempts * max_poll_interval  # Approximate max wait time
                 
-                print(f"DEBUG: Step 3 - Polling endpoint: {path_url} (max {max_attempts} attempts, {initial_poll_interval}-{max_poll_interval}s interval, file=sys.stderr, flush=True)")
+                print(f"DEBUG: Step 3 - Polling endpoint: {path_url} (max {max_attempts} attempts, {initial_poll_interval}-{max_poll_interval}s interval)", file=sys.stderr, flush=True)
                 
                 for attempt in range(1, max_attempts + 1):
                     # Wait before each attempt (except the first one)
@@ -735,6 +912,11 @@ async def query_network_path(
                 # Extract simplified hop information: device name, status, and reason
                 simplified_hops, path_status_overall, path_failure_reason = extract_path_hops(path_data, "Step 3 response")
                 
+                # Query Panorama for security zones for firewall interfaces
+                if simplified_hops:
+                    await _add_panorama_zones_to_hops(simplified_hops)
+                    await _add_panorama_device_groups_to_hops(simplified_hops)
+                
                 # If we found hops, use simplified format
                 if simplified_hops:
                     result["path_hops"] = simplified_hops
@@ -751,6 +933,11 @@ async def query_network_path(
                 # Sometimes live data returns path details directly in the calculation response
                 print(f"DEBUG: Step 3 returned no data, checking Step 2 response for path details", file=sys.stderr, flush=True)
                 simplified_hops, path_status_overall, path_failure_reason = extract_path_hops(calc_data, "Step 2 response")
+                
+                # Query Panorama for security zones for firewall interfaces
+                if simplified_hops:
+                    await _add_panorama_zones_to_hops(simplified_hops)
+                    await _add_panorama_device_groups_to_hops(simplified_hops)
                 
                 if simplified_hops:
                     result["path_hops"] = simplified_hops

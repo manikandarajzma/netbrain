@@ -102,8 +102,8 @@ def create_path_graph(path_hops, source, destination):
     devices = set()
     edges = []
     
-    # Track firewall interfaces for overlay
-    firewall_interfaces = {}  # {device_name: {'in': 'interface', 'out': 'interface'}}
+    # Track firewall interfaces, zones, and device groups for overlay
+    firewall_interfaces = {}  # {device_name: {'in': 'interface', 'out': 'interface', 'in_zone': 'zone', 'out_zone': 'zone', 'device_group': 'group'}}
     
     # Add source node
     if source:
@@ -147,19 +147,38 @@ def create_path_graph(path_hops, source, destination):
                 in_interface = hop.get('in_interface')
                 out_interface = hop.get('out_interface')
                 
+                # Extract zone and device group information
+                in_zone = hop.get('in_zone')
+                out_zone = hop.get('out_zone')
+                device_group = hop.get('device_group')
+                
+                # Debug: Print zone and device group information from hop
+                print(f"DEBUG: Graph - Extracting info for {firewall_device}: in_zone={in_zone}, out_zone={out_zone}, device_group={device_group}", file=sys.stderr, flush=True)
+                
                 # Use extract_interface_name helper to get clean interface names
                 in_intf_name = extract_interface_name(in_interface) if in_interface else None
                 out_intf_name = extract_interface_name(out_interface) if out_interface else None
                 
-                # Store interface information for this firewall
+                # Store interface, zone, and device group information for this firewall
                 if firewall_device not in firewall_interfaces:
-                    firewall_interfaces[firewall_device] = {'in': None, 'out': None}
+                    firewall_interfaces[firewall_device] = {'in': None, 'out': None, 'in_zone': None, 'out_zone': None, 'device_group': None}
                 
                 # Update interfaces if we have new information
                 if in_intf_name and not firewall_interfaces[firewall_device]['in']:
                     firewall_interfaces[firewall_device]['in'] = in_intf_name
                 if out_intf_name and not firewall_interfaces[firewall_device]['out']:
                     firewall_interfaces[firewall_device]['out'] = out_intf_name
+                
+                # Update zones if we have new information (use 'or' to allow overwriting None)
+                if in_zone:
+                    firewall_interfaces[firewall_device]['in_zone'] = in_zone
+                    print(f"DEBUG: Graph - Set in_zone for {firewall_device} to {in_zone}", file=sys.stderr, flush=True)
+                if out_zone:
+                    firewall_interfaces[firewall_device]['out_zone'] = out_zone
+                    print(f"DEBUG: Graph - Set out_zone for {firewall_device} to {out_zone}", file=sys.stderr, flush=True)
+                if device_group:
+                    firewall_interfaces[firewall_device]['device_group'] = device_group
+                    print(f"DEBUG: Graph - Set device_group for {firewall_device} to {device_group}", file=sys.stderr, flush=True)
         
         # Add valid devices
         if from_dev and from_dev != 'Unknown':
@@ -284,23 +303,62 @@ def create_path_graph(path_hops, source, destination):
     labels = {node: node[:15] + '...' if len(node) > 15 else node for node in G.nodes()}
     nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
     
-    # Overlay firewall interface information
+    # Overlay firewall interface and zone information
     for firewall_device, interfaces in firewall_interfaces.items():
         if firewall_device in pos:
             x, y = pos[firewall_device]
             
-            # Add in interface label on top (very close to node)
-            # Using minimal offset - nodes are large (size 1500), so small offset needed
-            if interfaces['in']:
-                ax.text(x, y + 0.05, f"In: {interfaces['in']}", 
-                       fontsize=6, ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.1', facecolor='lightblue', alpha=0.8))
+            # Debug: Print what we have for this firewall
+            print(f"DEBUG: Graph overlay for {firewall_device}: interfaces={interfaces}", file=sys.stderr, flush=True)
             
-            # Add out interface label at the bottom (very close to node)
-            if interfaces['out']:
-                ax.text(x, y - 0.05, f"Out: {interfaces['out']}", 
+            # Calculate vertical positions for labels
+            # Zones and interfaces at top and bottom, device group in the middle
+            zone_offset = 0.08  # Zone label position (reduced from 0.12 to bring closer)
+            interface_offset = 0.05  # Interface label position (closer to node)
+            device_group_offset = 0.01  # Device group label position (between in and out interfaces, slightly below center)
+            
+            # Add in interface label on top
+            if interfaces.get('in'):
+                # First add zone label above the interface (if available)
+                in_zone = interfaces.get('in_zone')
+                if in_zone:
+                    ax.text(x, y + zone_offset, f"Zone: {in_zone}", 
+                           fontsize=5, ha='center', va='bottom',
+                           bbox=dict(boxstyle='round,pad=0.05', facecolor='yellow', alpha=0.8))
+                    # Place interface label directly below zone (minimal gap)
+                    interface_y = y + interface_offset + 0.01
+                else:
+                    interface_y = y + interface_offset
+                
+                ax.text(x, interface_y, f"In: {interfaces['in']}", 
+                       fontsize=6, ha='center', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.05', facecolor='lightblue', alpha=0.8))
+            
+            # Add out interface label at the bottom
+            if interfaces.get('out'):
+                # First add zone label above the interface (if available)
+                out_zone = interfaces.get('out_zone')
+                print(f"DEBUG: {firewall_device} - Out zone: {out_zone}", file=sys.stderr, flush=True)
+                if out_zone:
+                    ax.text(x, y - zone_offset, f"Zone: {out_zone}", 
+                           fontsize=5, ha='center', va='top',
+                           bbox=dict(boxstyle='round,pad=0.05', facecolor='yellow', alpha=0.8))
+                    # Place interface label directly above zone (minimal gap)
+                    interface_y = y - interface_offset - 0.01
+                else:
+                    interface_y = y - interface_offset
+                
+                ax.text(x, interface_y, f"Out: {interfaces['out']}", 
                        fontsize=6, ha='center', va='top',
-                       bbox=dict(boxstyle='round,pad=0.1', facecolor='lightgreen', alpha=0.8))
+                       bbox=dict(boxstyle='round,pad=0.05', facecolor='lightgreen', alpha=0.8))
+            
+            # Add device group label between in and out interfaces (if available)
+            device_group = interfaces.get('device_group')
+            if device_group:
+                ax.text(x, y - device_group_offset, f"DG: {device_group}", 
+                       fontsize=6, ha='center', va='center',
+                       bbox=dict(boxstyle='round,pad=0.05', facecolor='orange', alpha=0.9),
+                       weight='bold')
     
     # Add legend
     from matplotlib.patches import Patch
@@ -396,17 +454,17 @@ def display_result(result):
             else:
                 # Display success message in green using st.success()
                 st.success("✅ Query completed successfully")
+            
+            # Display path hops if available (simplified visual representation)
+            if 'path_hops' in result:
+                st.subheader("Network Path")
                 
-                # Display path hops if available (simplified visual representation)
-                if 'path_hops' in result:
-                    st.subheader("Network Path")
-                    
-                    # Display path status (if not already shown above)
-                    if not path_failed:
-                        if path_status_description:
-                            st.success(f"Path Status: {path_status_description}")
-                        elif path_status and path_status != 'Unknown':
-                            st.success(f"Path Status: {path_status}")
+                # Display path status (if not already shown above)
+                if not path_failed:
+                    if path_status_description:
+                        st.success(f"Path Status: {path_status_description}")
+                    elif path_status and path_status != 'Unknown':
+                        st.success(f"Path Status: {path_status}")
                 
                 # Create and display graph visualization
                 try:
@@ -476,25 +534,25 @@ def display_result(result):
                     if i < len(result['path_hops']) - 1:
                         st.divider()
                 
-                    # Show full details in expander
-                    with st.expander("View Full Path Details"):
-                        st.json(result)
+                # Show full details in expander
+                with st.expander("View Full Path Details"):
+                    st.json(result)
+            else:
+                # No path hops available - show summary information
+                if path_failed:
+                    # Already displayed failure info above, but show additional details if available
+                    if 'taskID' in result:
+                        st.info(f"Task ID: {result['taskID']}")
+                    if 'gateway_used' in result:
+                        st.info(f"Gateway Used: {result['gateway_used']}")
                 else:
-                    # No path hops available - show summary information
-                    if path_failed:
-                        # Already displayed failure info above, but show additional details if available
-                        if 'taskID' in result:
-                            st.info(f"Task ID: {result['taskID']}")
-                        if 'gateway_used' in result:
-                            st.info(f"Gateway Used: {result['gateway_used']}")
-                    else:
-                        # Show basic success information
-                        if 'taskID' in result:
-                            st.success(f"Task ID: {result['taskID']}")
-                        if 'gateway_used' in result:
-                            st.success(f"Gateway: {result['gateway_used']}")
-                        if path_status_description and path_status_description != 'Success.':
-                            st.info(f"Status: {path_status_description}")
+                    # Show basic success information
+                    if 'taskID' in result:
+                        st.success(f"Task ID: {result['taskID']}")
+                    if 'gateway_used' in result:
+                        st.success(f"Gateway: {result['gateway_used']}")
+                    if path_status_description and path_status_description != 'Success.':
+                        st.info(f"Status: {path_status_description}")
                 
                 # Always show full details in expander
                 with st.expander("View Full Response Details"):
@@ -828,6 +886,9 @@ def display_result_chat(result, container):
                 if firewall_device and firewall_device not in firewalls_found:
                     in_interface = hop.get('in_interface')
                     out_interface = hop.get('out_interface')
+                    in_zone = hop.get('in_zone')
+                    out_zone = hop.get('out_zone')
+                    device_group = hop.get('device_group')
                     
                     # Extract interface names (handle both string and dict formats)
                     in_intf_name = extract_interface_name(in_interface)
@@ -835,12 +896,18 @@ def display_result_chat(result, container):
                     
                     firewalls_found[firewall_device] = {
                         'in_interface': in_intf_name,
-                        'out_interface': out_intf_name
+                        'out_interface': out_intf_name,
+                        'in_zone': in_zone,
+                        'out_zone': out_zone,
+                        'device_group': device_group
                     }
                 elif firewall_device in firewalls_found:
                     # Merge interface information if we have partial data
                     in_interface = hop.get('in_interface')
                     out_interface = hop.get('out_interface')
+                    in_zone = hop.get('in_zone')
+                    out_zone = hop.get('out_zone')
+                    device_group = hop.get('device_group')
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
                     
@@ -848,23 +915,38 @@ def display_result_chat(result, container):
                         firewalls_found[firewall_device]['in_interface'] = in_intf_name
                     if out_intf_name and not firewalls_found[firewall_device]['out_interface']:
                         firewalls_found[firewall_device]['out_interface'] = out_intf_name
+                    # Always update zones if available (they might come from different hops)
+                    if in_zone:
+                        firewalls_found[firewall_device]['in_zone'] = in_zone
+                    if out_zone:
+                        firewalls_found[firewall_device]['out_zone'] = out_zone
+                    # Always update device group if available
+                    if device_group:
+                        firewalls_found[firewall_device]['device_group'] = device_group
         
         # Display graph visualization of the full path
         try:
+            print(f"DEBUG: Creating graph with {len(hops_to_display)} hops", file=sys.stderr, flush=True)
             graph_fig = create_path_graph(
                 hops_to_display,
                 result.get('source', 'Source'),
                 result.get('destination', 'Destination')
             )
             if graph_fig:
+                print(f"DEBUG: Graph created successfully, displaying", file=sys.stderr, flush=True)
                 container.markdown("#### Network Path Visualization")
                 container.pyplot(graph_fig)
                 import matplotlib.pyplot as plt
                 plt.close(graph_fig)
+            else:
+                print(f"DEBUG: Graph creation returned None", file=sys.stderr, flush=True)
         except Exception as e:
-            # Silently fail if graph generation fails
+            # Log error but don't fail silently
             import sys
+            import traceback
             print(f"DEBUG: Graph generation error: {str(e)}", file=sys.stderr, flush=True)
+            print(f"DEBUG: Graph traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            container.warning(f"⚠️ Could not generate path visualization: {str(e)}")
         
         # Display firewall information in the requested format
         if firewalls_found:
@@ -873,12 +955,18 @@ def display_result_chat(result, container):
             for fw_name, fw_info in firewalls_found.items():
                 interface_parts = []
                 if fw_info['in_interface']:
-                    interface_parts.append(f"In: {fw_info['in_interface']}")
+                    in_zone = fw_info.get('in_zone')
+                    zone_text = f" ({in_zone})" if in_zone else ""
+                    interface_parts.append(f"In: {fw_info['in_interface']}{zone_text}")
                 if fw_info['out_interface']:
-                    interface_parts.append(f"Out: {fw_info['out_interface']}")
+                    out_zone = fw_info.get('out_zone')
+                    zone_text = f" ({out_zone})" if out_zone else ""
+                    interface_parts.append(f"Out: {fw_info['out_interface']}{zone_text}")
                 
                 if interface_parts:
-                    container.markdown(f"{fw_name}: {', '.join(interface_parts)}")
+                    device_group = fw_info.get('device_group')
+                    device_group_text = f" [DG: {device_group}]" if device_group else ""
+                    container.markdown(f"{fw_name}{device_group_text}: {', '.join(interface_parts)}")
         else:
             print(f"DEBUG: No firewalls found in path", file=sys.stderr, flush=True)
     else:
@@ -1304,6 +1392,9 @@ def main():
                                 timeout=max_timeout
                             )
                         )
+                    except Exception as e:
+                        print(f"DEBUG: Exception during inner query execution: {e}", file=sys.stderr, flush=True)
+                        result = {"error": f"Error executing query: {str(e)}"}
                     
                     print(f"DEBUG: Query execution completed, result type: {type(result)}", file=sys.stderr, flush=True)
                     
