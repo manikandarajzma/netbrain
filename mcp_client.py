@@ -102,34 +102,70 @@ def create_path_graph(path_hops, source, destination):
     devices = set()
     edges = []
     
+    # Track device types for each device
+    device_types = {}  # {device_name: 'device_type'}
+    
     # Track firewall interfaces, zones, and device groups for overlay
     firewall_interfaces = {}  # {device_name: {'in': 'interface', 'out': 'interface', 'in_zone': 'zone', 'out_zone': 'zone', 'device_group': 'group'}}
     
     # Add source node
     if source:
         devices.add(source)
+        print(f"DEBUG: Added source node: {source}", file=sys.stderr, flush=True)
     
     # Process each hop - filter out invalid hops (None/null values)
+    print(f"DEBUG: create_path_graph - Processing {len(path_hops)} hops", file=sys.stderr, flush=True)
+    hops_processed = 0
+    hops_skipped = 0
+    
     for hop in path_hops:
         from_dev = hop.get('from_device', 'Unknown')
         to_dev = hop.get('to_device')
         status = hop.get('status', 'Unknown')
         failure_reason = hop.get('failure_reason')
         
+        print(f"DEBUG: Hop - from: '{from_dev}', to: '{to_dev}', status: '{status}', failure_reason: '{failure_reason}'", file=sys.stderr, flush=True)
+        
         # Skip hops with invalid/None/null device names
         # Filter out None, 'None', empty strings, and 'Unknown' as from_device (unless it's the actual source)
         if not from_dev or from_dev in [None, 'None', 'null', ''] or (from_dev == 'Unknown' and from_dev != source):
+            print(f"DEBUG: Skipping hop - invalid from_device: '{from_dev}'", file=sys.stderr, flush=True)
+            hops_skipped += 1
             continue
         
-        # Skip if to_dev is None, 'None', 'null', or empty (unless it's the destination)
+        # Handle None to_dev - use destination if available, otherwise skip
         if not to_dev or to_dev in [None, 'None', 'null', '']:
-            # Only allow None to_dev if we can connect to destination
-            if not destination:
+            if destination:
+                # Use destination as the to_device for the last hop
+                to_dev = destination
+                print(f"DEBUG: Using destination '{destination}' as to_device for hop", file=sys.stderr, flush=True)
+            else:
+                print(f"DEBUG: Skipping hop - invalid to_device: '{to_dev}' and no destination", file=sys.stderr, flush=True)
+                hops_skipped += 1
                 continue
         
-        # Skip failed hops - only show successful paths
-        if status == 'Failed' or failure_reason:
-            continue
+        # Don't skip failed hops - show them with different styling
+        # This allows users to see what NetBrain discovered, even if incomplete
+        is_failed = (status == 'Failed' or failure_reason)
+        if is_failed:
+            print(f"DEBUG: Hop is failed, but will display with warning style", file=sys.stderr, flush=True)
+        
+        hops_processed += 1
+        
+        # Collect device type information
+        from_device_type = hop.get('from_device_type', '')
+        to_device_type = hop.get('to_device_type', '')
+        
+        # Debug: Print device types being collected
+        if from_device_type or to_device_type:
+            print(f"DEBUG: Graph - Device types from hop: from='{from_dev}' -> type='{from_device_type}', to='{to_dev}' -> type='{to_device_type}'", file=sys.stderr, flush=True)
+        
+        if from_dev and from_device_type:
+            device_types[from_dev] = from_device_type
+            print(f"DEBUG: Graph - Set device type for '{from_dev}': '{from_device_type}'", file=sys.stderr, flush=True)
+        if to_dev and to_dev not in [None, 'None', 'null', ''] and to_device_type:
+            device_types[to_dev] = to_device_type
+            print(f"DEBUG: Graph - Set device type for '{to_dev}': '{to_device_type}'", file=sys.stderr, flush=True)
         
         # Check if devices are firewalls and collect interface information
         is_firewall = hop.get('is_firewall', False)
@@ -186,17 +222,22 @@ def create_path_graph(path_hops, source, destination):
         if to_dev and to_dev not in [None, 'None', 'null', '']:
             devices.add(to_dev)
         
-        # Determine edge color and style based on status (only for successful hops now)
+        # Determine edge color and style based on status
         if status == 'Success':
             edge_color = 'green'
             edge_style = 'solid'
             edge_width = 2.0
+        elif status == 'Failed' or failure_reason:
+            # Show failed hops with red/dashed style so users can see what was discovered
+            edge_color = 'red'
+            edge_style = 'dashed'
+            edge_width = 1.5
         else:
             edge_color = 'gray'
             edge_style = 'solid'
             edge_width = 1.5
         
-        # Add edge with attributes - only for valid device pairs and successful hops
+        # Add edge with attributes - for all valid device pairs (including failed ones)
         if from_dev and to_dev and to_dev not in [None, 'None', 'null', '']:
             edges.append((from_dev, to_dev, {
                 'color': edge_color,
@@ -205,6 +246,7 @@ def create_path_graph(path_hops, source, destination):
                 'status': status,
                 'failure_reason': failure_reason
             }))
+            print(f"DEBUG: Added edge: {from_dev} -> {to_dev} (status: {status})", file=sys.stderr, flush=True)
         elif from_dev and (not to_dev or to_dev in [None, 'None', 'null', '']):
             # Last hop - connect to destination if available
             if destination:
@@ -221,13 +263,41 @@ def create_path_graph(path_hops, source, destination):
     if destination and destination not in devices:
         devices.add(destination)
     
+    # Add destination node if not already added
+    if destination and destination not in devices:
+        devices.add(destination)
+        print(f"DEBUG: Added destination node: {destination}", file=sys.stderr, flush=True)
+    
+    # If no edges were created from hops, but we have source and destination, add a direct edge
+    # This is a fallback to show at least a connection attempt
+    if len(edges) == 0 and source and destination:
+        print(f"DEBUG: No edges from hops, adding direct edge from source to destination as fallback", file=sys.stderr, flush=True)
+        edges.append((source, destination, {
+            'color': 'orange',
+            'style': 'dotted',
+            'width': 1.0
+        }))
+    
     # Add nodes and edges to graph
+    print(f"DEBUG: Adding {len(devices)} nodes and {len(edges)} edges to graph", file=sys.stderr, flush=True)
+    print(f"DEBUG: Devices: {list(devices)}", file=sys.stderr, flush=True)
+    print(f"DEBUG: Edges: {edges}", file=sys.stderr, flush=True)
+    print(f"DEBUG: Hops processed: {hops_processed}, skipped: {hops_skipped}", file=sys.stderr, flush=True)
+    
     G.add_nodes_from(devices)
-    for from_dev, to_dev, attrs in edges:
-        G.add_edge(from_dev, to_dev, **attrs)
+    for edge_data in edges:
+        if len(edge_data) == 3:
+            from_dev, to_dev, attrs = edge_data
+            G.add_edge(from_dev, to_dev, **attrs)
+        elif len(edge_data) == 2:
+            from_dev, to_dev = edge_data
+            G.add_edge(from_dev, to_dev)
     
     if len(G.nodes()) == 0:
+        print(f"DEBUG: Graph has no nodes, returning None", file=sys.stderr, flush=True)
         return None
+    
+    print(f"DEBUG: Graph created with {len(G.nodes())} nodes and {len(G.edges())} edges", file=sys.stderr, flush=True)
     
     # Create figure
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -299,9 +369,27 @@ def create_path_graph(path_hops, source, destination):
                               width=edge_width, alpha=0.7, arrows=True,
                               arrowsize=20, ax=ax, connectionstyle='arc3,rad=0.1')
     
-    # Draw labels
-    labels = {node: node[:15] + '...' if len(node) > 15 else node for node in G.nodes()}
-    nx.draw_networkx_labels(G, pos, labels, font_size=8, font_weight='bold', ax=ax)
+    # Draw labels with device type information, positioned slightly above nodes
+    print(f"DEBUG: Graph - Device types collected: {device_types}", file=sys.stderr, flush=True)
+    label_offset = 0.015  # Offset to position labels above nodes (reduced further to bring closer)
+    for node in G.nodes():
+        if node in pos:
+            x, y = pos[node]
+            node_label = node[:15] + '...' if len(node) > 15 else node
+            # Add device type if available
+            if node in device_types and device_types[node]:
+                device_type = device_types[node]
+                # Format device type nicely (e.g., "Palo Alto Firewall" -> "Palo Alto Firewall")
+                label_text = f"{node_label}\n({device_type})"
+                print(f"DEBUG: Graph - Label for '{node}': '{node_label}\\n({device_type})'", file=sys.stderr, flush=True)
+            else:
+                label_text = node_label
+                print(f"DEBUG: Graph - No device type for '{node}', using label: '{node_label}'", file=sys.stderr, flush=True)
+            
+            # Draw label slightly above the node
+            ax.text(x, y + label_offset, label_text, 
+                   fontsize=7, fontweight='bold', ha='center', va='bottom',
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8, edgecolor='gray', linewidth=0.5))
     
     # Overlay firewall interface and zone information
     for firewall_device, interfaces in firewall_interfaces.items():
@@ -312,52 +400,48 @@ def create_path_graph(path_hops, source, destination):
             print(f"DEBUG: Graph overlay for {firewall_device}: interfaces={interfaces}", file=sys.stderr, flush=True)
             
             # Calculate vertical positions for labels
-            # Zones and interfaces at top and bottom, device group in the middle
-            zone_offset = 0.08  # Zone label position (reduced from 0.12 to bring closer)
-            interface_offset = 0.05  # Interface label position (closer to node)
-            device_group_offset = 0.01  # Device group label position (between in and out interfaces, slightly below center)
+            # Cleaner layout: interface+zone combined on top/bottom, device group in middle
+            top_offset = 0.02  # Top label position (reduced further to bring closer)
+            bottom_offset = 0.02  # Bottom label position (reduced further to bring closer)
+            device_group_offset = 0.005  # Device group label position (slightly below center, reduced further)
             
-            # Add in interface label on top
+            # Build top label: In interface with zone
+            top_label_parts = []
             if interfaces.get('in'):
-                # First add zone label above the interface (if available)
                 in_zone = interfaces.get('in_zone')
                 if in_zone:
-                    ax.text(x, y + zone_offset, f"Zone: {in_zone}", 
-                           fontsize=5, ha='center', va='bottom',
-                           bbox=dict(boxstyle='round,pad=0.05', facecolor='yellow', alpha=0.8))
-                    # Place interface label directly below zone (minimal gap)
-                    interface_y = y + interface_offset + 0.01
+                    top_label_parts.append(f"In: {interfaces['in']} ({in_zone})")
                 else:
-                    interface_y = y + interface_offset
-                
-                ax.text(x, interface_y, f"In: {interfaces['in']}", 
-                       fontsize=6, ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.05', facecolor='lightblue', alpha=0.8))
+                    top_label_parts.append(f"In: {interfaces['in']}")
             
-            # Add out interface label at the bottom
+            # Build bottom label: Out interface with zone
+            bottom_label_parts = []
             if interfaces.get('out'):
-                # First add zone label above the interface (if available)
                 out_zone = interfaces.get('out_zone')
                 print(f"DEBUG: {firewall_device} - Out zone: {out_zone}", file=sys.stderr, flush=True)
                 if out_zone:
-                    ax.text(x, y - zone_offset, f"Zone: {out_zone}", 
-                           fontsize=5, ha='center', va='top',
-                           bbox=dict(boxstyle='round,pad=0.05', facecolor='yellow', alpha=0.8))
-                    # Place interface label directly above zone (minimal gap)
-                    interface_y = y - interface_offset - 0.01
+                    bottom_label_parts.append(f"Out: {interfaces['out']} ({out_zone})")
                 else:
-                    interface_y = y - interface_offset
-                
-                ax.text(x, interface_y, f"Out: {interfaces['out']}", 
-                       fontsize=6, ha='center', va='top',
-                       bbox=dict(boxstyle='round,pad=0.05', facecolor='lightgreen', alpha=0.8))
+                    bottom_label_parts.append(f"Out: {interfaces['out']}")
             
-            # Add device group label between in and out interfaces (if available)
+            # Add top label (In interface + zone)
+            if top_label_parts:
+                ax.text(x, y + top_offset, top_label_parts[0], 
+                       fontsize=6, ha='center', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
+            
+            # Add bottom label (Out interface + zone)
+            if bottom_label_parts:
+                ax.text(x, y - bottom_offset, bottom_label_parts[0], 
+                       fontsize=6, ha='center', va='top',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.8))
+            
+            # Add device group label in the middle (if available)
             device_group = interfaces.get('device_group')
             if device_group:
                 ax.text(x, y - device_group_offset, f"DG: {device_group}", 
                        fontsize=6, ha='center', va='center',
-                       bbox=dict(boxstyle='round,pad=0.05', facecolor='orange', alpha=0.9),
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='orange', alpha=0.9),
                        weight='bold')
     
     # Add legend
@@ -395,8 +479,28 @@ def display_result(result):
             st.error(f"Error: {result['error']}")
             # Display detailed error information if available
             if 'details' in result:
-                st.error("Error Details:")
-                st.json(result['details'])
+                details = result['details']
+                # Try to extract statusDescription for better user experience
+                if isinstance(details, str):
+                    if 'statusDescription:' in details:
+                        try:
+                            # Extract the status description
+                            desc_start = details.find('statusDescription:') + len('statusDescription:')
+                            desc_text = details[desc_start:].strip()
+                            # Remove any trailing statusCode or other info
+                            if ',' in desc_text:
+                                desc_text = desc_text.split(',')[0].strip()
+                            if desc_text and desc_text != 'No description':
+                                st.warning(f"ℹ️ {desc_text}")
+                        except:
+                            pass
+                
+                # Show full details in expander
+                with st.expander("Error Details"):
+                    if isinstance(details, str):
+                        st.text(details)
+                    else:
+                        st.json(details)
             if 'full_response' in result:
                 with st.expander("Full API Response"):
                     st.text(result['full_response'])
@@ -536,6 +640,14 @@ def display_result(result):
                 
                 # Show full details in expander
                 with st.expander("View Full Path Details"):
+                    # Debug: Show device cache info if available (at the top)
+                    if "_debug_device_cache_size" in result:
+                        cache_size = result.get('_debug_device_cache_size', 0)
+                        cache_sample = result.get('_debug_device_cache_sample', [])
+                        if cache_size > 0:
+                            st.success(f"✅ Device Cache: {cache_size} entries. Sample devices: {', '.join(cache_sample)}")
+                        else:
+                            st.warning(f"⚠️ Device Cache: {cache_size} entries (cache is empty - device types will show as numbers)")
                     st.json(result)
             else:
                 # No path hops available - show summary information
@@ -842,11 +954,22 @@ def display_result_chat(result, container):
     
     print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
     
+    # Debug: Print device cache info if available
+    if "_debug_device_cache_size" in result:
+        cache_size = result.get('_debug_device_cache_size', 0)
+        cache_sample = result.get('_debug_device_cache_sample', [])
+        print(f"DEBUG: Device Cache Debug - Size: {cache_size}, Sample: {cache_sample}", file=sys.stderr, flush=True)
+    
     # Check for path hops in multiple possible locations FIRST
     hops_to_display = None
     if 'path_hops' in result and result['path_hops']:
         hops_to_display = result['path_hops']
         print(f"DEBUG: Using path_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
+        # Debug: Print first hop to see device types
+        if hops_to_display and len(hops_to_display) > 0:
+            first_hop = hops_to_display[0]
+            print(f"DEBUG: First hop keys: {list(first_hop.keys())}", file=sys.stderr, flush=True)
+            print(f"DEBUG: First hop device types: from_device_type='{first_hop.get('from_device_type')}', to_device_type='{first_hop.get('to_device_type')}'", file=sys.stderr, flush=True)
     elif 'simplified_hops' in result and result['simplified_hops']:
         hops_to_display = result['simplified_hops']
         print(f"DEBUG: Using simplified_hops, count: {len(hops_to_display)}", file=sys.stderr, flush=True)
@@ -923,6 +1046,41 @@ def display_result_chat(result, container):
                     # Always update device group if available
                     if device_group:
                         firewalls_found[firewall_device]['device_group'] = device_group
+        
+        # Debug: Show device cache info if available (before graph)
+        if "_debug_device_cache_size" in result:
+            cache_size = result.get('_debug_device_cache_size', 0)
+            cache_sample = result.get('_debug_device_cache_sample', [])
+            print(f"DEBUG: Device Cache Info - Size: {cache_size}, Sample: {cache_sample}", file=sys.stderr, flush=True)
+            # Print Devices API debug info if available
+            if "_debug_devices_api" in result:
+                api_debug = result["_debug_devices_api"]
+                print(f"DEBUG: Devices API Debug - Endpoint: {api_debug.get('endpoint', 'N/A')}, Status: {api_debug.get('status', 'N/A')}, Devices: {api_debug.get('devices_count', 0)}, Cache Built: {api_debug.get('cache_built', False)}, Error: {api_debug.get('error', 'None')}", file=sys.stderr, flush=True)
+            if cache_size > 0:
+                container.success(f"✅ Device Cache: {cache_size} entries. Sample devices: {', '.join(cache_sample[:5])}")
+            else:
+                container.warning(f"⚠️ Device Cache: {cache_size} entries (cache is empty - device types will show as numbers)")
+                # Show Devices API debug info if available
+                with container.expander("🔍 Device Cache Debug Info"):
+                    st.write(f"**Cache Size:** {cache_size}")
+                    st.write(f"**Cache Sample:** {cache_sample}")
+                    # Show Devices API debug info if available
+                    if "_debug_devices_api" in result:
+                        api_debug = result["_debug_devices_api"]
+                        st.markdown("---")
+                        st.markdown("**Devices API Debug Info:**")
+                        st.write(f"**Endpoint:** `{api_debug.get('endpoint', 'N/A')}`")
+                        st.write(f"**HTTP Status:** {api_debug.get('status', 'N/A')}")
+                        st.write(f"**Devices Count:** {api_debug.get('devices_count', 0)}")
+                        st.write(f"**Cache Built:** {api_debug.get('cache_built', False)}")
+                        if api_debug.get('cache_size'):
+                            st.write(f"**Cache Size:** {api_debug.get('cache_size', 0)}")
+                        if api_debug.get('retry_status'):
+                            st.write(f"**Retry Status:** {api_debug.get('retry_status')}")
+                        if api_debug.get('error'):
+                            st.error(f"**Error:** {api_debug['error']}")
+                    else:
+                        st.info("The Devices API call may have failed or returned no devices. Check server logs for details.")
         
         # Display graph visualization of the full path
         try:
@@ -1419,6 +1577,36 @@ def main():
                             
                             with st.chat_message("assistant"):
                                 st.error(f"❌ {result['error']}")
+                                
+                                # Extract and display statusDescription if available
+                                if 'details' in result:
+                                    details = result['details']
+                                    if isinstance(details, str):
+                                        # Try to extract statusDescription from details string
+                                        if 'statusDescription:' in details:
+                                            try:
+                                                # Extract the status description
+                                                desc_start = details.find('statusDescription:') + len('statusDescription:')
+                                                desc_text = details[desc_start:].strip()
+                                                # Remove any trailing statusCode or other info
+                                                if ',' in desc_text:
+                                                    desc_text = desc_text.split(',')[0].strip()
+                                                if desc_text and desc_text != 'No description':
+                                                    st.warning(f"ℹ️ {desc_text}")
+                                            except:
+                                                pass
+                                        # If details is JSON-like, try to parse it
+                                        elif details.startswith('{') or 'statusCode' in details:
+                                            st.info(f"Details: {details}")
+                                    elif isinstance(details, dict):
+                                        status_desc = details.get('statusDescription', '')
+                                        if status_desc and status_desc != 'No description':
+                                            st.warning(f"ℹ️ {status_desc}")
+                                
+                                # Show source IP if available
+                                if 'source' in result:
+                                    st.info(f"Source: {result['source']}")
+                            
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "content": result
