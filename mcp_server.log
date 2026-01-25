@@ -1,0 +1,1651 @@
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:26:03][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: LLM analysis KeyError: KeyError: '\n    "summary"'
+DEBUG: Created basic fallback ai_analysis
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 719
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:28:35][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: LLM analysis KeyError: KeyError: '\n    "summary"'
+DEBUG: Created basic fallback ai_analysis
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 719
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:30:19][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: LLM analysis KeyError: KeyError: '\n    "summary"'
+DEBUG: KeyError traceback:
+Traceback (most recent call last):
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\mcp_server.py", line 736, in get_device_rack_location
+    formatted_messages = analysis_prompt_template.format_messages(
+        device_data=json.dumps(device_details, indent=2, default=str)
+    )
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\.venv\Lib\site-packages\langchain_core\prompts\chat.py", line 1167, in format_messages
+    message = message_template.format_messages(**kwargs)
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\.venv\Lib\site-packages\langchain_core\prompts\chat.py", line 549, in format_messages
+    return [self.format(**kwargs)]
+            ~~~~~~~~~~~^^^^^^^^^^
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\.venv\Lib\site-packages\langchain_core\prompts\chat.py", line 582, in format
+    text = self.prompt.format(**kwargs)
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\.venv\Lib\site-packages\langchain_core\prompts\prompt.py", line 198, in format
+    return DEFAULT_FORMATTER_MAPPING[self.template_format](self.template, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\manik\AppData\Roaming\uv\python\cpython-3.13.3-windows-x86_64-none\Lib\string.py", line 190, in format
+    return self.vformat(format_string, args, kwargs)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\manik\Documents\coding\palo-netbrain\netbrain\.venv\Lib\site-packages\langchain_core\utils\formatting.py", line 33, in vformat
+    return super().vformat(format_string, args, kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\manik\AppData\Roaming\uv\python\cpython-3.13.3-windows-x86_64-none\Lib\string.py", line 194, in vformat
+    result, _ = self._vformat(format_string, args, kwargs, used_args, 2)
+                ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\manik\AppData\Roaming\uv\python\cpython-3.13.3-windows-x86_64-none\Lib\string.py", line 234, in _vformat
+    obj, arg_used = self.get_field(field_name, args, kwargs)
+                    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\manik\AppData\Roaming\uv\python\cpython-3.13.3-windows-x86_64-none\Lib\string.py", line 299, in get_field
+    obj = self.get_value(first, args, kwargs)
+  File "C:\Users\manik\AppData\Roaming\uv\python\cpython-3.13.3-windows-x86_64-none\Lib\string.py", line 256, in get_value
+    return kwargs[key]
+           ~~~~~~^^^^^
+KeyError: '\n    "summary"'
+
+DEBUG: Created basic fallback ai_analysis
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 719
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:32:16][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 1022
+DEBUG: LLM response preview: Here are the responses to your questions:
+
+**1. Summary:**
+
+Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front (if available). Arista DCS-7050SX3-24YC4C-S-F device with active status.
+
+**2. Context:**
+This is a leaf device in a data center network, likely part of an Ethernet fabric using the Arista DCS-7050SX3-24YC4C-S-F switch.
+
+**3. Notes:**
+
+* No specific IP addresses or serial numbers are available.
+* The device is not currently a member of any virtual ch
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'", "'context'", "'notes'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary', 'context', 'notes']
+DEBUG: Added ai_analysis to result with keys: ['summary', 'context', 'notes']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1040
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:34:21][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 364
+DEBUG: LLM response preview: Here is the JSON object with a summary that meets the requirements:
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1. [DCS-7050SX3-24YC4C-S-F device, Active, Front]"
+}
+```
+
+This summary starts with the rack location in the required format, followed by the device type and status, and ends with other key details.
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 723
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:36:18][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 261
+DEBUG: LLM response preview: Based on the device information from NetBox, here is a summary of leander-dc-border-leaf1:
+
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. DCS-7050SX3-24YC4C-S-F device type, Leaf role, Active status."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 750
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:37:20][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 214
+DEBUG: LLM response preview: Here is the summary of device information from NetBox:
+
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face Front. DCS-7050SX3-24YC4C-S-F device type, Active status."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 739
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:38:32][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 172
+DEBUG: LLM response preview: {
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front (if available). DCS-7050SX3-24YC4C-S-F device with active status."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 753
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:40:30][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 217
+DEBUG: LLM response preview: Here is the summary of the device information in the required format:
+
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1.0, Face front. Cisco DCS-7050SX3-24YC4C-S-F, active"
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:41:39][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 893
+DEBUG: LLM response preview: Based on the device information from NetBox, I will provide a concise summary for each query:
+
+**Query 1:** details of leander-dc-border-leaf1
+```
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+```
+
+**Query 2:** details of leander-dc-border-leaf1
+ Same as Query 1
+
+**Query 3:** details of leander-dc-border-leaf1
+ Same as Query 1
+
+**Query 4:** details of leander-dc-border-leaf1
+ Same as Query 1
+
+**Q
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:42:36][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:52:43][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 684
+DEBUG: LLM response preview: Here are the summaries and additional information for `leander-dc-border-leaf1`:
+
+**Summary 1:**
+Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active.
+
+**Summary 2:** 
+Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-SF, active.
+
+**Summary 3:**
+ Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, face front. Arista DCS-7050SX3-24YC4C
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1282
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:54:04][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:55:55][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 650
+DEBUG: LLM response preview: Based on the provided device information from NetBox, here is a summary in table format and as a JSON object with the required field:
+
+**Table Format:**
+
+| Field | Value |
+| --- | --- |
+| Device Name | leander-dc-border-leaf1 |
+| Location | Leander DC - Rack A4, Position U1, Face front |
+| Manufacturer | Arista DCS-7050SX3-24YC4C-S-F |
+| Status | active |
+
+**JSON Object:**
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:56:41][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 1010
+DEBUG: LLM response preview: Based on the provided device information from NetBox, I will analyze and format it as per your requirements. Here's the analysis in JSON object format:
+
+```json
+{
+    "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+```
+
+This meets the required format for concise summary information with critical formatting rules applied:
+
+*   Rack location is in exact format: "Site [site name] - Rack [rack name], Posit
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:57:07][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 644
+DEBUG: LLM response preview: Based on the device information from NetBox, I will provide a concise summary in table format and as requested in JSON object.
+
+**Table Format:**
+
+| Field | Value |
+| --- | --- |
+| Device Name | leander-dc-border-leaf1 |
+| Location | Leander DC - Rack A4, Position U1, Face front. |
+| Manufacturer | Arista DCS-7050SX3-24YC4C-S-F |
+| Status | active |
+
+**JSON Object:**
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050S
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 17:58:39][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 484
+DEBUG: LLM response preview: Based on the provided device information from NetBox, I analyzed the data and created a concise summary in the required format:
+
+{
+    "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+
+Note: 
+
+* I removed the decimal point from the position value since it's not an integer and converted it to "U1" as per the required format.
+* I kept the face field in lowercase as per the required format.
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:00:50][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 841
+DEBUG: LLM response preview: Here is the summary in table format and as a JSON object:
+
+**Table Format:**
+
+| Field | Value |
+| --- | --- |
+| Device Name | leander-dc-border-leaf1 |
+| Site | Leander DC - [site name] |
+| Rack | A4, Position U1, Face front |
+| Manufacturer | Arista DCS-7050SX3-24YC4C-S-F |
+| Status | active |
+
+**JSON Object:**
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+```
+
+Note that I've reformatte
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:01:15][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 423
+DEBUG: LLM response preview: **Device Information Summary**
+=====================================
+
+Here is the summary of the device information from NetBox:
+
+| Field | Value |
+| --- | --- |
+| Device Name | leander-dc-border-leaf1 |
+| Site Location | Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+
+Note: I have reformatted the rack location to match the exact format specified in the critical formatting rules.
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1020
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:06:10][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 623
+DEBUG: LLM response preview: Based on the provided device information from NetBox, I will create a table with the requested format to provide a concise summary of the device's location.
+
+```markdown
+| Field | Value |
+| --- | --- |
+| Device name | leander-dc-border-leaf1 |
+| Location at Leander DC - Rack A4 | U1, front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+```
+
+If you'd like the JSON response as requested:
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Ar
+DEBUG: Extracted JSON from markdown code block
+DEBUG: JSON parse failed: Expecting value: line 1 column 1 (char 0)
+DEBUG: Extracted summary using regex
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:06:23][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 699
+DEBUG: LLM response preview: Based on the provided device information from NetBox, here is a concise summary in table format:
+
+| Field | Value |
+| --- | --- |
+| Device | leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+
+However, I noticed that the rack name is "A4" which is typically formatted as just "A4", not "A4, Position U[integer]". If you want to include the position in the summary, here is the updated table:
+
+| Field | Value |
+| --- | --- |
+| D
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1301
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:11:37][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:11:44][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 432
+DEBUG: LLM response preview: Here is a concise summary in table format for the device information:
+
+| Field | Value |
+| --- | --- |
+| Device | leander-dc-border-leaf2 |
+| Location | Leander DC - Rack A4, Position U2, Face front. |
+| Manufacturer | Arista DCS-7050SX3-24YC4C-S-F |
+| Status | Active |
+
+Note: The rack location is in the format requested, but I had to adjust "Position" from 2.0 to "U2", as per NetBox's position format (integer with no decimals).
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1034
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:12:31][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:12:35][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 496
+DEBUG: LLM response preview: Here is the summary in table format:
+
+| Field | Value |
+| --- | --- |
+| Device | roundrock-dc-leaf1 located at Round Rock DC - Rack A1, Position U1, Face front. Arista DCS-7050SX3-96YC8-F, active. |
+
+And here is the JSON object with the summary:
+
+```json
+{
+  "summary": "roundrock-dc-leaf1 located at Round Rock DC - Rack A1, Position U1, Face front. Arista DCS-7050SX3-96YC8-F, active."
+}
+```
+
+Let me know if you'd like me to analyze any other device information or provide a network path query.
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 710
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:12:59][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:13:03][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 780
+DEBUG: LLM response preview: ### Device Information Analysis
+#### leander-dc-border-leaf1
+
+| Field | Value |
+| --- | --- |
+| Rack Location | Device leander-dc-border-leaf1 located at Round Rock DC - Rack A1, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+
+Note: I extracted the device information from NetBox as per your request and provided a concise summary in table format. The summary includes the rack location, position, face, manufacturer (Arista), and status of the device.
+
+Please note that I assumed 
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1374
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:15:58][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:16:03][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 140
+DEBUG: LLM response preview: {
+  "summary": "Device roundrock-dc-leaf1 located at Round Rock DC - Rack A1, Position U1, Face front. Cisco DCS-7050SX3-96YC8-F, active."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 716
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:16:58][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:17:03][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 248
+DEBUG: LLM response preview: Based on the provided device information from NetBox, I can generate a concise summary as follows:
+
+{
+    "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:17:29][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:17:34][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 337
+DEBUG: LLM response preview: Here is the summary of device information from NetBox:
+
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+
+Note that I have formatted the rack location as requested: Site is "Leander DC", Rack is "A4", and Position is "U1" without decimals.
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:17:47][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:17:53][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 629
+DEBUG: LLM response preview: Based on the provided device information, here is a concise summary in table format:
+
+| Field | Value |
+| --- | --- |
+| Device Name | leander-dc-border-leaf1 |
+| Rack Location | Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+
+Here is the summary in JSON format:
+
+```json
+{
+  "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+DEBUG: Extracted JSON from markdown code block
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:22:57][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:23:03][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 429
+DEBUG: LLM response preview: Here is the summary of the device information in the required format:
+
+{
+    "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+
+However, to make it more accurate according to the rules:
+ 
+{
+    "summary": "Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active."
+}
+DEBUG: Extracted JSON object from text
+DEBUG: Original JSON keys (before cleaning): ["'summary'"]
+DEBUG: Successfully parsed JSON, cleaned keys: ['summary']
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 727
+DEBUG: ai_analysis found in JSON serialization
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:25:16][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+
+
+                   ┌──────────────────────────────────────────────────────────────────────────────┐                    
+                   │                                                                              │                    
+                   │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │                    
+                   │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │                    
+                   │                                                                              │                    
+                   │                               FastMCP 2.13.0.2                               │                    
+                   │                                                                              │                    
+                   │                                                                              │                    
+                   │                    🖥  Server name: netbrain-mcp-server                       │                    
+                   │                                                                              │                    
+                   │                    📦 Transport:   STDIO                                     │                    
+                   │                                                                              │                    
+                   │                    📚 Docs:        https://gofastmcp.com                     │                    
+                   │                    🚀 Hosting:     https://fastmcp.cloud                     │                    
+                   │                                                                              │                    
+                   └──────────────────────────────────────────────────────────────────────────────┘                    
+
+
+[2;36m[01/24/26 18:25:21][0m[2;36m [0m[34mINFO    [0m Starting MCP server [32m'netbrain-mcp-server'[0m with transport [32m'stdio'[0m            [2mserver.py[0m[2m:[0m[2m1966[0m
+DEBUG: Initializing LLM (ChatOllama)...
+DEBUG: LLM initialized successfully
+DEBUG: LLM available, starting analysis for rack location
+DEBUG: Entering LLM analysis try block
+DEBUG: Preparing device_details from device object
+DEBUG: Device details prepared, keys: ['name', 'display', 'device_type', 'serial', 'rack', 'position', 'face', 'site', 'status', 'comments', 'tags', 'custom_fields']
+DEBUG: Building format instruction and conversation context
+DEBUG: Formatting prompt template with device data
+DEBUG: Prompt formatted, about to invoke LLM
+DEBUG: Invoking LLM for rack location analysis...
+DEBUG: LLM response received
+DEBUG: LLM response content length: 624
+DEBUG: LLM response preview: ### Device Information Analysis
+
+#### Summary in Table Format
+
+| Field | Value |
+| --- | --- |
+| Rack Location | Device leander-dc-border-leaf1 located at Leander DC - Rack A4, Position U1, Face front. Arista DCS-7050SX3-24YC4C-S-F, active. |
+
+### Detailed Analysis
+
+* **Rack Location**: The device is located in the "Leander DC" site, specifically in rack "A4", position "U1" on the front side.
+* **Device Details**: The device type/model is an Arista DCS-7050SX3-24YC4C-S-F device.
+
+Note: The provi
+DEBUG: Using full response as summary (no JSON found)
+DEBUG: Added ai_analysis to result with keys: ['summary']
+DEBUG: Final result keys: ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type', 'device_role', 'manufacturer', 'model', 'serial', 'primary_ip', 'primary_ip4', '_debug_llm_check', 'ai_analysis']
+DEBUG: Final result has ai_analysis: True
+DEBUG: Result is JSON-serializable, length: 1225
+DEBUG: ai_analysis found in JSON serialization

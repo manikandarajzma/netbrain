@@ -790,6 +790,113 @@ def parse_query(query_text, default_live_data=True):
         'is_live': is_live
     }
 
+
+def parse_rack_location_query(query_text):
+    """
+    Parse natural language query to extract device name for rack location lookup.
+
+    Args:
+        query_text: Natural language query string
+
+    Returns:
+        dict or None: {"device_name": "<name>", "format": "<format>"} if detected, else None
+    """
+    import re
+
+    if not query_text:
+        return None
+
+    query_lower = query_text.lower()
+    
+    # Detect format request
+    format_type = None
+    if "table" in query_lower or "in a table" in query_lower:
+        format_type = "table"
+    elif "json" in query_lower:
+        format_type = "json"
+    elif "list" in query_lower:
+        format_type = "list"
+
+    # Avoid ambiguity with path queries
+    path_keywords = ["path", "from", "to", "source", "destination"]
+    has_path_keywords = any(keyword in query_lower for keyword in path_keywords)
+    
+    # Device detail query patterns (more flexible)
+    device_detail_patterns = [
+        r"details of\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"detail of\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"info about\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"information about\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"info on\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"show\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"tell me about\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"what is\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"what's\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+    ]
+    
+    # Check for device detail queries first (before path check)
+    for pattern in device_detail_patterns:
+        match = re.search(pattern, query_text, re.IGNORECASE)
+        if match:
+            device_name = match.group("device").strip().strip("?.!,")
+            # Remove formatting requests like "in a table format", "in table", etc.
+            device_name = re.sub(r"\s+in\s+(a\s+)?(table|json|list|format).*$", "", device_name, flags=re.IGNORECASE).strip()
+            if device_name and not has_path_keywords:
+                result = {"device_name": device_name}
+                if format_type:
+                    result["format"] = format_type
+                return result
+    
+    # If path keywords present, only proceed with explicit rack/location intent
+    if has_path_keywords:
+        # Allow rack intent to override path keywords
+        if "rack" not in query_lower and "rack location" not in query_lower:
+            return None
+
+    # Accept rack intent or "where is <device>" phrasing
+    has_rack_intent = "rack" in query_lower or "rack location" in query_lower
+    has_where_is_intent = "where is" in query_lower or "where's" in query_lower
+    has_location_intent = "located" in query_lower or "location" in query_lower
+    if not (has_rack_intent or has_where_is_intent or has_location_intent):
+        return None
+
+    patterns = [
+        r"rack location of\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"rack location for\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"rack location\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"where is\s+(?P<device>.+?)\s+located",
+        r"where is\s+(?P<device>.+?)\s+in\s+rack",
+        r"where is\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"where's\s+(?P<device>.+?)(?:\s+in\s+.*)?$",
+        r"rack\s+position\s+of\s+(?P<device>.+?)(?:\s+in\s+.*)?$"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, query_text, re.IGNORECASE)
+        if match:
+            device_name = match.group("device").strip().strip("?.!,")
+            # Remove formatting requests like "in a table format", "in table", etc.
+            device_name = re.sub(r"\s+in\s+(a\s+)?(table|json|list|format).*$", "", device_name, flags=re.IGNORECASE).strip()
+            if device_name:
+                result = {"device_name": device_name}
+                if format_type:
+                    result["format"] = format_type
+                return result
+
+    # Fallback: look for quoted device name
+    quoted = re.search(r"['\"]([^'\"]+)['\"]", query_text)
+    if quoted:
+        device_name = quoted.group(1).strip()
+        if device_name:
+            return {"device_name": device_name}
+
+    # Fallback: "device <name>" with rack intent
+    dev_match = re.search(r"device\s+([A-Za-z0-9._-]+)", query_text, re.IGNORECASE)
+    if dev_match:
+        return {"device_name": dev_match.group(1)}
+
+    return None
+
 def extract_hops_from_path_details(path_details):
     """
     Extract path hops from path_details structure (fallback extraction in client).
@@ -1013,6 +1120,18 @@ def display_result_chat(result, container):
                     out_zone = hop.get('out_zone')
                     device_group = hop.get('device_group')
                     
+                    # Extract device type - check both from_device and to_device to find the one matching firewall_device
+                    device_type = None
+                    from_dev = hop.get('from_device', '')
+                    to_dev = hop.get('to_device', '')
+                    if from_dev == firewall_device:
+                        device_type = hop.get('from_device_type')
+                    elif to_dev == firewall_device:
+                        device_type = hop.get('to_device_type')
+                    # Fallback: if device type not found, try to get it from either field
+                    if not device_type:
+                        device_type = hop.get('from_device_type') or hop.get('to_device_type')
+                    
                     # Extract interface names (handle both string and dict formats)
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
@@ -1022,7 +1141,8 @@ def display_result_chat(result, container):
                         'out_interface': out_intf_name,
                         'in_zone': in_zone,
                         'out_zone': out_zone,
-                        'device_group': device_group
+                        'device_group': device_group,
+                        'device_type': device_type
                     }
                 elif firewall_device in firewalls_found:
                     # Merge interface information if we have partial data
@@ -1033,6 +1153,19 @@ def display_result_chat(result, container):
                     device_group = hop.get('device_group')
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
+                    
+                    # Extract device type if not already set
+                    if not firewalls_found[firewall_device].get('device_type'):
+                        from_dev = hop.get('from_device', '')
+                        to_dev = hop.get('to_device', '')
+                        if from_dev == firewall_device:
+                            device_type = hop.get('from_device_type')
+                        elif to_dev == firewall_device:
+                            device_type = hop.get('to_device_type')
+                        else:
+                            device_type = hop.get('from_device_type') or hop.get('to_device_type')
+                        if device_type:
+                            firewalls_found[firewall_device]['device_type'] = device_type
                     
                     if in_intf_name and not firewalls_found[firewall_device]['in_interface']:
                         firewalls_found[firewall_device]['in_interface'] = in_intf_name
@@ -1124,12 +1257,163 @@ def display_result_chat(result, container):
                 if interface_parts:
                     device_group = fw_info.get('device_group')
                     device_group_text = f" [DG: {device_group}]" if device_group else ""
-                    container.markdown(f"{fw_name}{device_group_text}: {', '.join(interface_parts)}")
+                    device_type = fw_info.get('device_type')
+                    device_type_text = f" ({device_type})" if device_type else ""
+                    container.markdown(f"{fw_name}{device_type_text}{device_group_text}: {', '.join(interface_parts)}")
         else:
             print(f"DEBUG: No firewalls found in path", file=sys.stderr, flush=True)
     else:
         print(f"DEBUG: No hops to display - result may not have path data", file=sys.stderr, flush=True)
         print(f"DEBUG: Result keys available: {list(result.keys())}", file=sys.stderr, flush=True)
+
+
+def display_rack_location_result(result, container, format_type=None, intent=None):
+    """
+    Display rack location lookup result.
+
+    Args:
+        result: Dictionary containing rack location data
+        container: Streamlit container to display results in
+        format_type: Optional format request ("table", "json", "list", "minimal", "summary")
+        intent: Optional intent ("rack_location_only", "device_details", "network_path")
+    """
+    if not isinstance(result, dict):
+        container.text(str(result))
+        return
+
+    if "error" in result:
+        container.error(f"❌ {result['error']}")
+        if "details" in result:
+            container.info(f"Details: {result['details']}")
+        return
+
+    device = result.get("device", "Unknown device")
+    rack = result.get("rack")
+    position = result.get("position")
+    site = result.get("site")
+    status = result.get("status")
+
+    if not rack:
+        message = result.get("message") or "Device is not assigned to a rack."
+        container.warning(f"⚠️ {device}: {message}")
+        if site:
+            container.info(f"Site: {site}")
+        return
+
+    # Format position as "U1" instead of "1.0"
+    position_str = None
+    if position is not None:
+        try:
+            position_int = int(float(position))
+            position_str = f"U{position_int}"
+        except (ValueError, TypeError):
+            position_str = str(position) if position else None
+
+    # Handle minimal/summary format - show only rack location
+    if format_type in ("minimal", "summary"):
+        container.markdown(f"### {device} - Rack Location")
+        location_info = []
+        if site:
+            location_info.append(f"**Site:** {site}")
+        if rack:
+            location_info.append(f"**Rack:** {rack}")
+        if position_str:
+            location_info.append(f"**Position:** {position_str}")
+        
+        if location_info:
+            container.markdown("\n".join(location_info))
+        else:
+            container.info("Rack location information not available.")
+        return
+
+    # Display in table format if requested
+    if format_type == "table":
+        import pandas as pd
+        table_data = []
+        
+        # If user wants only rack location, show only those fields
+        if intent == "rack_location_only":
+            # Only show rack location fields
+            if site:
+                table_data.append({"Field": "Site", "Value": site})
+            if rack:
+                table_data.append({"Field": "Rack", "Value": rack})
+            if position is not None:
+                position_int = int(float(position)) if position else None
+                if position_int is not None:
+                    table_data.append({"Field": "Position", "Value": f"U{position_int}"})
+            
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Rack Location")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            # Show all device details
+            table_data.append({"Field": "Device", "Value": device})
+            if rack:
+                table_data.append({"Field": "Rack", "Value": rack})
+            if position is not None:
+                position_int = int(float(position)) if position else None
+                if position_int is not None:
+                    table_data.append({"Field": "Position", "Value": f"U{position_int}"})
+            if site:
+                table_data.append({"Field": "Site", "Value": site})
+            if status:
+                table_data.append({"Field": "Status", "Value": status})
+            
+            # Add device details from result if available
+            if "device_type" in result:
+                table_data.append({"Field": "Device Type", "Value": result.get("device_type")})
+            if "device_role" in result:
+                table_data.append({"Field": "Device Role", "Value": result.get("device_role")})
+            if "manufacturer" in result:
+                table_data.append({"Field": "Manufacturer", "Value": result.get("manufacturer")})
+            if "model" in result:
+                table_data.append({"Field": "Model", "Value": result.get("model")})
+            if "serial" in result:
+                table_data.append({"Field": "Serial", "Value": result.get("serial")})
+            if "primary_ip" in result:
+                table_data.append({"Field": "Primary IP", "Value": result.get("primary_ip")})
+            if "primary_ip4" in result:
+                table_data.append({"Field": "Primary IPv4", "Value": result.get("primary_ip4")})
+            
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Device Details")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        # Only show location info if AI analysis is not present
+        if "ai_analysis" not in result or not result.get("ai_analysis"):
+            location_parts = [f"Rack: {rack}"]
+            if position is not None:
+                # Format position as U{number} (e.g., U1 for position 1.0)
+                position_int = int(float(position)) if position else None
+                if position_int is not None:
+                    location_parts.append(f"Position: U{position_int}")
+            if site:
+                location_parts.append(f"Site: {site}")
+            if status:
+                location_parts.append(f"Status: {status}")
+
+            container.success(f"📍 {device} location")
+            container.markdown(", ".join(location_parts))
+    
+    # Display AI analysis if available (only if not in table format, or show it after the table)
+    print(f"DEBUG: Client - Checking for AI analysis. Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+    print(f"DEBUG: Client - format_type: {format_type}", file=sys.stderr, flush=True)
+    if "ai_analysis" in result:
+        print(f"DEBUG: Client - AI analysis found in result, displaying...", file=sys.stderr, flush=True)
+        ai_analysis = result["ai_analysis"]
+        print(f"DEBUG: Client - AI analysis type: {type(ai_analysis)}, content: {str(ai_analysis)[:200]}", file=sys.stderr, flush=True)
+        # If table format, don't show AI analysis (table is the primary display)
+        # If not table format, show AI analysis as the summary
+        if format_type != "table":
+            if isinstance(ai_analysis, dict):
+                summary = ai_analysis.get("summary") or ai_analysis.get("Summary") or ai_analysis.get("SUMMARY")
+                if summary:
+                    container.markdown(summary)
+            elif isinstance(ai_analysis, str):
+                container.markdown(ai_analysis)
+    else:
+        print(f"DEBUG: Client - No AI analysis in result. Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
 
 async def execute_network_query(source, destination, protocol, port, is_live):
     """
@@ -1197,6 +1481,60 @@ async def execute_network_query(source, destination, protocol, port, is_live):
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
         return {"error": f"Error executing query: {str(e)}"}
 
+
+async def execute_rack_location_query(device_name, format_type=None, conversation_history=None):
+    """
+    Execute rack location lookup via MCP server.
+
+    Args:
+        device_name: Device name to look up in NetBox
+        format_type: Optional format request ("table", "json", "list")
+        conversation_history: Optional conversation history for context
+
+    Returns:
+        dict: Rack location result
+    """
+    import sys
+    print(f"DEBUG: Starting rack location query for device: {device_name}, format: {format_type}", file=sys.stderr, flush=True)
+
+    try:
+        server_params = get_server_params()
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                tool_arguments = {"device_name": device_name}
+                if format_type:
+                    tool_arguments["format"] = format_type
+                if conversation_history:
+                    tool_arguments["conversation_history"] = conversation_history
+                
+                tool_result = await session.call_tool(
+                    "get_device_rack_location",
+                    arguments=tool_arguments
+                )
+
+                if tool_result and tool_result.content:
+                    result_text = tool_result.content[0].text
+                    print(f"DEBUG: Raw result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                    print(f"DEBUG: Raw result text preview: {result_text[:500]}", file=sys.stderr, flush=True)
+                    try:
+                        result = json.loads(result_text)
+                        print(f"DEBUG: Rack location result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+                        if isinstance(result, dict) and "ai_analysis" in result:
+                            print(f"DEBUG: AI analysis found in result!", file=sys.stderr, flush=True)
+                            print(f"DEBUG: AI analysis type: {type(result['ai_analysis'])}, content: {str(result['ai_analysis'])[:500]}", file=sys.stderr, flush=True)
+                        else:
+                            print(f"DEBUG: No AI analysis in result. Available keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                        return result
+                    except json.JSONDecodeError:
+                        return {"result": result_text}
+                return None
+    except asyncio.TimeoutError:
+        return {"error": "Rack location lookup timed out. Please try again."}
+    except Exception as e:
+        return {"error": f"Error executing rack location lookup: {str(e)}"}
+
 def main():
     """
     Main function that creates and manages the chatbot interface.
@@ -1252,8 +1590,14 @@ def main():
             else:
                 # Assistant messages can contain various content types
                 if isinstance(message["content"], dict):
-                    # Display result
-                    display_result_chat(message["content"], st.container())
+                    # Check if it's a rack location result (has 'rack' or 'device' key)
+                    if "rack" in message["content"] or "device" in message["content"]:
+                        # Display rack location result
+                        format_type = message["content"].get("format_output")  # Get format from result if stored
+                        display_rack_location_result(message["content"], st.container(), format_type)
+                    else:
+                        # Display network path result
+                        display_result_chat(message["content"], st.container())
                 else:
                     st.markdown(message["content"])
     
@@ -1368,18 +1712,542 @@ def main():
         with st.chat_message("user"):
             st.markdown(prompt)
         
-        # Parse query
+        # Get conversation history for context-aware responses
+        conversation_history = [
+            {"role": msg.get("role", ""), "content": str(msg.get("content", ""))}
+            for msg in st.session_state.messages[-20:-1]  # Exclude current message, last 20 messages
+            if isinstance(msg.get("content"), str)  # Only include text messages for context
+        ]
+        
+        # Use tool discovery to select the appropriate tool based on tool descriptions
+        async def discover_and_execute_tool():
+            try:
+                server_params = get_server_params()
+                async with stdio_client(server_params) as (read_stream, write_stream):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        
+                        # Get available tools and their descriptions
+                        tools_result = await session.list_tools()
+                        tools = tools_result.tools if tools_result else []
+                        
+                        print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
+                        
+                        # Build tool descriptions for LLM
+                        tools_description = "\n\n".join([
+                            f"Tool: {tool.name}\nDescription: {tool.description or 'No description'}\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
+                            for tool in tools
+                        ])
+                        
+                        print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
+                        
+                        # Use LLM to understand the query and select the appropriate tool
+                        llm = ChatOllama(model="llama3.2:latest", base_url="http://localhost:11434")
+                        
+                        parse_prompt = f"""You are a tool selection assistant. Analyze the user's natural language query CAREFULLY and determine which tool to use and what information they want.
+
+Available tools:
+{tools_description}
+
+User query: "{prompt}"
+
+CRITICAL INSTRUCTIONS - Read the user's query word by word:
+1. Look for keywords that indicate what the user wants:
+   - "just rack location", "only rack", "rack location only", "just the rack", "only the rack" → format MUST be "minimal"
+   - "where is", "rack position", "what rack" → format MUST be "minimal"  
+   - "device details", "device info", "full details", "all information" → format should be "table"
+   - "table", "json", "list" → use that exact format
+   - Just a device name (e.g., "roundrock-dc-leaf1") → format should be "table" (default)
+
+2. Extract the device name EXACTLY as written in the query
+
+3. Determine the tool:
+   - Device name queries → "get_device_rack_location"
+   - Network path queries (has source/destination IPs) → "query_network_path"
+
+For get_device_rack_location tool:
+- format options: "table", "json", "list", "minimal", "summary", or null
+- "minimal" or "summary" = show ONLY rack location (site, rack, position) - NO other details
+- "table" = show full device details in table format
+
+Respond with JSON only:
+{{
+    "tool_name": "exact tool name from the available tools",
+    "parameters": {{
+        "device_name": "extracted device name exactly as written"
+    }},
+    "format": "table" or "json" or "list" or "minimal" or "summary" or null,
+    "intent": "rack_location_only" or "device_details" or "network_path"
+}}
+
+EXAMPLES - Follow these patterns exactly:
+- Query: "give me just the rack location for roundrock-dc-leaf1"
+  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "roundrock-dc-leaf1"}}, "format": "minimal", "intent": "rack_location_only"}}
+
+- Query: "leander-dc-border-leaf1 just the rack location in table format"
+  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf1"}}, "format": "table", "intent": "rack_location_only"}}
+
+- Query: "device details for leander-dc-border-leaf1"  
+  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf1"}}, "format": "table", "intent": "device_details"}}
+
+- Query: "where is roundrock-dc-leaf1"
+  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "roundrock-dc-leaf1"}}, "format": "minimal", "intent": "rack_location_only"}}
+
+- Query: "leander-dc-border-leaf2"
+  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf2"}}, "format": "table", "intent": "device_details"}}
+
+REMEMBER:
+- If user says "just" or "only" about rack location → intent MUST be "rack_location_only"
+- If user says "just the rack location in table format" → format: "table", intent: "rack_location_only"
+- If user says "just the rack location" (no format specified) → format: "minimal", intent: "rack_location_only"
+- Extract device names exactly as they appear
+- For network path queries, extract source, destination, protocol, port"""
+                        
+                        response = llm.invoke(parse_prompt)
+                        content = response.content if hasattr(response, 'content') else str(response)
+                        
+                        print(f"DEBUG: LLM tool selection response: {content[:500]}", file=sys.stderr, flush=True)
+                        
+                        # Extract JSON from response
+                        import re
+                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                        if json_match:
+                            parsed = json.loads(json_match.group())
+                            selected_tool = parsed.get("tool_name")
+                            tool_params = parsed.get("parameters", {})
+                            format_type = parsed.get("format")
+                            
+                            print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}", file=sys.stderr, flush=True)
+                            
+                            return {
+                                "success": True,
+                                "tool_name": selected_tool,
+                                "parameters": tool_params,
+                                "format": format_type
+                            }
+                        
+                        return {"success": False, "error": "Failed to parse tool selection"}
+            except Exception as e:
+                print(f"DEBUG: Tool discovery failed: {str(e)}", file=sys.stderr, flush=True)
+                return {"success": False, "error": str(e)}
+        
+        # Execute tool discovery
+        try:
+            try:
+                asyncio.get_running_loop()
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        lambda: asyncio.run(discover_and_execute_tool())
+                    )
+                    tool_selection = future.result(timeout=30)
+            except RuntimeError:
+                tool_selection = asyncio.run(discover_and_execute_tool())
+            
+            if tool_selection.get("success") and tool_selection.get("tool_name"):
+                selected_tool = tool_selection["tool_name"]
+                tool_params = tool_selection.get("parameters", {})
+                format_type = tool_selection.get("format")
+                intent = tool_selection.get("intent")
+                
+                # Execute the selected tool
+                if selected_tool == "get_device_rack_location":
+                    device_name = tool_params.get("device_name")
+                    if not device_name:
+                        # Try to extract device name from query if not in params
+                        device_name = prompt.strip()
+                    
+                    # Default to table format if no format specified (unless user asked for minimal)
+                    if not format_type:
+                        prompt_lower = prompt.lower()
+                        # Check if user explicitly requested table format
+                        if any(phrase in prompt_lower for phrase in ["table format", "in table", "as table"]):
+                            format_type = "table"
+                        # Check if user asked for minimal info (but not if they also said table format)
+                        elif any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
+                            format_type = "minimal"
+                        else:
+                            format_type = "table"
+                    
+                    # If user wants rack location only but in table format, ensure intent is set
+                    if not intent:
+                        prompt_lower = prompt.lower()
+                        if any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
+                            intent = "rack_location_only"
+                    
+                    # If user explicitly said "table format" but also wants "just rack location", ensure intent is set
+                    prompt_lower = prompt.lower()
+                    if format_type == "table" and any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
+                        intent = "rack_location_only"
+                    
+                    if device_name:
+                        status_msg = f"🔎 Looking up device details for **{device_name}**..."
+                        with st.chat_message("assistant"):
+                            st.info(status_msg)
+
+                        try:
+                            max_timeout = 60
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_rack_location_query(device_name, format_type, conversation_history),
+                                                timeout=max_timeout
+                                            )
+                                        )
+                                    )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_rack_location_query(device_name, format_type, conversation_history),
+                                        timeout=max_timeout
+                                    )
+                                )
+
+                            with st.chat_message("assistant"):
+                                display_rack_location_result(result, st.container(), format_type, intent=intent)
+
+                            # Store result with format_type for proper re-rendering
+                            result_with_format = result.copy() if isinstance(result, dict) else result
+                            if isinstance(result_with_format, dict):
+                                result_with_format["format_output"] = format_type
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result_with_format
+                            })
+                            return  # Exit after successful lookup
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                
+                elif selected_tool == "query_network_path":
+                    # Handle network path query
+                    source = tool_params.get("source")
+                    destination = tool_params.get("destination")
+                    protocol = tool_params.get("protocol", "TCP")
+                    port = tool_params.get("port", "0")
+                    
+                    if source and destination:
+                        # Execute network path query
+                        default_live = st.session_state.get('default_live_data', True)
+                        is_live = tool_params.get("is_live", 1 if default_live else 0)
+                        
+                        try:
+                            max_timeout = 120
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_network_query(source, destination, protocol, port, is_live),
+                                                timeout=max_timeout
+                                            )
+                                        )
+                                    )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_network_query(source, destination, protocol, port, is_live),
+                                        timeout=max_timeout
+                                    )
+                                )
+                            
+                            with st.chat_message("assistant"):
+                                display_result_chat(result, st.container())
+                            
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result
+                            })
+                            return
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+        except Exception as e:
+            print(f"DEBUG: Tool discovery execution failed: {str(e)}", file=sys.stderr, flush=True)
+            # Fall back to old parsing logic
+        
+        # Fallback: Use LLM to parse the query and extract device name and format
+        device_name = None
+        format_type = None
+        
+        try:
+            # Use LLM to parse the query and extract device name and format
+            llm = ChatOllama(model="llama3.2:latest", base_url="http://localhost:11434")
+            
+            parse_prompt = f"""Parse this user query and extract the device name and format preference.
+
+User query: "{prompt}"
+
+The user is asking about a device. Extract:
+1. The device name (e.g., "leander-dc-border-leaf1")
+2. The format preference if mentioned: "table", "json", "list", or null
+
+Respond with JSON only:
+{{
+    "device_name": "exact device name as written in the query",
+    "format": "table" or "json" or "list" or null
+}}
+
+Important: Extract the device name exactly as it appears. Do not include any extra words like "provide", "give", "show", etc."""
+            
+            response = llm.invoke(parse_prompt)
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Extract JSON from response
+            import re
+            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                device_name = parsed.get("device_name")
+                format_type = parsed.get("format")
+                print(f"DEBUG: LLM parsed device_name: {device_name}, format: {format_type}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"DEBUG: LLM parsing failed, falling back to regex: {str(e)}", file=sys.stderr, flush=True)
+            # Fallback to regex parsing if LLM fails
+            rack_query = parse_rack_location_query(prompt)
+            if rack_query and rack_query.get("device_name"):
+                device_name = rack_query["device_name"]
+                format_type = rack_query.get("format")
+        
+        # Default to table format for device details queries if no format specified
+        if device_name and not format_type:
+            format_type = "table"
+            print(f"DEBUG: Defaulting to table format for device query", file=sys.stderr, flush=True)
+        
+        if device_name:
+            status_msg = f"🔎 Looking up device details for **{device_name}**..."
+            with st.chat_message("assistant"):
+                st.info(status_msg)
+
+            try:
+                max_timeout = 60
+                try:
+                    asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(
+                                asyncio.wait_for(
+                                    execute_rack_location_query(device_name, format_type, conversation_history),
+                                    timeout=max_timeout
+                                )
+                            )
+                        )
+                        result = future.result(timeout=max_timeout + 5)
+                except RuntimeError:
+                    result = asyncio.run(
+                        asyncio.wait_for(
+                            execute_rack_location_query(device_name, format_type, conversation_history),
+                            timeout=max_timeout
+                        )
+                    )
+
+                with st.chat_message("assistant"):
+                    display_rack_location_result(result, st.container(), format_type)
+
+                # Store result with format_type for proper re-rendering
+                result_with_format = result.copy() if isinstance(result, dict) else result
+                if isinstance(result_with_format, dict):
+                    result_with_format["format_output"] = format_type
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": result_with_format
+                })
+            except asyncio.TimeoutError:
+                error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            except Exception as e:
+                error_msg = f"An error occurred: {str(e)}"
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            return
+
+        # Parse query for network path
         default_live = st.session_state.get('default_live_data', True)
         parsed = parse_query(prompt, default_live)
         
         # Check if we have required information
         if not parsed['source'] or not parsed['destination']:
+            # Ask a clarifying question instead of assuming a NetBrain path query
+            import re
+            clean_prompt = prompt.strip()
+            if clean_prompt:
+                # If user replies with clarification answer, reuse last unclear input
+                clean_lower = clean_prompt.lower().strip()
+                clarification_keywords = [
+                    "rack location", "rack", "location", "rack location.",
+                    "device details", "device details.", "details", "device info", "device information"
+                ]
+                
+                # Check if the prompt is a clarification response (starts with or is a clarification keyword)
+                is_clarification = False
+                format_type = None
+                
+                # Check for format requests in clarification
+                if "table" in clean_lower or "in a table" in clean_lower:
+                    format_type = "table"
+                elif "json" in clean_lower:
+                    format_type = "json"
+                elif "list" in clean_lower:
+                    format_type = "list"
+                
+                # Remove format phrases to check for clarification keywords
+                clean_for_check = re.sub(r"\s+in\s+(a\s+)?(table|json|list|format).*$", "", clean_lower, flags=re.IGNORECASE).strip()
+                
+                # Check if it matches clarification keywords (exact or starts with)
+                for kw in clarification_keywords:
+                    if clean_for_check == kw.lower() or clean_for_check.startswith(kw.lower() + " "):
+                        is_clarification = True
+                        break
+                
+                if is_clarification:
+                    # Try to find device name from chat history
+                    device_name = None
+                    
+                    # First, try last_unclear_prompt (most recent unclear query)
+                    last_unclear = st.session_state.get("last_unclear_prompt", "").strip()
+                    if last_unclear:
+                        device_name = last_unclear
+                    else:
+                        # Look through recent chat messages to find device name
+                        # Check the last few assistant messages for clarifying questions
+                        messages = st.session_state.get("messages", [])
+                        for i in range(len(messages) - 1, max(-1, len(messages) - 10), -1):
+                            msg = messages[i]
+                            if msg.get("role") == "assistant":
+                                content = msg.get("content", "")
+                                if isinstance(content, str):
+                                    # Look for device name in clarifying question pattern
+                                    # Pattern: "Did you want device details (including rack location) for **device-name**, or..."
+                                    import re
+                                    match = re.search(r"for \*\*([^*]+)\*\*", content)
+                                    if match:
+                                        device_name = match.group(1).strip()
+                                        break
+                            elif msg.get("role") == "user":
+                                # Check if user message contains a device name (not a clarification)
+                                user_content = msg.get("content", "")
+                                if isinstance(user_content, str):
+                                    # Try to parse as device query
+                                    rack_query = parse_rack_location_query(user_content)
+                                    if rack_query and rack_query.get("device_name"):
+                                        # Make sure it's not a clarification response itself
+                                        user_lower = user_content.lower().strip()
+                                        if not any(kw in user_lower for kw in clarification_keywords):
+                                            device_name = rack_query["device_name"]
+                                            break
+                    
+                    if device_name:
+                        # Route to device details lookup using the found device name
+                        format_text = f" in {format_type} format" if format_type else ""
+                        status_msg = f"🔎 Looking up device details for **{device_name}**{format_text}..."
+                        with st.chat_message("assistant"):
+                            st.info(status_msg)
+
+                        try:
+                            max_timeout = 60
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_rack_location_query(device_name, format_type, conversation_history),
+                                                timeout=max_timeout
+                                            )
+                                        )
+                                    )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_rack_location_query(device_name, format_type, conversation_history),
+                                        timeout=max_timeout
+                                    )
+                                )
+
+                            with st.chat_message("assistant"):
+                                display_rack_location_result(result, st.container(), format_type)
+
+                            # Store result with format_type for proper re-rendering from history
+                            result_with_format = result.copy() if isinstance(result, dict) else result
+                            if isinstance(result_with_format, dict):
+                                result_with_format["format_output"] = format_type
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result_with_format
+                            })
+                            # Clear the unclear prompt after successful lookup
+                            st.session_state["last_unclear_prompt"] = ""
+                            return  # Exit after successful lookup
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return  # Exit after error
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return  # Exit after error
+                    else:
+                        # No device name found in history, ask for clarification
+                        clarifying_text = (
+                            "I need a device name to look up. Please provide the device name."
+                        )
+                        with st.chat_message("assistant"):
+                            st.info(clarifying_text)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": clarifying_text
+                        })
+                        return  # Exit after asking for device name
+
+                # Only show clarifying question if we haven't handled it as a clarification response
+                clarifying_text = (
+                    f"Did you want device details (including rack location) for **{clean_prompt}**, "
+                    "or a network path query? If it's a path, please provide both source "
+                    "and destination IPs (e.g., *'Find path from 10.0.0.1 to 10.0.1.1'*)."
+                )
+                st.session_state["last_unclear_prompt"] = clean_prompt
+            else:
+                clarifying_text = (
+                    "Do you want device details (including rack location) or a network path query? "
+                    "If it's a path, please provide both source and destination IPs "
+                    "(e.g., *'Find path from 10.0.0.1 to 10.0.1.1'*)."
+                )
+                st.session_state["last_unclear_prompt"] = ""
             with st.chat_message("assistant"):
-                st.warning("⚠️ I need both source and destination IP addresses to query the network path. Please provide both in your query.")
-                st.info("Example: *'Find path from 10.0.0.1 to 10.0.1.1'*")
+                st.info(clarifying_text)
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": "I need both source and destination IP addresses. Please provide both in your query."
+                    "content": clarifying_text
                 })
         else:
             # Store pending query for confirmation

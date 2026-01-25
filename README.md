@@ -12,6 +12,7 @@ This project provides an MCP server that integrates with NetBrain API to query n
 - **AI-Enhanced Analysis**: Uses Ollama LLM (llama3.2:latest) for intelligent analysis of network path information
 - **Simple Web Interface**: Streamlit-based client with intuitive form inputs
 - **Session-based Authentication**: Secure authentication with NetBrain API using username/password
+- **Rack Location Lookup (NetBox)**: Query device rack/position/site via NetBox API
 
 ## Prerequisites
 
@@ -65,6 +66,28 @@ $env:NETBRAIN_URL="http://your-netbrain-server.com"
 ```
 
 If not set, it defaults to `http://localhost`.
+
+### NetBox API (Rack Location Tool)
+
+NetBox URL is currently hardcoded in `mcp_server.py`:
+
+```
+http://192.168.15.136:8080
+```
+
+Configure these environment variables to enable rack location lookups:
+
+```bash
+# Linux/Mac
+export NETBOX_TOKEN="your_netbox_api_token"
+export NETBOX_VERIFY_SSL="true"
+
+# Windows PowerShell
+$env:NETBOX_TOKEN="your_netbox_api_token"
+$env:NETBOX_VERIFY_SSL="true"
+```
+
+If `NETBOX_VERIFY_SSL` is set to `false`, SSL verification is disabled (use only for self-signed certs).
 
 ## Usage
 
@@ -144,6 +167,23 @@ Queries the network path between source and destination.
   - `path_info`: Network path information from NetBrain API
   - `ai_analysis`: AI-enhanced analysis (if LLM is available)
   - `error`: Error message if query fails
+
+### `get_device_rack_location`
+
+Looks up a device in NetBox and returns its rack location details.
+
+**Parameters:**
+- `device_name` (str, required): Device name to look up in NetBox
+
+**Returns:**
+- Dictionary containing:
+  - `device`: Device name
+  - `rack`: Rack name (if assigned)
+  - `position`: Rack unit position (if available)
+  - `face`: Rack face (front/rear)
+  - `site`: Site name (if available)
+  - `status`: Device status (if available)
+  - `error`: Error message if lookup fails
 
 ## API Endpoints
 
