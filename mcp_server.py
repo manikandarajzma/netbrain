@@ -529,34 +529,841 @@ def _netbox_ssl_context() -> Optional[ssl.SSLContext]:
     return ssl_context
 
 
+async def _fetch_elevation_image_base64(elevation_url: str) -> Optional[str]:
+    """
+    Fetch NetBox elevation SVG from API and return as base64-encoded image.
+    
+    Args:
+        elevation_url: URL to NetBox elevation page (web UI format)
+        
+    Returns:
+        Base64-encoded SVG string (data:image/svg+xml;base64,...) or None if failed
+    """
+    if not elevation_url:
+        return None
+    
+    try:
+        # Extract rack_id from URL: /dcim/racks/{rack_id}/elevation/?face=front
+        import re
+        rack_id_match = re.search(r'/racks/(\d+)/', elevation_url)
+        if not rack_id_match:
+            print(f"DEBUG: Could not extract rack_id from URL: {elevation_url}", file=sys.stderr, flush=True)
+            return None
+        
+        rack_id = rack_id_match.group(1)
+        
+        # Extract face parameter
+        face_match = re.search(r'face=(\w+)', elevation_url)
+        face = face_match.group(1) if face_match else 'front'
+        
+        # Use NetBox API endpoint that returns SVG directly
+        api_url = f"{NETBOX_URL}/api/dcim/racks/{rack_id}/elevation/?face={face}&render=svg"
+        
+        headers = _netbox_headers()
+        headers["Accept"] = "image/svg+xml"
+        ssl_context = _netbox_ssl_context()
+        
+        print(f"DEBUG: Fetching elevation SVG from API: {api_url}", file=sys.stderr, flush=True)
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, headers=headers, ssl=ssl_context, timeout=15) as response:
+                if response.status == 200:
+                    svg_content = await response.text()
+                    
+                    # Convert SVG to base64 data URI
+                    import base64
+                    svg_base64 = base64.b64encode(svg_content.encode('utf-8')).decode('utf-8')
+                    print(f"DEBUG: Successfully fetched SVG ({len(svg_content)} bytes)", file=sys.stderr, flush=True)
+                    return f"data:image/svg+xml;base64,{svg_base64}"
+                else:
+                    error_text = await response.text()
+                    print(f"DEBUG: API returned status {response.status}: {error_text[:200]}", file=sys.stderr, flush=True)
+                    return None
+                
+    except Exception as e:
+        print(f"DEBUG: Error fetching elevation SVG: {e}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return None
+
+
 @mcp.tool()
-async def get_device_rack_location(
-    device_name: str, 
+async def get_rack_details(
+    rack_name: str,
+    site_name: Optional[str] = None,
     format: Optional[str] = None,
     conversation_history: Optional[List[Dict[str, str]]] = None
 ) -> Dict[str, Any]:
     """
-    Get the rack location and device details from NetBox.
+    Get rack details from NetBox including rack information and devices in the rack.
     
-    Use this tool when the user asks about:
-    - Where a device is located ("where is device-name", "rack location of device-name")
-    - Device details ("device details for device-name", "info about device-name")
-    - Device information ("show device-name", "tell me about device-name")
-    - Rack position ("rack position of device-name", "what rack is device-name in")
+    **CRITICAL: When to use this tool:**
+    - Use this tool ONLY when the query contains a RACK NAME (a SHORT identifier like "A1", "A4", "B2")
+    - Rack names are SHORT (1-3 characters, typically letter + number, NO dashes)
+    - Examples of rack names: "A1", "A4", "B2", "Rack A4"
+    - **CRITICAL: If query mentions "space utilization", "utilization", "rack details", "rack" with a SHORT name (like "A4") → this is ALWAYS a rack query → use this tool**
+    
+    **Rack name identification:**
+    - Rack names are SHORT (1-3 characters)
+    - Rack names do NOT contain dashes (-)
+    - Pattern: letter(s) + number(s), e.g., "A1", "A4", "B12"
+    - If you see "A1" or "A4" → this is a RACK NAME → use this tool
+    - If you see ANY name with DASHES (e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1") → this is a DEVICE NAME → use get_device_rack_location instead
+    
+    **IMPORTANT: Do NOT confuse with device names:**
+    - Device names ALWAYS contain DASHES (e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1") → use get_device_rack_location
+    - Rack names NEVER contain dashes (e.g., "A1", "A4") → use this tool (get_rack_details)
+    - CRITICAL RULE: If a name contains a dash (-), it is ALWAYS a device name, NEVER a rack name!
+    - CRITICAL: "roundrock-dc-border-leaf1" has dashes = DEVICE, NOT a rack!
+    - CRITICAL: "leander-dc-leaf1" has dashes = DEVICE, NOT a rack!
+    - CRITICAL: "border-leaf1" is PART of a device name, NOT a rack name!
+    
+    **Examples:**
+    - Query: "rack details for A4" → rack_name="A4", site_name=None, format="table"
+    - Query: "A1 in Round Rock DC" → rack_name="A1", site_name="Round Rock DC", format="table"
+    - Query: "show rack A4" → rack_name="A4", site_name=None, format="table"
+    - Query: "A1" → rack_name="A1", site_name=None, format="table"
+    - Query: "space utilization of A4" → rack_name="A4", site_name=None, format="table" (A4 is a rack name, NOT a device!)
+    - Query: "rack A4 utilization" → rack_name="A4", site_name=None, format="table"
+    - Query: "A4 space usage" → rack_name="A4", site_name=None, format="table"
     
     The tool can return data in different formats:
-    - table: Returns data formatted as a table
+    - table: Returns data formatted as a table (recommended)
     - json: Returns data in JSON format
     - list: Returns data as a list
-    - (none): Returns a natural language summary with AI analysis
+    - None: Returns a natural language summary with AI analysis
+    
+    Args:
+        rack_name: The SHORT rack identifier (e.g., "A4", "A1", "B2") - must be short, no dashes
+        site_name: Optional site name to filter racks (e.g., "Round Rock DC", "Leander DC")
+        format: Output format - "table" (recommended), "json", "list", or None for natural language summary
+        conversation_history: Optional conversation history for context-aware responses
+    
+    Returns:
+        dict: Rack details including rack name, site, location, units, devices in rack, and AI-generated summary
+    """
+    rack_name = (rack_name or "").strip()
+    if not rack_name:
+        return {"error": "Rack name cannot be empty"}
+    
+    # CRITICAL: Reject device names (names with dashes) - they should use get_device_rack_location instead
+    if "-" in rack_name:
+        return {
+            "error": f"'{rack_name}' is a device name (contains dashes), not a rack name. Use get_device_rack_location tool instead.",
+            "suggestion": "Device names contain dashes (e.g., 'leander-dc-leaf5'). Rack names are short identifiers without dashes (e.g., 'A1', 'A4')."
+        }
+    
+    if not NETBOX_TOKEN:
+        return {"error": "NETBOX_TOKEN is not set. Configure NetBox API token."}
+    
+    # Clean rack name: remove "Rack" prefix and any location suffixes
+    # Examples: "Rack A4" -> "A4", "A4 in Leander" -> "A4", "rack details for A4" -> "A4"
+    rack_name_clean = rack_name.replace("Rack", "").replace("rack", "").strip()
+    # Remove location suffixes like "in Leander", "at site", etc.
+    import re
+    rack_name_clean = re.sub(r'\s+(in|at|for|from)\s+[A-Za-z\s]+$', '', rack_name_clean, flags=re.IGNORECASE).strip()
+    # Remove "details" if present
+    rack_name_clean = re.sub(r'\s+details\s*$', '', rack_name_clean, flags=re.IGNORECASE).strip()
+    
+    # If site_name is provided, first get the site ID
+    site_id = None
+    site_name_found = None
+    if site_name:
+        site_name_clean = site_name.strip()
+        sites_url = f"{NETBOX_URL}/api/dcim/sites/"
+        async with aiohttp.ClientSession() as session:
+            try:
+                # Try exact name match first
+                site_params = {"name": site_name_clean}
+                async with session.get(sites_url, headers=_netbox_headers(), params=site_params, ssl=_netbox_ssl_context(), timeout=15) as response:
+                    if response.status == 200:
+                        site_data = await response.json()
+                        site_results = site_data.get("results", []) if isinstance(site_data, dict) else []
+                        if site_results:
+                            # Try exact match first (case-insensitive)
+                            for site in site_results:
+                                site_name_lower = str(site.get("name", "")).lower()
+                                if site_name_lower == site_name_clean.lower():
+                                    site_id = site.get("id")
+                                    site_name_found = site.get("name")
+                                    break
+                            
+                            # If no exact match, try partial/fuzzy match
+                            if not site_id and site_results:
+                                site_name_clean_lower = site_name_clean.lower()
+                                # Remove common suffixes for matching
+                                site_name_clean_lower_no_suffix = site_name_clean_lower.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                                
+                                for site in site_results:
+                                    site_display = str(site.get("name", "")).lower()
+                                    site_display_no_suffix = site_display.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                                    
+                                    # Check if cleaned names match
+                                    if (site_name_clean_lower_no_suffix in site_display_no_suffix or 
+                                        site_display_no_suffix in site_name_clean_lower_no_suffix or
+                                        site_name_clean_lower in site_display or 
+                                        site_display in site_name_clean_lower):
+                                        site_id = site.get("id")
+                                        site_name_found = site.get("name")
+                                        break
+                            
+                            # Last resort: use first result if we have any
+                            if not site_id and site_results:
+                                site_id = site_results[0].get("id")
+                                site_name_found = site_results[0].get("name")
+                                
+                        # If no results with exact name, try search query
+                        if not site_id:
+                            search_params = {"q": site_name_clean}
+                            async with session.get(sites_url, headers=_netbox_headers(), params=search_params, ssl=_netbox_ssl_context(), timeout=15) as response:
+                                if response.status == 200:
+                                    search_data = await response.json()
+                                    search_results = search_data.get("results", []) if isinstance(search_data, dict) else []
+                                    if search_results:
+                                        # Try to find best match
+                                        site_name_clean_lower = site_name_clean.lower()
+                                        for site in search_results:
+                                            site_display = str(site.get("name", "")).lower()
+                                            if site_name_clean_lower in site_display or site_display in site_name_clean_lower:
+                                                site_id = site.get("id")
+                                                site_name_found = site.get("name")
+                                                break
+                                        if not site_id and search_results:
+                                            site_id = search_results[0].get("id")
+                                            site_name_found = search_results[0].get("name")
+            except Exception as e:
+                print(f"DEBUG: Error looking up site: {str(e)}", file=sys.stderr, flush=True)
+    
+    url = f"{NETBOX_URL}/api/dcim/racks/"
+    headers = _netbox_headers()
+    ssl_context = _netbox_ssl_context()
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Try exact name match first
+            params = {"name": rack_name_clean}
+            async with session.get(url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return {
+                        "error": f"NetBox rack lookup failed: HTTP {response.status}",
+                        "details": error_text[:500]
+                    }
+                data = await response.json()
+        except Exception as e:
+            return {"error": f"NetBox rack lookup error: {str(e)}"}
+        
+        results = data.get("results", []) if isinstance(data, dict) else []
+        if not results:
+            # Fallback to generic search, with site filter if provided
+            try:
+                params = {"q": rack_name_clean}
+                if site_id:
+                    params["site_id"] = site_id
+                async with session.get(url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return {
+                            "error": f"NetBox rack search failed: HTTP {response.status}",
+                            "details": error_text[:500]
+                        }
+                    data = await response.json()
+                    results = data.get("results", []) if isinstance(data, dict) else []
+            except Exception as e:
+                return {"error": f"NetBox rack search error: {str(e)}"}
+        
+        if not results:
+            return {
+                "rack": rack_name_clean,
+                "error": "Rack not found in NetBox"
+            }
+        
+        # Collect all racks with matching name
+        matching_racks = []
+        for candidate in results:
+            if str(candidate.get("name", "")).lower() == rack_name_clean.lower():
+                matching_racks.append(candidate)
+        
+        # If no exact matches, use first result
+        if not matching_racks:
+            matching_racks = [results[0]] if results else []
+        
+        # If site filtering was requested, find rack in that site
+        rack = None
+        if site_id:
+            for candidate in matching_racks:
+                rack_site = candidate.get("site")
+                rack_site_id = rack_site.get("id") if isinstance(rack_site, dict) else rack_site
+                if rack_site_id == site_id:
+                    rack = candidate
+                    break
+        
+        # If no site filter or no match with site filter, check for multiple sites
+        if not rack:
+            # Get unique sites from matching racks
+            sites = {}
+            for candidate in matching_racks:
+                site = candidate.get("site") or {}
+                site_id_val = site.get("id") if isinstance(site, dict) else site
+                site_name_val = site.get("name") or site.get("display") if isinstance(site, dict) else site
+                if site_id_val and site_id_val not in sites:
+                    sites[site_id_val] = site_name_val
+            
+            # If multiple sites and no site filter provided, return ambiguity
+            if len(sites) > 1 and not site_id:
+                return {
+                    "rack": rack_name_clean,
+                    "error": f"Multiple racks named '{rack_name_clean}' found at different sites",
+                    "sites": list(sites.values()),
+                    "requires_site": True
+                }
+            
+            # Use first matching rack
+            rack = matching_racks[0]
+        
+        # Get site information
+        site = rack.get("site") or {}
+        site_name = site.get("name") or site.get("display") if isinstance(site, dict) else site
+        
+        # Get location information
+        location = rack.get("location") or {}
+        location_name = location.get("name") or location.get("display") if isinstance(location, dict) else location
+        
+        # Get devices in this rack
+        devices_url = f"{NETBOX_URL}/api/dcim/devices/"
+        devices_in_rack = []
+        try:
+            params = {"rack_id": rack.get("id")}
+            async with session.get(devices_url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
+                if response.status == 200:
+                    devices_data = await response.json()
+                    devices_in_rack = devices_data.get("results", []) if isinstance(devices_data, dict) else []
+        except Exception as e:
+            print(f"DEBUG: Error fetching devices in rack: {str(e)}", file=sys.stderr, flush=True)
+        
+        # Calculate space utilization
+        u_height = rack.get("u_height") or 42  # Default to 42U if not specified
+        occupied_units = 0
+        device_positions = set()
+        
+        for device in devices_in_rack:
+            position = device.get("position")
+            if position:
+                # Get device height (device_type.u_height), default to 1U if not specified
+                device_type = device.get("device_type", {})
+                if isinstance(device_type, dict):
+                    device_u_height = device_type.get("u_height") or 1
+                else:
+                    device_u_height = 1
+                
+                # Count occupied units (handle devices that span multiple U)
+                for u in range(int(position), int(position) + int(device_u_height)):
+                    if u not in device_positions:
+                        device_positions.add(u)
+                        occupied_units += 1
+        
+        space_utilization = (occupied_units / u_height * 100) if u_height > 0 else 0
+        
+        # Get rack ID for elevation URLs
+        rack_id = rack.get("id")
+        
+        # Build result
+        result = {
+            "rack": rack.get("name") or rack_name_clean,
+            "site": site_name,
+            "location": location_name,
+            "facility_id": rack.get("facility_id"),
+            "status": rack.get("status", {}).get("value") if isinstance(rack.get("status"), dict) else rack.get("status"),
+            "role": rack.get("role", {}).get("name") if isinstance(rack.get("role"), dict) else rack.get("role"),
+            "type": rack.get("type", {}).get("value") if isinstance(rack.get("type"), dict) else rack.get("type"),
+            "width": rack.get("width", {}).get("value") if isinstance(rack.get("width"), dict) else rack.get("width"),
+            "u_height": rack.get("u_height"),
+            "desc_units": rack.get("desc_units"),
+            "outer_width": rack.get("outer_width"),
+            "outer_depth": rack.get("outer_depth"),
+            "outer_unit": rack.get("outer_unit", {}).get("value") if isinstance(rack.get("outer_unit"), dict) else rack.get("outer_unit"),
+            "space_utilization": round(space_utilization, 1),
+            "occupied_units": occupied_units,
+            "devices_count": len(devices_in_rack),
+            "devices": [
+                {
+                    "name": device.get("name"),
+                    "position": device.get("position"),
+                    "face": device.get("face", {}).get("value") if isinstance(device.get("face"), dict) else device.get("face"),
+                    "device_type": device.get("device_type", {}).get("display") if isinstance(device.get("device_type"), dict) else device.get("device_type"),
+                    "status": device.get("status", {}).get("value") if isinstance(device.get("status"), dict) else device.get("status"),
+                }
+                for device in devices_in_rack
+            ]
+        }
+        
+        # Add elevation URLs and try to fetch images
+        if rack_id:
+            # NetBox elevation URLs: /dcim/racks/{id}/elevation/?face=front or /dcim/racks/{id}/elevation/?face=rear
+            # Use trailing slash format (NetBox standard)
+            result["elevation_front_url"] = f"{NETBOX_URL}/dcim/racks/{rack_id}/elevation/?face=front"
+            result["elevation_rear_url"] = f"{NETBOX_URL}/dcim/racks/{rack_id}/elevation/?face=rear"
+            
+            # Try to fetch elevation images as base64
+            try:
+                front_img_base64 = await _fetch_elevation_image_base64(result["elevation_front_url"])
+                if front_img_base64:
+                    result["elevation_front_image"] = front_img_base64
+                
+                rear_img_base64 = await _fetch_elevation_image_base64(result["elevation_rear_url"])
+                if rear_img_base64:
+                    result["elevation_rear_image"] = rear_img_base64
+            except Exception as e:
+                print(f"DEBUG: Error fetching elevation images: {e}", file=sys.stderr, flush=True)
+        
+        # Try to enhance with LLM analysis if available
+        llm = _get_llm()
+        if llm is not None:
+            try:
+                device_details = {
+                    "rack": result["rack"],
+                    "site": result["site"],
+                    "location": result["location"],
+                    "facility_id": result["facility_id"],
+                    "status": result["status"],
+                    "role": result["role"],
+                    "type": result["type"],
+                    "width": result["width"],
+                    "u_height": result["u_height"],
+                    "space_utilization": result.get("space_utilization"),
+                    "occupied_units": result.get("occupied_units"),
+                    "devices_count": result["devices_count"],
+                    "devices": result["devices"]
+                }
+                device_details = {k: v for k, v in device_details.items() if v is not None}
+                
+                format_instruction = ""
+                if format == "table":
+                    format_instruction = "\n\nIMPORTANT: The user requested the response in TABLE FORMAT. Format your summary as a markdown table with columns: Field | Value."
+                elif format == "json":
+                    format_instruction = "\n\nIMPORTANT: The user requested JSON format. Ensure your response is properly structured JSON."
+                elif format == "list":
+                    format_instruction = "\n\nIMPORTANT: The user requested list format. Format information as bullet points or numbered lists."
+                
+                conversation_context = ""
+                if conversation_history and len(conversation_history) > 0:
+                    conv_text = "\n".join([
+                        f"{msg.get('role', 'unknown').title()}: {msg.get('content', '')}"
+                        for msg in conversation_history[-10:]
+                    ])
+                    conversation_context = f"\n\nCONVERSATION CONTEXT:\n{conv_text}\n\nUse this conversation history to understand the user's intent and provide contextually relevant responses."
+                
+                system_prompt = f"""You are a network infrastructure assistant. Analyze the rack information from NetBox and provide a concise summary.
+
+Provide a summary that includes:
+- Rack name and location (site, facility ID if available)
+- Rack specifications (type, width, height in U, status)
+- Space utilization percentage (if available)
+- Number of devices in the rack
+- Key devices and their positions if relevant
+
+Focus on factual information from the rack data. Keep the summary concise and informative.
+{format_instruction}
+{conversation_context}
+
+Format your response as a JSON object with this field:
+{{
+    "summary": "string - concise summary of the rack information"
+}}"""
+                
+                analysis_prompt_template = ChatPromptTemplate.from_messages([
+                    ("system", system_prompt),
+                    ("human", "Analyze this rack information from NetBox:\n{{rack_data}}")
+                ])
+                
+                formatted_messages = analysis_prompt_template.format_messages(
+                    format_instruction=format_instruction,
+                    conversation_context=conversation_context,
+                    rack_data=json.dumps(device_details, indent=2)
+                )
+                
+                print(f"DEBUG: Invoking LLM for rack analysis", file=sys.stderr, flush=True)
+                response = await asyncio.wait_for(
+                    llm.ainvoke(formatted_messages),
+                    timeout=30.0
+                )
+                content = response.content if hasattr(response, 'content') else str(response)
+                
+                print(f"DEBUG: LLM response received: {content[:200]}...", file=sys.stderr, flush=True)
+                
+                # Extract JSON from response
+                import re
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis = json.loads(json_match.group())
+                        result["ai_analysis"] = {
+                            "summary": analysis.get("summary", content)
+                        }
+                    except json.JSONDecodeError:
+                        result["ai_analysis"] = {"summary": content}
+                else:
+                    result["ai_analysis"] = {"summary": content}
+                    
+            except Exception as e:
+                print(f"DEBUG: LLM analysis failed: {str(e)}", file=sys.stderr, flush=True)
+                result["ai_analysis"] = {"summary": f"Rack {result['rack']} located at {result.get('site', 'Unknown site')} with {result['devices_count']} devices."}
+        
+        return result
+
+
+@mcp.tool()
+async def list_racks(
+    site_name: Optional[str] = None,
+    format: Optional[str] = None,
+    conversation_history: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """
+    List all racks from NetBox, optionally filtered by site.
+    
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query asks for "all racks", "list racks", "show racks", "racks in [site]"
+    - Use this tool when the query asks for racks at a specific site (e.g., "racks in Leander DC", "racks at Round Rock")
+    - Use this tool when the query asks for "all racks" without specifying a particular rack name
+    - Do NOT use this tool if the query contains a specific rack name (like "A4", "A1") - use get_rack_details instead
+    
+    **Examples:**
+    - Query: "list all racks" → site_name=None, format="table"
+    - Query: "show all racks" → site_name=None, format="table"
+    - Query: "racks in Leander DC" → site_name="Leander DC", format="table"
+    - Query: "racks at Round Rock" → site_name="Round Rock", format="table"
+    - Query: "all racks in Round Rock DC" → site_name="Round Rock DC", format="table"
+    
+    The tool can return data in different formats:
+    - table: Returns data formatted as a table (recommended)
+    - json: Returns data in JSON format
+    - list: Returns data as a list
+    - None: Returns a natural language summary with AI analysis
+    
+    Args:
+        site_name: Optional site name to filter racks (e.g., "Round Rock DC", "Leander DC"). If None, returns all racks.
+        format: Output format - "table" (recommended), "json", "list", or None for natural language summary
+        conversation_history: Optional conversation history for context-aware responses
+    
+    Returns:
+        dict: List of racks with their details (name, site, status, space utilization, device count, etc.)
+    """
+    if not NETBOX_TOKEN:
+        return {"error": "NETBOX_TOKEN is not set. Configure NetBox API token."}
+    
+    # If site_name is provided, first get the site ID
+    site_id = None
+    site_name_found = None
+    if site_name:
+        site_name_clean = site_name.strip()
+        sites_url = f"{NETBOX_URL}/api/dcim/sites/"
+        async with aiohttp.ClientSession() as session:
+            try:
+                # Try exact name match first
+                site_params = {"name": site_name_clean}
+                async with session.get(sites_url, headers=_netbox_headers(), params=site_params, ssl=_netbox_ssl_context(), timeout=15) as response:
+                    if response.status == 200:
+                        site_data = await response.json()
+                        site_results = site_data.get("results", []) if isinstance(site_data, dict) else []
+                        if site_results:
+                            # Try exact match first (case-insensitive)
+                            for site in site_results:
+                                site_name_lower = str(site.get("name", "")).lower()
+                                if site_name_lower == site_name_clean.lower():
+                                    site_id = site.get("id")
+                                    site_name_found = site.get("name")
+                                    break
+                            
+                            # If no exact match, try partial/fuzzy match
+                            if not site_id and site_results:
+                                site_name_clean_lower = site_name_clean.lower()
+                                # Remove common suffixes for matching
+                                site_name_clean_lower_no_suffix = site_name_clean_lower.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                                
+                                for site in site_results:
+                                    site_display = str(site.get("name", "")).lower()
+                                    site_display_no_suffix = site_display.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                                    
+                                    # Check if cleaned names match
+                                    if (site_name_clean_lower_no_suffix in site_display_no_suffix or 
+                                        site_display_no_suffix in site_name_clean_lower_no_suffix or
+                                        site_name_clean_lower in site_display or 
+                                        site_display in site_name_clean_lower):
+                                        site_id = site.get("id")
+                                        site_name_found = site.get("name")
+                                        break
+                            
+                            # Last resort: use first result if we have any
+                            if not site_id and site_results:
+                                site_id = site_results[0].get("id")
+                                site_name_found = site_results[0].get("name")
+                                
+                        # If no results with exact name, try search query
+                        if not site_id:
+                            search_params = {"q": site_name_clean}
+                            async with session.get(sites_url, headers=_netbox_headers(), params=search_params, ssl=_netbox_ssl_context(), timeout=15) as response:
+                                if response.status == 200:
+                                    search_data = await response.json()
+                                    search_results = search_data.get("results", []) if isinstance(search_data, dict) else []
+                                    if search_results:
+                                        # Try to find best match
+                                        site_name_clean_lower = site_name_clean.lower()
+                                        for site in search_results:
+                                            site_display = str(site.get("name", "")).lower()
+                                            if site_name_clean_lower in site_display or site_display in site_name_clean_lower:
+                                                site_id = site.get("id")
+                                                site_name_found = site.get("name")
+                                                break
+                                        if not site_id and search_results:
+                                            site_id = search_results[0].get("id")
+                                            site_name_found = search_results[0].get("name")
+            except Exception as e:
+                print(f"DEBUG: Error looking up site: {str(e)}", file=sys.stderr, flush=True)
+    
+    # Get racks from NetBox
+    url = f"{NETBOX_URL}/api/dcim/racks/"
+    headers = _netbox_headers()
+    ssl_context = _netbox_ssl_context()
+    
+    racks_list = []
+    async with aiohttp.ClientSession() as session:
+        try:
+            params = {}
+            if site_id:
+                params["site_id"] = site_id
+            
+            # Get all racks (with pagination if needed)
+            all_racks = []
+            while True:
+                async with session.get(url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return {
+                            "error": f"NetBox rack lookup failed: HTTP {response.status}",
+                            "details": error_text[:500]
+                        }
+                    data = await response.json()
+                    results = data.get("results", []) if isinstance(data, dict) else []
+                    all_racks.extend(results)
+                    
+                    # Check for next page
+                    next_url = data.get("next")
+                    if not next_url:
+                        break
+                    # Extract offset/limit from next_url or use next page
+                    # For simplicity, we'll just get the first page for now
+                    # In production, you'd want to handle pagination properly
+                    break
+            
+            # Process each rack to get space utilization
+            for rack in all_racks:
+                rack_id = rack.get("id")
+                rack_name = rack.get("name")
+                site = rack.get("site") or {}
+                site_name_rack = site.get("name") or site.get("display") if isinstance(site, dict) else site
+                
+                # Get devices in this rack to calculate space utilization
+                devices_url = f"{NETBOX_URL}/api/dcim/devices/"
+                devices_in_rack = []
+                try:
+                    device_params = {"rack_id": rack_id}
+                    async with session.get(devices_url, headers=headers, params=device_params, ssl=ssl_context, timeout=15) as response:
+                        if response.status == 200:
+                            devices_data = await response.json()
+                            devices_in_rack = devices_data.get("results", []) if isinstance(devices_data, dict) else []
+                except Exception as e:
+                    print(f"DEBUG: Error fetching devices for rack {rack_name}: {str(e)}", file=sys.stderr, flush=True)
+                
+                # Calculate space utilization
+                u_height = rack.get("u_height") or 42
+                occupied_units = 0
+                device_positions = set()
+                
+                for device in devices_in_rack:
+                    position = device.get("position")
+                    if position:
+                        device_type = device.get("device_type", {})
+                        if isinstance(device_type, dict):
+                            device_u_height = device_type.get("u_height") or 1
+                        else:
+                            device_u_height = 1
+                        
+                        for u in range(int(position), int(position) + int(device_u_height)):
+                            if u not in device_positions:
+                                device_positions.add(u)
+                                occupied_units += 1
+                
+                space_utilization = (occupied_units / u_height * 100) if u_height > 0 else 0
+                
+                elevation_front_url = f"{NETBOX_URL}/dcim/racks/{rack_id}/elevation/?face=front" if rack_id else None
+                elevation_rear_url = f"{NETBOX_URL}/dcim/racks/{rack_id}/elevation/?face=rear" if rack_id else None
+                
+                # Try to fetch elevation images
+                elevation_front_image = None
+                elevation_rear_image = None
+                if rack_id:
+                    try:
+                        elevation_front_image = await _fetch_elevation_image_base64(elevation_front_url)
+                        elevation_rear_image = await _fetch_elevation_image_base64(elevation_rear_url)
+                    except Exception as e:
+                        print(f"DEBUG: Error fetching elevation images for rack {rack_name}: {e}", file=sys.stderr, flush=True)
+                
+                racks_list.append({
+                    "rack": rack_name,
+                    "rack_id": rack_id,  # Add rack_id for elevation URLs
+                    "site": site_name_rack,
+                    "status": rack.get("status", {}).get("value") if isinstance(rack.get("status"), dict) else rack.get("status"),
+                    "u_height": rack.get("u_height"),
+                    "space_utilization": round(space_utilization, 1),
+                    "occupied_units": occupied_units,
+                    "devices_count": len(devices_in_rack),
+                    "elevation_front_url": elevation_front_url,
+                    "elevation_rear_url": elevation_rear_url,
+                    "elevation_front_image": elevation_front_image,
+                    "elevation_rear_image": elevation_rear_image
+                })
+            
+            result = {
+                "racks": racks_list,
+                "total_count": len(racks_list),
+                "site_filter": site_name_found if site_name else None
+            }
+            
+            # Try to enhance with LLM analysis if available
+            llm = _get_llm()
+            if llm is not None:
+                try:
+                    format_instruction = ""
+                    if format == "table":
+                        format_instruction = "\n\nIMPORTANT: The user requested the response in TABLE FORMAT. Format your summary as a markdown table."
+                    elif format == "json":
+                        format_instruction = "\n\nIMPORTANT: The user requested JSON format. Ensure your response is properly structured JSON."
+                    elif format == "list":
+                        format_instruction = "\n\nIMPORTANT: The user requested list format. Format information as bullet points or numbered lists."
+                    
+                    conversation_context = ""
+                    if conversation_history and len(conversation_history) > 0:
+                        conv_text = "\n".join([
+                            f"{msg.get('role', 'unknown').title()}: {msg.get('content', '')}"
+                            for msg in conversation_history[-10:]
+                        ])
+                        conversation_context = f"\n\nCONVERSATION CONTEXT:\n{conv_text}\n\nUse this conversation history to understand the user's intent and provide contextually relevant responses."
+                    
+                    site_filter_text = f" at {site_name_found}" if site_name_found else ""
+                    system_prompt = f"""You are a network infrastructure assistant. Analyze the list of racks from NetBox and provide a concise summary.
+
+Provide a summary that includes:
+- Total number of racks{site_filter_text}
+- Key information about the racks (sites, space utilization, device counts)
+- Any notable patterns or insights
+
+Focus on factual information from the rack data. Keep the summary concise and informative.
+{format_instruction}
+{conversation_context}
+
+Format your response as a JSON object with this field:
+{{
+    "summary": "string - concise summary of the racks information"
+}}"""
+                    
+                    analysis_prompt_template = ChatPromptTemplate.from_messages([
+                        ("system", system_prompt),
+                        ("human", "Analyze this list of racks from NetBox:\n{{racks_data}}")
+                    ])
+                    
+                    formatted_messages = analysis_prompt_template.format_messages(
+                        format_instruction=format_instruction,
+                        conversation_context=conversation_context,
+                        racks_data=json.dumps(racks_list, indent=2)
+                    )
+                    
+                    print(f"DEBUG: Invoking LLM for racks list analysis", file=sys.stderr, flush=True)
+                    response = await asyncio.wait_for(
+                        llm.ainvoke(formatted_messages),
+                        timeout=30.0
+                    )
+                    content = response.content if hasattr(response, 'content') else str(response)
+                    
+                    print(f"DEBUG: LLM response received: {content[:200]}...", file=sys.stderr, flush=True)
+                    
+                    # Extract JSON from response
+                    import re
+                    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            analysis = json.loads(json_match.group())
+                            result["ai_analysis"] = {
+                                "summary": analysis.get("summary", content)
+                            }
+                        except json.JSONDecodeError:
+                            result["ai_analysis"] = {"summary": content}
+                    else:
+                        result["ai_analysis"] = {"summary": content}
+                        
+                except Exception as e:
+                    print(f"DEBUG: LLM analysis failed: {str(e)}", file=sys.stderr, flush=True)
+                    result["ai_analysis"] = {"summary": f"Found {len(racks_list)} rack(s){' at ' + site_name_found if site_name_found else ''}."}
+            
+            return result
+            
+        except Exception as e:
+            return {"error": f"NetBox rack lookup error: {str(e)}"}
+
+
+@mcp.tool()
+async def get_device_rack_location(
+    device_name: str, 
+    intent: Optional[str] = None,
+    format: Optional[str] = None,
+    conversation_history: Optional[List[Dict[str, str]]] = None
+) -> Dict[str, Any]:
+    """
+    Get device information from NetBox including rack location, device details, or specific fields.
+    
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query contains a DEVICE NAME (a name with DASHES, e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1")
+    - Device names are LONG strings with multiple dashes separating parts
+    - Examples of device names: "roundrock-dc-border-leaf1", "leander-dc-border-leaf2", "roundrock-dc-leaf1"
+    
+    **Device name identification:**
+    - Device names ALWAYS contain DASHES (-)
+    - Device names are typically 15+ characters long
+    - If you see "roundrock-dc-border-leaf1" → this is a DEVICE NAME → use this tool
+    - If you see "A1" or "A4" → this is a RACK NAME → use get_rack_details instead
+    
+    **Intent parameter (what the user wants to see):**
+    - "device_details" (default): Show all device information (rack, position, site, status, device type, manufacturer, model, etc.)
+    - "rack_location_only": Show only rack location (site, rack, position) - use when query contains "rack location" or "where is"
+    - "device_type_only": Show only device type - use when query contains "device type"
+    - "status_only": Show only device status - use when query contains "status"
+    - "site_only": Show only site name - use when query contains "site" or "what site" or "which site" (e.g., "site leander-dc-leaf1" → intent="site_only")
+    - "manufacturer_only": Show only manufacturer - use when query contains "manufacturer"
+    
+    **CRITICAL: Query format examples:**
+    - "site leander-dc-leaf1" → device_name="leander-dc-leaf1", intent="site_only" (NOT a rack query!)
+    - "what site does leander-dc-leaf1 belong to" → device_name="leander-dc-leaf1", intent="site_only"
+    - "leander-dc-leaf1" (just device name) → device_name="leander-dc-leaf1", intent="device_details"
+    
+    **Format parameter:**
+    - "table" (recommended): Returns data formatted as a table
+    - "json": Returns data in JSON format
+    - "list": Returns data as a list
+    - None: Returns a natural language summary with AI analysis
+    
+    **Examples:**
+    - Query: "roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="device_details", format="table"
+    - Query: "rack location roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="rack_location_only", format="table"
+    - Query: "manufacturer of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="manufacturer_only", format="table"
+    - Query: "status of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="status_only", format="table"
 
     Args:
-        device_name: The name of the device to look up (e.g., "leander-dc-border-leaf1")
-        format: Optional output format - "table", "json", "list", or None for natural language summary
+        device_name: The FULL device name to look up (e.g., "roundrock-dc-border-leaf1" - must include all parts with dashes)
+        intent: What information to return - "device_details" (all info), "rack_location_only", "device_type_only", "status_only", "site_only", "manufacturer_only"
+        format: Output format - "table" (recommended), "json", "list", or None for natural language summary
         conversation_history: Optional conversation history for context-aware responses
 
     Returns:
-        dict: Device rack location details including rack, position, site, status, device type, manufacturer, model, and AI-generated summary
+        dict: Device information based on intent - all details, or specific field(s) as requested
     """
     device_name = (device_name or "").strip()
     if not device_name:
@@ -627,7 +1434,11 @@ async def get_device_rack_location(
             face_value = None
 
         # Build basic result with location info and device details
-        result = {
+        # Default intent is "device_details" (show all)
+        intent = intent or "device_details"
+        
+        # Build full result first
+        full_result = {
             "device": device.get("name") or device_name,
             "rack": rack_name,
             "position": device.get("position") or device.get("rack_position"),
@@ -637,12 +1448,58 @@ async def get_device_rack_location(
             # Include additional device details for table display
             "device_type": device.get("device_type", {}).get("display") if isinstance(device.get("device_type"), dict) else device.get("device_type"),
             "device_role": device.get("device_role", {}).get("display") if isinstance(device.get("device_role"), dict) else device.get("device_role"),
-            "manufacturer": device.get("manufacturer", {}).get("display") if isinstance(device.get("manufacturer"), dict) else device.get("manufacturer"),
+            # Manufacturer is stored in device_type.manufacturer in NetBox
+            "manufacturer": (
+                device.get("device_type", {}).get("manufacturer", {}).get("display")
+                if isinstance(device.get("device_type"), dict) and isinstance(device.get("device_type", {}).get("manufacturer"), dict)
+                else (device.get("device_type", {}).get("manufacturer")
+                      if isinstance(device.get("device_type"), dict)
+                      else (device.get("manufacturer", {}).get("display")
+                            if isinstance(device.get("manufacturer"), dict)
+                            else device.get("manufacturer")))
+            ),
             "model": device.get("model", {}).get("display") if isinstance(device.get("model"), dict) else device.get("model"),
             "serial": device.get("serial"),
             "primary_ip": device.get("primary_ip", {}).get("address") if isinstance(device.get("primary_ip"), dict) else device.get("primary_ip"),
             "primary_ip4": device.get("primary_ip4", {}).get("address") if isinstance(device.get("primary_ip4"), dict) else device.get("primary_ip4"),
+            "intent": intent,  # Store intent in result for client display logic
         }
+        
+        # Filter result based on intent
+        if intent == "rack_location_only":
+            result = {
+                "device": full_result["device"],
+                "rack": full_result["rack"],
+                "position": full_result["position"],
+                "site": full_result["site"],
+                "intent": intent,
+            }
+        elif intent == "device_type_only":
+            result = {
+                "device": full_result["device"],
+                "device_type": full_result["device_type"],
+                "intent": intent,
+            }
+        elif intent == "status_only":
+            result = {
+                "device": full_result["device"],
+                "status": full_result["status"],
+                "intent": intent,
+            }
+        elif intent == "site_only":
+            result = {
+                "device": full_result["device"],
+                "site": full_result["site"],
+                "intent": intent,
+            }
+        elif intent == "manufacturer_only":
+            result = {
+                "device": full_result["device"],
+                "manufacturer": full_result["manufacturer"],
+                "intent": intent,
+            }
+        else:  # device_details or default
+            result = full_result
 
         # Try to enhance with LLM analysis if available (lazy initialization)
         llm = _get_llm()
@@ -667,7 +1524,16 @@ async def get_device_rack_location(
                     "display": device.get("display"),
                     "device_type": device.get("device_type", {}).get("display") if isinstance(device.get("device_type"), dict) else device.get("device_type"),
                     "device_role": device.get("device_role", {}).get("display") if isinstance(device.get("device_role"), dict) else device.get("device_role"),
-                    "manufacturer": device.get("manufacturer", {}).get("display") if isinstance(device.get("manufacturer"), dict) else device.get("manufacturer"),
+                    # Manufacturer is stored in device_type, not directly on device
+                    "manufacturer": (
+                        device.get("device_type", {}).get("manufacturer", {}).get("display") 
+                        if isinstance(device.get("device_type"), dict) and isinstance(device.get("device_type", {}).get("manufacturer"), dict)
+                        else (device.get("device_type", {}).get("manufacturer") 
+                              if isinstance(device.get("device_type"), dict) 
+                              else (device.get("manufacturer", {}).get("display") 
+                                    if isinstance(device.get("manufacturer"), dict) 
+                                    else device.get("manufacturer")))
+                    ),
                     "model": device.get("model", {}).get("display") if isinstance(device.get("model"), dict) else device.get("model"),
                     "serial": device.get("serial"),
                     "asset_tag": device.get("asset_tag"),

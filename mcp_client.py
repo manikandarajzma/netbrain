@@ -31,6 +31,16 @@ import pandas as pd
 # Import json for serialization
 import json
 
+# Import requests for fetching images
+try:
+    import requests
+    from io import BytesIO
+    from PIL import Image
+    IMAGE_FETCH_AVAILABLE = True
+except ImportError:
+    IMAGE_FETCH_AVAILABLE = False
+    print("DEBUG: PIL/requests not available, elevation images will show as links only", file=sys.stderr, flush=True)
+
 # Import matplotlib and networkx for graph visualization
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -1266,16 +1276,93 @@ def display_result_chat(result, container):
         print(f"DEBUG: No hops to display - result may not have path data", file=sys.stderr, flush=True)
         print(f"DEBUG: Result keys available: {list(result.keys())}", file=sys.stderr, flush=True)
 
-
-def display_rack_location_result(result, container, format_type=None, intent=None):
+def fetch_rack_elevation_image(elevation_url):
     """
-    Display rack location lookup result.
+    Fetch rack elevation image from NetBox URL.
+    
+    Note: NetBox elevation pages are HTML and may require authentication.
+    This function tries multiple approaches to get the image.
+    
+    Args:
+        elevation_url: URL to NetBox rack elevation page
+        
+    Returns:
+        PIL Image object, image URL string, or None if fetch fails
+    """
+    if not elevation_url or not IMAGE_FETCH_AVAILABLE:
+        return None
+    
+    try:
+        # NetBox elevation URLs are HTML pages, not direct images
+        # Try multiple approaches:
+        
+        # Approach 1: Try to construct direct image/render URLs
+        # NetBox might have render endpoints or export functionality
+        base_url = elevation_url.split('?')[0].rstrip('/')  # Remove query params and trailing slash
+        image_urls_to_try = [
+            base_url + '/render.png',
+            base_url + '/render.svg',
+            base_url + '/elevation.png',
+            base_url + '/elevation.svg',
+            base_url + '.png',
+            base_url + '.svg',
+            # Try with render parameter
+            base_url + '?render=1',
+            base_url + '?format=png',
+            base_url + '?export=png',
+        ]
+        
+        # Try fetching with authentication (if we had the token, but we don't in client)
+        # For now, try without auth first
+        for image_url in image_urls_to_try:
+            try:
+                response = requests.get(image_url, timeout=5, verify=False, allow_redirects=True)
+                
+                # Check if it's actually an image
+                content_type = response.headers.get('content-type', '').lower()
+                if content_type.startswith('image/'):
+                    img = Image.open(BytesIO(response.content))
+                    print(f"DEBUG: Successfully fetched elevation image from {image_url}", file=sys.stderr, flush=True)
+                    return img
+            except Exception as e:
+                # Try next URL
+                continue
+        
+        # Approach 2: Try to fetch HTML and extract image data
+        # NetBox elevation pages might have embedded SVG or canvas data
+        try:
+            response = requests.get(elevation_url, timeout=5, verify=False, allow_redirects=True)
+            if response.status_code == 200:
+                html_content = response.text
+                # Look for embedded images or SVG data in the HTML
+                # This is a fallback - NetBox might render elevations as SVG
+                import re
+                # Try to find SVG content
+                svg_match = re.search(r'<svg[^>]*>.*?</svg>', html_content, re.DOTALL | re.IGNORECASE)
+                if svg_match:
+                    # Found SVG - could convert to image, but for now return URL
+                    # Streamlit can display SVG directly via URL
+                    return elevation_url
+        except Exception as e:
+            pass
+        
+        # If all attempts failed, return the original URL
+        # Streamlit might be able to display it directly, or user can click the link
+        print(f"DEBUG: Could not fetch elevation image, returning URL: {elevation_url}", file=sys.stderr, flush=True)
+        return elevation_url  # Return URL string instead of None
+    except Exception as e:
+        print(f"DEBUG: Error fetching elevation image from {elevation_url}: {e}", file=sys.stderr, flush=True)
+        return elevation_url  # Return URL as fallback
+
+
+def display_rack_details_result(result, container, format_type=None):
+    """
+    Display rack details lookup result.
 
     Args:
-        result: Dictionary containing rack location data
+        result: Dictionary containing rack details data
         container: Streamlit container to display results in
-        format_type: Optional format request ("table", "json", "list", "minimal", "summary")
-        intent: Optional intent ("rack_location_only", "device_details", "network_path")
+        format_type: Optional format request ("table", "json", "list")
     """
     if not isinstance(result, dict):
         container.text(str(result))
@@ -1287,13 +1374,260 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
             container.info(f"Details: {result['details']}")
         return
 
+    rack = result.get("rack", "Unknown rack")
+    site = result.get("site")
+    location = result.get("location")
+    facility_id = result.get("facility_id")
+    status = result.get("status")
+    role = result.get("role")
+    rack_type = result.get("type")
+    width = result.get("width")
+    u_height = result.get("u_height")
+    devices_count = result.get("devices_count", 0)
+    devices = result.get("devices", [])
+
+    # Handle different format types
+    if format_type == "table":
+        import pandas as pd
+        table_data = []
+        table_data.append({"Field": "Rack", "Value": rack})
+        if site:
+            table_data.append({"Field": "Site", "Value": site})
+        if location:
+            table_data.append({"Field": "Location", "Value": location})
+        if facility_id:
+            table_data.append({"Field": "Facility ID", "Value": facility_id})
+        if status:
+            table_data.append({"Field": "Status", "Value": status})
+        if role:
+            table_data.append({"Field": "Role", "Value": role})
+        if rack_type:
+            table_data.append({"Field": "Type", "Value": rack_type})
+        if width:
+            table_data.append({"Field": "Width", "Value": width})
+        if u_height:
+            table_data.append({"Field": "Height (U)", "Value": u_height})
+        space_utilization = result.get("space_utilization")
+        if space_utilization is not None:
+            table_data.append({"Field": "Space Utilization", "Value": f"{space_utilization}%"})
+        occupied_units = result.get("occupied_units", 0)
+        if occupied_units is not None and u_height:
+            table_data.append({"Field": "Occupied Units", "Value": f"{occupied_units}U / {u_height}U"})
+        table_data.append({"Field": "Devices Count", "Value": devices_count})
+        
+        df = pd.DataFrame(table_data)
+        container.success(f"📍 {rack} - Rack Details")
+        container.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # Display devices in rack if available
+        if devices and len(devices) > 0:
+            container.markdown("#### Devices in Rack")
+            devices_data = []
+            for device in devices:
+                devices_data.append({
+                    "Device": device.get("name", "Unknown"),
+                    "Position": f"U{int(device.get('position', 0))}" if device.get("position") else "N/A",
+                    "Face": device.get("face", "N/A"),
+                    "Type": device.get("device_type", "N/A"),
+                    "Status": device.get("status", "N/A")
+                })
+            devices_df = pd.DataFrame(devices_data)
+            container.dataframe(devices_df, use_container_width=True, hide_index=True)
+        
+    elif format_type == "json":
+        container.json(result)
+    elif format_type == "list":
+        container.markdown(f"### {rack} - Rack Details")
+        info_list = []
+        if site:
+            info_list.append(f"- **Site:** {site}")
+        if location:
+            info_list.append(f"- **Location:** {location}")
+        if facility_id:
+            info_list.append(f"- **Facility ID:** {facility_id}")
+        if status:
+            info_list.append(f"- **Status:** {status}")
+        if role:
+            info_list.append(f"- **Role:** {role}")
+        if rack_type:
+            info_list.append(f"- **Type:** {rack_type}")
+        if width:
+            info_list.append(f"- **Width:** {width}")
+        if u_height:
+            info_list.append(f"- **Height:** {u_height}U")
+        info_list.append(f"- **Devices:** {devices_count}")
+        container.markdown("\n".join(info_list))
+        
+        if devices and len(devices) > 0:
+            container.markdown("#### Devices in Rack:")
+            for device in devices:
+                pos = f"U{int(device.get('position', 0))}" if device.get("position") else "N/A"
+                container.markdown(f"- {device.get('name', 'Unknown')} (Position: {pos}, Face: {device.get('face', 'N/A')}, Type: {device.get('device_type', 'N/A')})")
+    else:
+        # Default: show summary with AI analysis if available
+        container.markdown(f"### {rack} - Rack Details")
+        location_info = []
+        if site:
+            location_info.append(f"**Site:** {site}")
+        if location:
+            location_info.append(f"**Location:** {location}")
+        if facility_id:
+            location_info.append(f"**Facility ID:** {facility_id}")
+        if status:
+            location_info.append(f"**Status:** {status}")
+        if u_height:
+            location_info.append(f"**Height:** {u_height}U")
+        location_info.append(f"**Devices:** {devices_count}")
+        
+        if location_info:
+            container.markdown("\n".join(location_info))
+        
+        # Display AI analysis if available
+        if "ai_analysis" in result:
+            ai_analysis = result["ai_analysis"]
+            if isinstance(ai_analysis, dict):
+                summary = ai_analysis.get("summary")
+                if summary:
+                    container.markdown(summary)
+            elif isinstance(ai_analysis, str):
+                container.markdown(ai_analysis)
+
+
+def display_racks_list_result(result, container, format_type=None):
+    """
+    Display list of racks result.
+    
+    Args:
+        result: Dictionary containing racks list data
+        container: Streamlit container to display results in
+        format_type: Optional format request ("table", "json", "list")
+    """
+    if not isinstance(result, dict):
+        container.text(str(result))
+        return
+    
+    if "error" in result:
+        container.error(f"❌ {result['error']}")
+        if "details" in result:
+            container.info(f"Details: {result['details']}")
+        return
+    
+    racks = result.get("racks", [])
+    total_count = result.get("total_count", len(racks))
+    site_filter = result.get("site_filter")
+    
+    if format_type == "table":
+        import pandas as pd
+        if racks:
+            racks_data = []
+            for rack in racks:
+                racks_data.append({
+                    "Rack": rack.get("rack", "Unknown"),
+                    "Site": rack.get("site", "N/A"),
+                    "Status": rack.get("status", "N/A"),
+                    "Height (U)": rack.get("u_height", "N/A"),
+                    "Space Utilization": f"{rack.get('space_utilization', 0)}%" if rack.get("space_utilization") is not None else "N/A",
+                    "Occupied Units": f"{rack.get('occupied_units', 0)}U" if rack.get("occupied_units") is not None else "N/A",
+                    "Devices": rack.get("devices_count", 0)
+                })
+            
+            df = pd.DataFrame(racks_data)
+            title = f"📍 All Racks"
+            if site_filter:
+                title = f"📍 Racks at {site_filter}"
+            container.success(f"{title} ({total_count} total)")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            container.info(f"No racks found{' at ' + site_filter if site_filter else ''}.")
+    elif format_type == "json":
+        container.json(result)
+    elif format_type == "list":
+        title = "All Racks"
+        if site_filter:
+            title = f"Racks at {site_filter}"
+        container.markdown(f"### {title} ({total_count} total)")
+        if racks:
+            for rack in racks:
+                container.markdown(f"- **{rack.get('rack', 'Unknown')}** at {rack.get('site', 'Unknown site')} - {rack.get('space_utilization', 0)}% utilized, {rack.get('devices_count', 0)} devices")
+        else:
+            container.info(f"No racks found{' at ' + site_filter if site_filter else ''}.")
+    else:
+        # Default: show table format
+        import pandas as pd
+        if racks:
+            racks_data = []
+            for rack in racks:
+                racks_data.append({
+                    "Rack": rack.get("rack", "Unknown"),
+                    "Site": rack.get("site", "N/A"),
+                    "Status": rack.get("status", "N/A"),
+                    "Height (U)": rack.get("u_height", "N/A"),
+                    "Space Utilization": f"{rack.get('space_utilization', 0)}%" if rack.get("space_utilization") is not None else "N/A",
+                    "Occupied Units": f"{rack.get('occupied_units', 0)}U" if rack.get("occupied_units") is not None else "N/A",
+                    "Devices": rack.get("devices_count", 0)
+                })
+            
+            df = pd.DataFrame(racks_data)
+            title = f"📍 All Racks"
+            if site_filter:
+                title = f"📍 Racks at {site_filter}"
+            container.success(f"{title} ({total_count} total)")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Show AI analysis if available
+            ai_analysis = result.get("ai_analysis")
+            if ai_analysis:
+                if isinstance(ai_analysis, dict):
+                    summary = ai_analysis.get("summary", "")
+                    if summary:
+                        container.markdown(f"**Summary:** {summary}")
+                elif isinstance(ai_analysis, str):
+                    container.markdown(ai_analysis)
+        else:
+            container.info(f"No racks found{' at ' + site_filter if site_filter else ''}.")
+
+
+def display_rack_location_result(result, container, format_type=None, intent=None, yes_no_question=None):
+    """
+    Display rack location lookup result.
+
+    Args:
+        result: Dictionary containing rack location data
+        container: Streamlit container to display results in
+        format_type: Optional format request ("table", "json", "list", "minimal", "summary")
+        intent: Optional intent ("rack_location_only", "device_details", "device_type_only", "status_only", "site_only", "manufacturer_only")
+    """
+    if not isinstance(result, dict):
+        container.text(str(result))
+        return
+
+    if "error" in result:
+        container.error(f"❌ {result['error']}")
+        if "details" in result:
+            container.info(f"Details: {result['details']}")
+        return
+
+    # Get intent from result if not provided as parameter (for re-rendering)
+    if not intent and "intent" in result:
+        intent = result.get("intent")
+    
+    # Also check intent_output for stored intent from previous renders
+    if not intent and "intent_output" in result:
+        intent = result.get("intent_output")
+    
+    print(f"DEBUG: display_rack_location_result - Final intent: {intent}, result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+    
     device = result.get("device", "Unknown device")
     rack = result.get("rack")
     position = result.get("position")
     site = result.get("site")
     status = result.get("status")
 
-    if not rack:
+    # Only check for rack assignment if the intent requires rack information
+    # Intents that DON'T need rack: manufacturer_only, device_type_only, status_only, site_only
+    requires_rack = intent not in ("manufacturer_only", "device_type_only", "status_only", "site_only")
+    
+    if not rack and requires_rack:
         message = result.get("message") or "Device is not assigned to a rack."
         container.warning(f"⚠️ {device}: {message}")
         if site:
@@ -1309,8 +1643,14 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
         except (ValueError, TypeError):
             position_str = str(position) if position else None
 
+    # If intent is for a specific field (site, status, device_type, manufacturer), always use table format
+    # even if format_type is minimal/summary, because we need to show only that specific field
+    if intent in ("site_only", "status_only", "device_type_only", "manufacturer_only"):
+        format_type = "table"  # Override format to table for specific field requests
+
     # Handle minimal/summary format - show only rack location
-    if format_type in ("minimal", "summary"):
+    # BUT skip this if intent is for a specific field (handled above)
+    if format_type in ("minimal", "summary") and intent not in ("site_only", "status_only", "device_type_only", "manufacturer_only"):
         container.markdown(f"### {device} - Rack Location")
         location_info = []
         if site:
@@ -1331,7 +1671,16 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
         import pandas as pd
         table_data = []
         
-        # If user wants only rack location, show only those fields
+        print(f"DEBUG: display_rack_location_result - format_type: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Checking intent: '{intent}' (type: {type(intent)}, repr: {repr(intent)})", file=sys.stderr, flush=True)
+        
+        # Normalize intent (strip whitespace, convert to string) - DO THIS FIRST
+        if intent:
+            intent = str(intent).strip()
+            print(f"DEBUG: Normalized intent: '{intent}'", file=sys.stderr, flush=True)
+        
+        # Handle specific intents - show only requested fields
+        # Check these BEFORE device_details to ensure specific intents are handled
         if intent == "rack_location_only":
             # Only show rack location fields
             if site:
@@ -1346,8 +1695,83 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Rack Location")
             container.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            # Show all device details
+            return  # CRITICAL: Return early to prevent showing other fields
+        elif intent == "device_type_only":
+            # Check if this is a yes/no question (check result first for re-rendering, then parameter, then session_state)
+            yes_no_q = result.get("yes_no_question") or yes_no_question or st.session_state.get("yes_no_question")
+            if yes_no_q and yes_no_q.get("question_field") == "device_type":
+                expected_value = yes_no_q.get("expected_value", "").strip()
+                actual_device_type = result.get("device_type", "").strip()
+                # Compare (case-insensitive)
+                is_match = actual_device_type.lower() == expected_value.lower()
+                answer = "Yes" if is_match else "No"
+                container.success(f"**{answer}**")
+                return
+            
+            print(f"DEBUG: device_type_only intent detected! Showing only device type", file=sys.stderr, flush=True)
+            # Only show device type (normal display)
+            device_type = result.get("device_type")
+            print(f"DEBUG: Device type value from result: {device_type}", file=sys.stderr, flush=True)
+            if device_type:
+                table_data.append({"Field": "Device Type", "Value": device_type})
+            else:
+                print(f"DEBUG: WARNING - No device_type in result! Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Device Type")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+            print(f"DEBUG: Returning early from device_type_only handler", file=sys.stderr, flush=True)
+            return  # CRITICAL: Return early to prevent showing other fields
+        elif intent == "status_only":
+            # Check if this is a yes/no question (check result first for re-rendering, then parameter, then session_state)
+            yes_no_q = result.get("yes_no_question") or yes_no_question or st.session_state.get("yes_no_question")
+            if yes_no_q and yes_no_q.get("question_field") == "status":
+                expected_value = yes_no_q.get("expected_value", "").strip()
+                actual_status = result.get("status", "").strip()
+                # Compare (case-insensitive)
+                is_match = actual_status.lower() == expected_value.lower()
+                answer = "Yes" if is_match else "No"
+                container.success(f"**{answer}**")
+                return
+            
+            # Only show status (normal display)
+            if status:
+                table_data.append({"Field": "Status", "Value": status})
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Status")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+            return  # CRITICAL: Return early to prevent showing other fields
+        elif intent == "manufacturer_only":
+            # Check if this is a yes/no question (check result first for re-rendering, then parameter, then session_state)
+            yes_no_q = result.get("yes_no_question") or yes_no_question or st.session_state.get("yes_no_question")
+            if yes_no_q and yes_no_q.get("question_field") == "manufacturer":
+                expected_value = yes_no_q.get("expected_value", "").strip()
+                manufacturer = result.get("manufacturer", "").strip()
+                # Compare (case-insensitive)
+                is_match = manufacturer.lower() == expected_value.lower()
+                answer = "Yes" if is_match else "No"
+                container.success(f"**{answer}**")
+                return
+            
+            # Only show manufacturer (normal display)
+            manufacturer = result.get("manufacturer")
+            if manufacturer:
+                table_data.append({"Field": "Manufacturer", "Value": manufacturer})
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Manufacturer")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+            return  # CRITICAL: Return early to prevent showing other fields
+        elif intent == "site_only":
+            # Only show site
+            if site:
+                table_data.append({"Field": "Site", "Value": site})
+            df = pd.DataFrame(table_data)
+            container.success(f"📍 {device} - Site")
+            container.dataframe(df, use_container_width=True, hide_index=True)
+            return  # CRITICAL: Return early to prevent showing other fields
+        elif intent == "device_details" or intent is None:
+            print(f"DEBUG: device_details or None intent - showing all fields. Intent was: {repr(intent)}", file=sys.stderr, flush=True)
+            print(f"DEBUG: WARNING - This should not happen for device_type_only queries! Check intent extraction.", file=sys.stderr, flush=True)
+            # Show all device details (default behavior)
             table_data.append({"Field": "Device", "Value": device})
             if rack:
                 table_data.append({"Field": "Rack", "Value": rack})
@@ -1482,7 +1906,120 @@ async def execute_network_query(source, destination, protocol, port, is_live):
         return {"error": f"Error executing query: {str(e)}"}
 
 
-async def execute_rack_location_query(device_name, format_type=None, conversation_history=None):
+async def execute_rack_details_query(rack_name, format_type=None, conversation_history=None, site_name=None):
+    """
+    Execute rack details lookup via MCP server.
+
+    Args:
+        rack_name: Rack name to look up in NetBox
+        format_type: Optional format request ("table", "json", "list")
+        conversation_history: Optional conversation history for context
+        site_name: Optional site name to filter racks
+
+    Returns:
+        dict: Rack details result
+    """
+    import sys
+    print(f"DEBUG: Starting rack details query for rack: {rack_name}, site: {site_name}, format: {format_type}", file=sys.stderr, flush=True)
+
+    try:
+        server_params = get_server_params()
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                tool_arguments = {"rack_name": rack_name}
+                if site_name:
+                    tool_arguments["site_name"] = site_name
+                if format_type:
+                    tool_arguments["format"] = format_type
+                if conversation_history:
+                    tool_arguments["conversation_history"] = conversation_history
+                
+                tool_result = await session.call_tool(
+                    "get_rack_details",
+                    arguments=tool_arguments
+                )
+
+                if tool_result and tool_result.content:
+                    import json
+                    result_text = tool_result.content[0].text
+                    print(f"DEBUG: Rack details result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                    try:
+                        result = json.loads(result_text)
+                        print(f"DEBUG: Rack details result parsed successfully", file=sys.stderr, flush=True)
+                        return result
+                    except json.JSONDecodeError as e:
+                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                        return {"result": result_text}
+                else:
+                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+                    return None
+    except asyncio.TimeoutError:
+        return {"error": "Rack details lookup timed out"}
+    except Exception as e:
+        import sys
+        print(f"DEBUG: Error executing rack details query: {str(e)}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing query: {str(e)}"}
+
+
+async def execute_racks_list_query(site_name=None, format_type=None, conversation_history=None):
+    """
+    Execute racks list lookup via MCP server.
+    
+    Args:
+        site_name: Optional site name to filter racks
+        format_type: Optional format request ("table", "json", "list")
+        conversation_history: Optional conversation history for context
+    
+    Returns:
+        dict: Racks list result
+    """
+    import sys
+    print(f"DEBUG: Starting racks list query, site: {site_name}, format: {format_type}", file=sys.stderr, flush=True)
+    
+    try:
+        server_params = get_server_params()
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                tool_arguments = {}
+                if site_name:
+                    tool_arguments["site_name"] = site_name
+                if format_type:
+                    tool_arguments["format"] = format_type
+                if conversation_history:
+                    tool_arguments["conversation_history"] = conversation_history
+                
+                tool_result = await session.call_tool(
+                    "list_racks",
+                    arguments=tool_arguments
+                )
+                
+                if tool_result and tool_result.content:
+                    import json
+                    result_text = tool_result.content[0].text
+                    print(f"DEBUG: Racks list result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                    try:
+                        result = json.loads(result_text)
+                        print(f"DEBUG: Racks list result parsed successfully", file=sys.stderr, flush=True)
+                        return result
+                    except json.JSONDecodeError as e:
+                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                        return {"result": result_text}
+                else:
+                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+                    return None
+    except asyncio.TimeoutError:
+        return {"error": "Racks list lookup timed out"}
+    except Exception as e:
+        import sys
+        print(f"DEBUG: Error executing racks list query: {str(e)}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing query: {str(e)}"}
+
+
+async def execute_rack_location_query(device_name, format_type=None, conversation_history=None, intent=None):
     """
     Execute rack location lookup via MCP server.
 
@@ -1490,12 +2027,13 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
         device_name: Device name to look up in NetBox
         format_type: Optional format request ("table", "json", "list")
         conversation_history: Optional conversation history for context
+        intent: Optional intent ("device_details", "rack_location_only", "device_type_only", etc.)
 
     Returns:
         dict: Rack location result
     """
     import sys
-    print(f"DEBUG: Starting rack location query for device: {device_name}, format: {format_type}", file=sys.stderr, flush=True)
+    print(f"DEBUG: Starting rack location query for device: {device_name}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
 
     try:
         server_params = get_server_params()
@@ -1506,6 +2044,8 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
                 tool_arguments = {"device_name": device_name}
                 if format_type:
                     tool_arguments["format"] = format_type
+                if intent:
+                    tool_arguments["intent"] = intent
                 if conversation_history:
                     tool_arguments["conversation_history"] = conversation_history
                 
@@ -1584,22 +2124,45 @@ def main():
     
     # Display chat messages
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            if message["role"] == "user":
-                st.markdown(message["content"])
-            else:
-                # Assistant messages can contain various content types
-                if isinstance(message["content"], dict):
-                    # Check if it's a rack location result (has 'rack' or 'device' key)
-                    if "rack" in message["content"] or "device" in message["content"]:
-                        # Display rack location result
-                        format_type = message["content"].get("format_output")  # Get format from result if stored
-                        display_rack_location_result(message["content"], st.container(), format_type)
-                    else:
-                        # Display network path result
-                        display_result_chat(message["content"], st.container())
-                else:
+        try:
+            with st.chat_message(message["role"]):
+                if message["role"] == "user":
                     st.markdown(message["content"])
+                else:
+                    # Assistant messages can contain various content types
+                    if isinstance(message["content"], dict):
+                        # Check if this is a racks list result FIRST (has 'racks' key with list value)
+                        if "racks" in message["content"] and isinstance(message["content"].get("racks"), list):
+                            # Display racks list result
+                            format_type = message["content"].get("format_output")
+                            display_racks_list_result(message["content"], st.container(), format_type)
+                        # Check if it's a rack details result (has 'rack' key and 'devices_count' or 'devices')
+                        elif "rack" in message["content"] and ("devices_count" in message["content"] or "devices" in message["content"]):
+                            # Display rack details result
+                            format_type = message["content"].get("format_output")
+                            display_rack_details_result(message["content"], st.container(), format_type)
+                        # Check if it's a rack location result (has 'rack' or 'device' key)
+                        elif "rack" in message["content"] or "device" in message["content"]:
+                            # Display rack location result (device query)
+                            format_type = message["content"].get("format_output")  # Get format from result if stored
+                            intent = message["content"].get("intent_output")  # Get intent from result if stored
+                            # Restore yes/no question state if present (for proper re-rendering)
+                            yes_no_question = message["content"].get("yes_no_question")
+                            display_rack_location_result(message["content"], st.container(), format_type, intent=intent, yes_no_question=yes_no_question)
+                        else:
+                            # Display network path result
+                            display_result_chat(message["content"], st.container())
+                    else:
+                        st.markdown(message["content"])
+        except Exception as e:
+            # If there's an error displaying a message, show an error but don't break the loop
+            # This ensures all messages are still displayed even if one fails
+            print(f"DEBUG: Error displaying message: {e}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            with st.chat_message("assistant"):
+                st.error(f"Error displaying message: {str(e)}")
+                st.code(str(message.get("content", "Unknown content"))[:200])
     
     # Display buttons for all pending queries (so they're always visible and clickable)
     for key in list(st.session_state.keys()):
@@ -1719,7 +2282,106 @@ def main():
             if isinstance(msg.get("content"), str)  # Only include text messages for context
         ]
         
+        # Check if this looks like just a site name (for context inference from previous queries)
+        # Pattern: just location words, no rack keywords, no device names, no numbers
+        prompt_lower = prompt.lower().strip()
+        is_likely_site_name = (
+            len(prompt.split()) <= 3 and  # Short query (1-3 words)
+            not any(char.isdigit() for char in prompt) and  # No numbers (rack names have numbers)
+            "-" not in prompt and  # No dashes (device names have dashes)
+            "rack" not in prompt_lower and  # No "rack" keyword
+            "device" not in prompt_lower and  # No "device" keyword
+            "path" not in prompt_lower and  # No "path" keyword
+            "in" not in prompt_lower  # No "in" keyword (would be "A1 in round rock")
+        )
+        
+        # PRIORITY: Check if this is a follow-up response to a site clarification question FIRST
+        # This is the active pending query that needs site information
+        last_rack_query = st.session_state.get("last_rack_query")
+        if last_rack_query and is_likely_site_name:
+            # User is providing site name for previous rack query
+            rack_name = last_rack_query.get("rack_name")
+            site_name = prompt.strip()
+            format_type = last_rack_query.get("format_type", "table")
+            
+            print(f"DEBUG: Using last_rack_query with rack_name={rack_name}, site_name={site_name}", file=sys.stderr, flush=True)
+            
+            # Clear the stored query IMMEDIATELY to prevent reuse
+            st.session_state["last_rack_query"] = None
+            
+            # Execute the rack query with the site name
+            status_msg = f"🔎 Looking up rack details for **{rack_name}** in **{site_name}**..."
+            with st.chat_message("assistant"):
+                st.info(status_msg)
+            
+            try:
+                max_timeout = 60
+                try:
+                    asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(
+                                asyncio.wait_for(
+                                    execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
+                                    timeout=max_timeout
+                                )
+                            )
+                        )
+                        result = future.result(timeout=max_timeout + 5)
+                except RuntimeError:
+                    result = asyncio.run(
+                        asyncio.wait_for(
+                            execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
+                            timeout=max_timeout
+                        )
+                    )
+                
+                with st.chat_message("assistant"):
+                    display_rack_details_result(result, st.container(), format_type)
+                
+                # Store result with format_type for proper re-rendering
+                result_with_format = result.copy() if isinstance(result, dict) else result
+                if isinstance(result_with_format, dict):
+                    result_with_format["format_output"] = format_type
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": result_with_format
+                })
+                
+                # Store rack context for future queries (if this was a rack query)
+                if rack_name:
+                    st.session_state["last_rack_context"] = {
+                        "rack_name": rack_name,
+                        "site_name": site_name,
+                        "format_type": format_type or "table"
+                    }
+                
+                return  # Exit after successful lookup
+            except asyncio.TimeoutError:
+                error_msg = "⏱️ Rack details lookup timed out. Please try again."
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                return
+            except Exception as e:
+                error_msg = f"An error occurred: {str(e)}"
+                with st.chat_message("assistant"):
+                    st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                return
+        
+        # Simple safety check: Detect obvious rack query patterns before LLM
+        # This prevents LLM from misclassifying obvious rack queries as device queries
+        prompt_lower = prompt.lower().strip()
+        has_rack_keyword = any(phrase in prompt_lower for phrase in [
+            "rack details", "rack info", "show rack", "what's in rack", 
+            "devices in rack", "rack details for", "rack info for"
+        ])
+        
         # Use tool discovery to select the appropriate tool based on tool descriptions
+        # NO regex pattern matching - let the LLM decide based on tool descriptions
+        # NO pattern matching, NO pre-checks - let the LLM use tool descriptions to decide
         async def discover_and_execute_tool():
             try:
                 server_params = get_server_params()
@@ -1733,75 +2395,59 @@ def main():
                         
                         print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
                         
-                        # Build tool descriptions for LLM
-                        tools_description = "\n\n".join([
-                            f"Tool: {tool.name}\nDescription: {tool.description or 'No description'}\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
+                        # Build tool descriptions for LLM - format with clear structure
+                        tools_description = "\n\n" + "="*80 + "\n\n".join([
+                            f"Tool Name: {tool.name}\n\nDescription:\n{tool.description or 'No description'}\n\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
                             for tool in tools
-                        ])
+                        ]) + "\n\n" + "="*80
                         
                         print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
                         
-                        # Use LLM to understand the query and select the appropriate tool
+                        # Use LLM to understand the query and select the appropriate tool based on tool descriptions
                         llm = ChatOllama(model="llama3.2:latest", base_url="http://localhost:11434")
                         
-                        parse_prompt = f"""You are a tool selection assistant. Analyze the user's natural language query CAREFULLY and determine which tool to use and what information they want.
+                        parse_prompt = f"""You are a tool selection assistant. Your ONLY job is to read the tool descriptions below and select the correct tool based on what the tool descriptions say.
 
 Available tools:
 {tools_description}
 
 User query: "{prompt}"
 
-CRITICAL INSTRUCTIONS - Read the user's query word by word:
-1. Look for keywords that indicate what the user wants:
-   - "just rack location", "only rack", "rack location only", "just the rack", "only the rack" → format MUST be "minimal"
-   - "where is", "rack position", "what rack" → format MUST be "minimal"  
-   - "device details", "device info", "full details", "all information" → format should be "table"
-   - "table", "json", "list" → use that exact format
-   - Just a device name (e.g., "roundrock-dc-leaf1") → format should be "table" (default)
+**CRITICAL RULES - FOLLOW THESE EXACTLY:**
 
-2. Extract the device name EXACTLY as written in the query
+**RULE 1: Check for dashes FIRST**
+- If the query contains ANY name with DASHES (-) → it is ALWAYS a DEVICE NAME → use get_device_rack_location
+- Examples: "leander-dc-leaf5", "roundrock-dc-border-leaf1", "A4-device" (has dash = device)
+- NO EXCEPTIONS: If there's a dash, it's a device name
 
-3. Determine the tool:
-   - Device name queries → "get_device_rack_location"
-   - Network path queries (has source/destination IPs) → "query_network_path"
+**RULE 2: Short identifiers without dashes are ALWAYS racks**
+- If the query is JUST a short identifier (1-3 characters, letter+number, NO dashes) → it is ALWAYS a RACK NAME → use get_rack_details
+- Examples: "A4" → rack, "A1" → rack, "B2" → rack, "A12" → rack
+- Pattern: [letter(s)][number(s)] with NO dashes = RACK NAME
+- NO EXCEPTIONS: "A4" is ALWAYS a rack, NEVER a device
 
-For get_device_rack_location tool:
-- format options: "table", "json", "list", "minimal", "summary", or null
-- "minimal" or "summary" = show ONLY rack location (site, rack, position) - NO other details
-- "table" = show full device details in table format
+**RULE 3: Explicit examples for common queries:**
+- Query: "A4" → tool: get_rack_details, rack_name: "A4"
+- Query: "A1" → tool: get_rack_details, rack_name: "A1"
+- Query: "leander-dc-leaf5" → tool: get_device_rack_location, device_name: "leander-dc-leaf5"
+- Query: "roundrock-dc-border-leaf1" → tool: get_device_rack_location, device_name: "roundrock-dc-border-leaf1"
 
-Respond with JSON only:
+**DO NOT:**
+- Treat "A4" or "A1" as device names - they have NO dashes, so they are racks!
+- Use get_device_rack_location for "A4" - that's WRONG, use get_rack_details!
+- Add your own logic - follow the rules above exactly
+
+Respond with JSON only (no other text):
 {{
-    "tool_name": "exact tool name from the available tools",
+    "tool_name": "tool name from the available tools",
     "parameters": {{
-        "device_name": "extracted device name exactly as written"
-    }},
-    "format": "table" or "json" or "list" or "minimal" or "summary" or null,
-    "intent": "rack_location_only" or "device_details" or "network_path"
-}}
-
-EXAMPLES - Follow these patterns exactly:
-- Query: "give me just the rack location for roundrock-dc-leaf1"
-  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "roundrock-dc-leaf1"}}, "format": "minimal", "intent": "rack_location_only"}}
-
-- Query: "leander-dc-border-leaf1 just the rack location in table format"
-  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf1"}}, "format": "table", "intent": "rack_location_only"}}
-
-- Query: "device details for leander-dc-border-leaf1"  
-  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf1"}}, "format": "table", "intent": "device_details"}}
-
-- Query: "where is roundrock-dc-leaf1"
-  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "roundrock-dc-leaf1"}}, "format": "minimal", "intent": "rack_location_only"}}
-
-- Query: "leander-dc-border-leaf2"
-  Response: {{"tool_name": "get_device_rack_location", "parameters": {{"device_name": "leander-dc-border-leaf2"}}, "format": "table", "intent": "device_details"}}
-
-REMEMBER:
-- If user says "just" or "only" about rack location → intent MUST be "rack_location_only"
-- If user says "just the rack location in table format" → format: "table", intent: "rack_location_only"
-- If user says "just the rack location" (no format specified) → format: "minimal", intent: "rack_location_only"
-- Extract device names exactly as they appear
-- For network path queries, extract source, destination, protocol, port"""
+        "device_name": "if device query, extract full device name with dashes",
+        "rack_name": "if rack query, extract short rack identifier",
+        "site_name": "if site is mentioned, extract site name",
+        "intent": "for device queries: device_details, rack_location_only, device_type_only, status_only, site_only, or manufacturer_only",
+        "format": "table"
+    }}
+}}"""
                         
                         response = llm.invoke(parse_prompt)
                         content = response.content if hasattr(response, 'content') else str(response)
@@ -1815,21 +2461,36 @@ REMEMBER:
                             parsed = json.loads(json_match.group())
                             selected_tool = parsed.get("tool_name")
                             tool_params = parsed.get("parameters", {})
-                            format_type = parsed.get("format")
+                            format_type = tool_params.get("format") or parsed.get("format") or "table"
+                            intent = tool_params.get("intent") or parsed.get("intent")  # Check both parameters and top level
                             
-                            print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}", file=sys.stderr, flush=True)
+                            # Move intent from parameters to top level if needed (don't pass it to tool)
+                            if "intent" in tool_params:
+                                intent = tool_params.pop("intent")
+                            
+                            # Trust the LLM's extraction - no validation or fallback logic
+                            
+                            print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
+                            
+                            # Trust the LLM - if tool_name is missing, return error
+                            if not selected_tool:
+                                print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
+                                return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
                             
                             return {
                                 "success": True,
                                 "tool_name": selected_tool,
                                 "parameters": tool_params,
-                                "format": format_type
+                                "format": format_type,
+                                "intent": intent
                             }
                         
                         return {"success": False, "error": "Failed to parse tool selection"}
             except Exception as e:
                 print(f"DEBUG: Tool discovery failed: {str(e)}", file=sys.stderr, flush=True)
                 return {"success": False, "error": str(e)}
+        
+        # No pre-checks - rely entirely on LLM + tool descriptions
         
         # Execute tool discovery
         try:
@@ -1850,35 +2511,73 @@ REMEMBER:
                 format_type = tool_selection.get("format")
                 intent = tool_selection.get("intent")
                 
-                # Execute the selected tool
+                # Execute the selected tool - trust LLM's parameter extraction
                 if selected_tool == "get_device_rack_location":
-                    device_name = tool_params.get("device_name")
+                    device_name = tool_params.get("device_name", "").strip()
                     if not device_name:
-                        # Try to extract device name from query if not in params
-                        device_name = prompt.strip()
+                        # If LLM didn't extract device_name, return error instead of guessing
+                        error_msg = "Device name not found in query. Please specify a device name."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
                     
-                    # Default to table format if no format specified (unless user asked for minimal)
-                    if not format_type:
-                        prompt_lower = prompt.lower()
-                        # Check if user explicitly requested table format
-                        if any(phrase in prompt_lower for phrase in ["table format", "in table", "as table"]):
-                            format_type = "table"
-                        # Check if user asked for minimal info (but not if they also said table format)
-                        elif any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
-                            format_type = "minimal"
-                        else:
-                            format_type = "table"
-                    
-                    # If user wants rack location only but in table format, ensure intent is set
-                    if not intent:
-                        prompt_lower = prompt.lower()
-                        if any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
-                            intent = "rack_location_only"
-                    
-                    # If user explicitly said "table format" but also wants "just rack location", ensure intent is set
+                    # Check if this is a yes/no question (e.g., "is Arista the manufacturer for...")
                     prompt_lower = prompt.lower()
-                    if format_type == "table" and any(phrase in prompt_lower for phrase in ["just rack", "only rack", "rack location only", "just the rack", "only the rack", "just rack location"]):
-                        intent = "rack_location_only"
+                    is_yes_no_question = False
+                    expected_value = None
+                    question_field = None
+                    
+                    # Pattern: "is X the manufacturer for device"
+                    import re
+                    manufacturer_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+manufacturer\s+for', prompt_lower)
+                    if manufacturer_match:
+                        is_yes_no_question = True
+                        expected_value = manufacturer_match.group(1).strip()
+                        question_field = "manufacturer"
+                        intent = "manufacturer_only"  # We need manufacturer to compare
+                        print(f"DEBUG: Detected yes/no manufacturer question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                    
+                    # Pattern: "is X the status for device"
+                    status_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+status\s+for', prompt_lower)
+                    if status_match:
+                        is_yes_no_question = True
+                        expected_value = status_match.group(1).strip()
+                        question_field = "status"
+                        intent = "status_only"
+                        print(f"DEBUG: Detected yes/no status question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                    
+                    # Pattern: "is X the device type for device"
+                    device_type_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+device\s+type\s+for', prompt_lower)
+                    if device_type_match:
+                        is_yes_no_question = True
+                        expected_value = device_type_match.group(1).strip()
+                        question_field = "device_type"
+                        intent = "device_type_only"
+                        print(f"DEBUG: Detected yes/no device type question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                    
+                    # Default to table format
+                    if not format_type:
+                        format_type = "table"
+                    
+                    # Use LLM-provided intent, or default to device_details if not provided
+                    if not intent:
+                        intent = "device_details"
+                        print(f"DEBUG: No intent from LLM, defaulting to device_details", file=sys.stderr, flush=True)
+                    else:
+                        print(f"DEBUG: Using LLM-provided intent: {intent}", file=sys.stderr, flush=True)
+                    
+                    # Store yes/no question info for later comparison
+                    if is_yes_no_question:
+                        st.session_state["yes_no_question"] = {
+                            "expected_value": expected_value,
+                            "question_field": question_field
+                        }
+                    
+                    # Ensure format is "table" for specific field intents
+                    if intent in ("site_only", "status_only", "device_type_only", "manufacturer_only", "rack_location_only"):
+                        format_type = "table"
+                        print(f"DEBUG: Format set to 'table' for intent: {intent}", file=sys.stderr, flush=True)
                     
                     if device_name:
                         status_msg = f"🔎 Looking up device details for **{device_name}**..."
@@ -1894,7 +2593,7 @@ REMEMBER:
                                     future = executor.submit(
                                         lambda: asyncio.run(
                                             asyncio.wait_for(
-                                                execute_rack_location_query(device_name, format_type, conversation_history),
+                                                execute_rack_location_query(device_name, format_type, conversation_history, intent),
                                                 timeout=max_timeout
                                             )
                                         )
@@ -1903,25 +2602,211 @@ REMEMBER:
                             except RuntimeError:
                                 result = asyncio.run(
                                     asyncio.wait_for(
-                                        execute_rack_location_query(device_name, format_type, conversation_history),
+                                        execute_rack_location_query(device_name, format_type, conversation_history, intent),
                                         timeout=max_timeout
                                     )
                                 )
 
                             with st.chat_message("assistant"):
+                                print(f"DEBUG: About to display result with intent: {intent}, format: {format_type}", file=sys.stderr, flush=True)
+                                print(f"DEBUG: Result keys before display: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+                                print(f"DEBUG: Result intent field: {result.get('intent') if isinstance(result, dict) else 'N/A'}", file=sys.stderr, flush=True)
                                 display_rack_location_result(result, st.container(), format_type, intent=intent)
 
-                            # Store result with format_type for proper re-rendering
+                            # Store result with format_type and intent for proper re-rendering
                             result_with_format = result.copy() if isinstance(result, dict) else result
                             if isinstance(result_with_format, dict):
                                 result_with_format["format_output"] = format_type
+                                # Always store intent (even if None or device_details) so re-rendering works correctly
+                                result_with_format["intent_output"] = intent if intent else "device_details"
+                                # Store yes/no question state if present (for proper re-rendering)
+                                yes_no_question = st.session_state.get("yes_no_question")
+                                if yes_no_question:
+                                    result_with_format["yes_no_question"] = yes_no_question
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "content": result_with_format
                             })
+                            # Clear yes/no question state after storing (it's now in the message)
+                            st.session_state.pop("yes_no_question", None)
                             return  # Exit after successful lookup
                         except asyncio.TimeoutError:
                             error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                
+                elif selected_tool == "list_racks":
+                    # Use LLM-extracted values
+                    site_name = tool_params.get("site_name")
+                    format_type = tool_params.get("format") or format_type or "table"
+                    
+                    status_msg = f"🔎 Looking up all racks"
+                    if site_name:
+                        status_msg = f"🔎 Looking up racks at **{site_name}**"
+                    with st.chat_message("assistant"):
+                        st.info(status_msg)
+                    
+                    try:
+                        max_timeout = 60
+                        try:
+                            asyncio.get_running_loop()
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(
+                                    lambda: asyncio.run(
+                                        asyncio.wait_for(
+                                            execute_racks_list_query(site_name, format_type, conversation_history),
+                                            timeout=max_timeout
+                                        )
+                                    )
+                                )
+                                result = future.result(timeout=max_timeout + 5)
+                        except RuntimeError:
+                            result = asyncio.run(
+                                asyncio.wait_for(
+                                    execute_racks_list_query(site_name, format_type, conversation_history),
+                                    timeout=max_timeout
+                                )
+                            )
+                        
+                        with st.chat_message("assistant"):
+                            display_racks_list_result(result, st.container(), format_type)
+                        
+                        # Store result with format_type for proper re-rendering
+                        result_with_format = result.copy() if isinstance(result, dict) else result
+                        if isinstance(result_with_format, dict):
+                            result_with_format["format_output"] = format_type
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": result_with_format
+                        })
+                        return  # Exit after successful lookup
+                    except asyncio.TimeoutError:
+                        error_msg = "⏱️ Racks list lookup timed out. Please try again."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                    except Exception as e:
+                        error_msg = f"An error occurred: {str(e)}"
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                
+                elif selected_tool == "get_rack_details":
+                    # Use LLM-extracted values - no regex needed
+                    rack_name = tool_params.get("rack_name")
+                    site_name = tool_params.get("site_name")
+                    
+                    # Default to table format if no format specified
+                    if not format_type:
+                        format_type = "table"
+                    
+                    if rack_name:
+                        site_info = f" in **{site_name}**" if site_name else ""
+                        status_msg = f"🔎 Looking up rack details for **{rack_name}**{site_info}..."
+                        with st.chat_message("assistant"):
+                            st.info(status_msg)
+                        
+                        # Clear any stored rack query since we're proceeding
+                        if "last_rack_query" in st.session_state:
+                            st.session_state["last_rack_query"] = None
+
+                        try:
+                            max_timeout = 60
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
+                                                timeout=max_timeout
+                                            )
+                                        )
+                                    )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
+                                        timeout=max_timeout
+                                    )
+                                )
+
+                            # Check if server returned an error or requires site clarification
+                            if isinstance(result, dict) and "error" in result:
+                                error_msg = result.get("error", "")
+                                if "device name" in error_msg.lower() and "dash" in error_msg.lower():
+                                    # Server correctly identified this as a device name - show error and let tool discovery handle it
+                                    print(f"DEBUG: Server detected device name in rack query, error: {error_msg}", file=sys.stderr, flush=True)
+                                    with st.chat_message("assistant"):
+                                        st.error(f"❌ {error_msg}")
+                                        if "suggestion" in result:
+                                            st.info(result["suggestion"])
+                                    st.session_state.messages.append({
+                                        "role": "assistant",
+                                        "content": result
+                                    })
+                                    # Don't return - let it fall through to tool discovery which should use get_device_rack_location
+                                elif result.get("requires_site"):
+                                    # Multiple racks with same name at different sites - ask for site clarification
+                                    sites = result.get("sites", [])
+                                    sites_list = ", ".join([f"'{s}'" for s in sites]) if sites else "different sites"
+                                    clarifying_text = f"I found rack **{rack_name}** at multiple sites ({sites_list}). Please specify which site (e.g., 'Round Rock DC', 'Leander DC', etc.)."
+                                    
+                                    # Store the rack query for follow-up
+                                    st.session_state["last_rack_query"] = {
+                                        "rack_name": rack_name,
+                                        "format_type": format_type or "table"
+                                    }
+                                    print(f"DEBUG: Set last_rack_query to rack_name={rack_name} (multiple sites found)", file=sys.stderr, flush=True)
+                                    
+                                    with st.chat_message("assistant"):
+                                        st.info(clarifying_text)
+                                    st.session_state.messages.append({
+                                        "role": "assistant",
+                                        "content": clarifying_text
+                                    })
+                                    return  # Exit to wait for user's site response
+                                else:
+                                    # Other error (e.g., "Rack not found") - display it
+                                    with st.chat_message("assistant"):
+                                        display_rack_details_result(result, st.container(), format_type)
+                                    result_with_format = result.copy() if isinstance(result, dict) else result
+                                    if isinstance(result_with_format, dict):
+                                        result_with_format["format_output"] = format_type
+                                    st.session_state.messages.append({
+                                        "role": "assistant",
+                                        "content": result_with_format
+                                    })
+                                    return
+                            
+                            # Success - display result
+                            with st.chat_message("assistant"):
+                                display_rack_details_result(result, st.container(), format_type)
+
+                                # Store result with format_type for proper re-rendering
+                                result_with_format = result.copy() if isinstance(result, dict) else result
+                                if isinstance(result_with_format, dict):
+                                    result_with_format["format_output"] = format_type
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": result_with_format
+                                })
+                                return  # Exit after successful lookup
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Rack details lookup timed out. Please try again."
                             with st.chat_message("assistant"):
                                 st.error(error_msg)
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
@@ -2020,7 +2905,8 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                 parsed = json.loads(json_match.group())
                 device_name = parsed.get("device_name")
                 format_type = parsed.get("format")
-                print(f"DEBUG: LLM parsed device_name: {device_name}, format: {format_type}", file=sys.stderr, flush=True)
+                intent = parsed.get("intent")  # Extract intent from fallback parsing
+                print(f"DEBUG: LLM parsed device_name: {device_name}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"DEBUG: LLM parsing failed, falling back to regex: {str(e)}", file=sys.stderr, flush=True)
             # Fallback to regex parsing if LLM fails
@@ -2028,11 +2914,17 @@ Important: Extract the device name exactly as it appears. Do not include any ext
             if rack_query and rack_query.get("device_name"):
                 device_name = rack_query["device_name"]
                 format_type = rack_query.get("format")
+                intent = None  # No intent from regex fallback
         
         # Default to table format for device details queries if no format specified
         if device_name and not format_type:
             format_type = "table"
             print(f"DEBUG: Defaulting to table format for device query", file=sys.stderr, flush=True)
+        
+        # Default to device_details if no intent extracted (let LLM handle intent extraction)
+        if device_name and not intent:
+            intent = "device_details"
+            print(f"DEBUG: No intent extracted, defaulting to device_details", file=sys.stderr, flush=True)
         
         if device_name:
             status_msg = f"🔎 Looking up device details for **{device_name}**..."
@@ -2048,7 +2940,7 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                         future = executor.submit(
                             lambda: asyncio.run(
                                 asyncio.wait_for(
-                                    execute_rack_location_query(device_name, format_type, conversation_history),
+                                    execute_rack_location_query(device_name, format_type, conversation_history, intent),
                                     timeout=max_timeout
                                 )
                             )
@@ -2057,22 +2949,29 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                 except RuntimeError:
                     result = asyncio.run(
                         asyncio.wait_for(
-                            execute_rack_location_query(device_name, format_type, conversation_history),
+                            execute_rack_location_query(device_name, format_type, conversation_history, intent),
                             timeout=max_timeout
                         )
                     )
 
                 with st.chat_message("assistant"):
-                    display_rack_location_result(result, st.container(), format_type)
+                    display_rack_location_result(result, st.container(), format_type, intent=intent)
 
-                # Store result with format_type for proper re-rendering
+                # Store result with format_type and intent for proper re-rendering
                 result_with_format = result.copy() if isinstance(result, dict) else result
                 if isinstance(result_with_format, dict):
                     result_with_format["format_output"] = format_type
+                    result_with_format["intent_output"] = intent if intent else "device_details"
+                    # Store yes/no question state if present (for proper re-rendering)
+                    yes_no_question = st.session_state.get("yes_no_question")
+                    if yes_no_question:
+                        result_with_format["yes_no_question"] = yes_no_question
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": result_with_format
                 })
+                # Clear yes/no question state after storing (it's now in the message)
+                st.session_state.pop("yes_no_question", None)
             except asyncio.TimeoutError:
                 error_msg = "⏱️ Rack location lookup timed out. Please try again."
                 with st.chat_message("assistant"):
@@ -2176,7 +3075,7 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                                     future = executor.submit(
                                         lambda: asyncio.run(
                                             asyncio.wait_for(
-                                                execute_rack_location_query(device_name, format_type, conversation_history),
+                                                execute_rack_location_query(device_name, format_type, conversation_history, intent),
                                                 timeout=max_timeout
                                             )
                                         )
@@ -2185,18 +3084,23 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                             except RuntimeError:
                                 result = asyncio.run(
                                     asyncio.wait_for(
-                                        execute_rack_location_query(device_name, format_type, conversation_history),
+                                        execute_rack_location_query(device_name, format_type, conversation_history, intent),
                                         timeout=max_timeout
                                     )
                                 )
 
                             with st.chat_message("assistant"):
-                                display_rack_location_result(result, st.container(), format_type)
+                                display_rack_location_result(result, st.container(), format_type, intent=intent)
 
-                            # Store result with format_type for proper re-rendering from history
+                            # Store result with format_type and intent for proper re-rendering from history
                             result_with_format = result.copy() if isinstance(result, dict) else result
                             if isinstance(result_with_format, dict):
                                 result_with_format["format_output"] = format_type
+                                result_with_format["intent_output"] = intent if intent else "device_details"
+                                # Store yes/no question state if present
+                                yes_no_question = st.session_state.get("yes_no_question")
+                                if yes_no_question:
+                                    result_with_format["yes_no_question"] = yes_no_question
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "content": result_with_format
@@ -2364,15 +3268,9 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                 # Execute the query
                 print(f"DEBUG: Starting query execution for {source} -> {destination}", file=sys.stderr, flush=True)
                 
-                # Add status message to chat history first
+                # Display status message (temporary, not stored in message history)
                 data_type = "live" if is_live else "baseline"
                 status_msg = f"🔍 Querying network path using {data_type} data... This may take a moment."
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": status_msg
-                })
-                
-                # Display status message
                 with st.chat_message("assistant"):
                     st.info(status_msg)
                 
@@ -2424,10 +3322,6 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                     
                     print(f"DEBUG: Query execution completed, result type: {type(result)}", file=sys.stderr, flush=True)
                     
-                    # Remove status message from history
-                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
-                        st.session_state.messages.pop()
-                    
                     if result:
                         # Debug: Print result keys to help diagnose
                         if isinstance(result, dict):
@@ -2439,9 +3333,6 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                         # Check if result contains an error
                         if isinstance(result, dict) and 'error' in result:
                             print(f"DEBUG: Result contains error: {result['error']}", file=sys.stderr, flush=True)
-                            # Remove status message from history
-                            if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
-                                st.session_state.messages.pop()
                             
                             with st.chat_message("assistant"):
                                 st.error(f"❌ {result['error']}")
@@ -2508,9 +3399,6 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                             print(f"DEBUG: Result added to chat history", file=sys.stderr, flush=True)
                     else:
                         print(f"DEBUG: Result is None or empty", file=sys.stderr, flush=True)
-                        # Remove status message from history
-                        if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
-                            st.session_state.messages.pop()
                         
                         with st.chat_message("assistant"):
                             st.warning("No results returned from the query.")
@@ -2519,10 +3407,6 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                             "content": "No results returned from the query."
                         })
                 except asyncio.TimeoutError:
-                    # Remove status message from history
-                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
-                        st.session_state.messages.pop()
-                    
                     error_msg = f"⏱️ Query timed out after {max_timeout} seconds. The network path calculation is taking longer than expected. Please try again or use baseline data instead of live data."
                     with st.chat_message("assistant"):
                         st.error(error_msg)
@@ -2532,10 +3416,6 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                         "content": error_msg
                     })
                 except Exception as e:
-                    # Remove status message from history
-                    if st.session_state.messages and st.session_state.messages[-1]["content"] == status_msg:
-                        st.session_state.messages.pop()
-                    
                     error_msg = f"An error occurred: {str(e)}"
                     print(f"DEBUG: Exception during query execution: {error_msg}", file=sys.stderr, flush=True)
                     import traceback
