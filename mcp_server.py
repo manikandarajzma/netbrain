@@ -121,7 +121,7 @@ NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 # NETBOX_URL: Base URL for NetBox (hardcoded)
 # NETBOX_TOKEN: API token for NetBox authentication (hardcoded)
 # NETBOX_VERIFY_SSL: Set to "false" to disable SSL verification (default true)
-NETBOX_URL = "http://192.168.15.136:8080".rstrip("/")
+NETBOX_URL = "http://192.168.15.109:8080".rstrip("/")
 NETBOX_TOKEN = "f652dc1564700a3a90aabfa903a8a61db6ea007f"
 NETBOX_VERIFY_SSL = os.getenv("NETBOX_VERIFY_SSL", "true").lower() in ["1", "true", "yes"]
 
@@ -599,15 +599,27 @@ async def get_rack_details(
     
     **CRITICAL: When to use this tool:**
     - Use this tool ONLY when the query contains a RACK NAME (a SHORT identifier like "A1", "A4", "B2")
-    - Rack names are SHORT (1-3 characters, typically letter + number, NO dashes)
+    - Rack names are SHORT (1-3 characters, typically letter + number, NO dashes, NO dots)
     - Examples of rack names: "A1", "A4", "B2", "Rack A4"
     - **CRITICAL: If query mentions "space utilization", "utilization", "rack details", "rack" with a SHORT name (like "A4") → this is ALWAYS a rack query → use this tool**
+    - **ABSOLUTE RULE: If the query is JUST a short identifier like "A4", "A1", "B2" (1-3 characters, letter + number, no dashes, no dots) → this is ALWAYS a rack name → use this tool IMMEDIATELY without asking for clarification**
+    - **DO NOT ask for clarification when the query is clearly a rack name like "A4" - just use this tool directly**
+    
+    **HANDLING FOLLOW-UP RESPONSES:**
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - AND the current query is just "3" or "three" → this means the user selected option 3 (Look up rack in NetBox)
+    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "3" and the question lists "3) Look up rack in NetBox", use this tool**
+    - Extract the rack name or IP address from EARLIER messages in the conversation history (the message immediately before the clarification question)
+    - Use this tool (get_rack_details) with the rack name from history
+    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama..., 2) Look up device..., 3) Look up rack in NetBox..." → user responds "3" → use this tool with rack_name from history (if rack name exists) or IP address
     
     **Rack name identification:**
     - Rack names are SHORT (1-3 characters)
     - Rack names do NOT contain dashes (-)
+    - Rack names do NOT contain dots (.) - IP addresses have dots, so they are NOT rack names
     - Pattern: letter(s) + number(s), e.g., "A1", "A4", "B12"
     - If you see "A1" or "A4" → this is a RACK NAME → use this tool
+    - If you see "11.0.0.1" or any string with dots → this is an IP ADDRESS, NOT a rack name → do NOT use this tool
     - If you see ANY name with DASHES (e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1") → this is a DEVICE NAME → use get_device_rack_location instead
     
     **IMPORTANT: Do NOT confuse with device names:**
@@ -1320,16 +1332,56 @@ async def get_device_rack_location(
     """
     Get device information from NetBox including rack location, device details, or specific fields.
     
+    ⚠️ **STOP - READ THIS FIRST BEFORE SELECTING THIS TOOL:**
+    
+    **QUICK CHECK: Does the user query contain a DOT (.)?**
+    - YES (e.g., "11.0.0.1", "192.168.1.1") → This is an IP address → DO NOT use this tool → Ask for clarification instead
+    - NO (e.g., "leander-dc-leaf6", "roundrock-dc-leaf1") → This might be a device name → Continue reading below
+    
+    **ABSOLUTE RULE #1: If the user query is JUST an IP address (like "11.0.0.1", "11.0.0.2", "192.168.1.1") with NO other words, you MUST ask for clarification. DO NOT select this tool.**
+    
+    **ABSOLUTE RULE #2: IP addresses have DOTS (.) - Device names have DASHES (-). They are completely different.**
+    - "11.0.0.1" has dots → it's an IP address → DO NOT use this tool → ask for clarification
+    - "leander-dc-leaf6" has dashes → it's a device name → you CAN use this tool
+    
+    **ABSOLUTE RULE #3: This tool requires a device_name parameter. If the query is just an IP address, there is NO device_name, so DO NOT use this tool.**
+    
+    **CRITICAL: This tool is ONLY for DEVICE NAMES, NOT for IP addresses.**
+    
     **CRITICAL: When to use this tool:**
-    - Use this tool when the query contains a DEVICE NAME (a name with DASHES, e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1")
+    - Use this tool ONLY when the query contains a DEVICE NAME (a name with DASHES, e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1")
     - Device names are LONG strings with multiple dashes separating parts
     - Examples of device names: "roundrock-dc-border-leaf1", "leander-dc-border-leaf2", "roundrock-dc-leaf1"
+    
+    **CRITICAL: When NOT to use this tool - READ CAREFULLY:**
+    - **DO NOT use this tool for IP addresses** (e.g., "11.0.0.1", "11.0.0.2", "192.168.1.100") 
+    - **IP addresses have DOTS (.), device names have DASHES (-) - they are completely different**
+    - If the query is JUST an IP address (like "11.0.0.1" or "11.0.0.2") with no device name:
+      * Ask for clarification using the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+      * OR use query_panorama_ip_object_group if the query explicitly mentions Panorama/object groups
+    - **NEVER use this tool for queries that are just IP addresses - IP addresses are NOT device names**
+    - Example: "11.0.0.1" is an IP address (has dots) → do NOT use this tool, ask for clarification
+    - Example: "11.0.0.2" is an IP address (has dots) → do NOT use this tool, ask for clarification
+    - Example: "roundrock-dc-leaf1" is a device name (has dashes) → use this tool
+    
+    **HANDLING FOLLOW-UP RESPONSES:**
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - AND the current query is just "2" or "two" → this means the user selected option 2 (Look up device in NetBox)
+    - **CRITICAL: Only use this tool (get_device_rack_location) when user responds "2" to a clarification question that lists "2) Look up device in NetBox"**
+    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "2" and the question lists "2) Look up device in NetBox", use this tool**
+    - Extract the IP address or device name from EARLIER messages in the conversation history (the message immediately before the clarification question)
+    - Use this tool (get_device_rack_location) with the device name or IP from history
+    - **IMPORTANT: When using this tool for a follow-up response, if you extracted an IP address, pass it as device_name parameter (NetBox can look up devices by IP)**
+    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama..., 2) Look up device in NetBox..." → user responds "2" → use this tool with device_name="11.0.0.1" (from history, even though it's an IP, pass it as device_name)
+    - **DO NOT use this tool when user responds "1" to a clarification question - that means Panorama query (option 1)**
     
     **Device name identification:**
     - Device names ALWAYS contain DASHES (-)
     - Device names are typically 15+ characters long
     - If you see "roundrock-dc-border-leaf1" → this is a DEVICE NAME → use this tool
     - If you see "A1" or "A4" → this is a RACK NAME → use get_rack_details instead
+    - **CRITICAL: If you see "11.0.0.1" or any string with DOTS (.) → this is an IP ADDRESS, NOT a device name → do NOT use this tool**
+    - IP addresses have dots (.), device names have dashes (-) - they are completely different
     
     **Intent parameter (what the user wants to see):**
     - "device_details" (default): Show all device information (rack, position, site, status, device type, manufacturer, model, etc.)
@@ -1357,7 +1409,9 @@ async def get_device_rack_location(
     - Query: "status of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="status_only", format="table"
 
     Args:
-        device_name: The FULL device name to look up (e.g., "roundrock-dc-border-leaf1" - must include all parts with dashes)
+        device_name: The FULL device name to look up (e.g., "roundrock-dc-border-leaf1" - must include all parts with dashes).
+                     **CRITICAL: This parameter accepts ONLY device names (strings with DASHES like "leander-dc-leaf6"), NOT IP addresses (strings with DOTS like "11.0.0.1").**
+                     **If you have an IP address, DO NOT use this tool - ask for clarification instead.**
         intent: What information to return - "device_details" (all info), "rack_location_only", "device_type_only", "status_only", "site_only", "manufacturer_only"
         format: Output format - "table" (recommended), "json", "list", or None for natural language summary
         conversation_history: Optional conversation history for context-aware responses
@@ -2143,6 +2197,470 @@ async def _add_panorama_device_groups_to_hops(simplified_hops: List[Dict[str, An
         print(f"DEBUG: Panorama device group query traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
 
 
+@mcp.tool()
+async def query_panorama_ip_object_group(
+    ip_address: str,
+    device_group: Optional[str] = None,
+    vsys: str = "vsys1"
+) -> Dict[str, Any]:
+    """
+    Query Panorama to find which object group(s) an IP address belongs to.
+    
+    ⚠️ **STOP - READ THIS FIRST BEFORE SELECTING THIS TOOL:**
+    
+    **QUICK CHECK: Does the user query contain a DOT (.)?**
+    - YES (e.g., "11.0.0.1", "192.168.1.1") → This is an IP address → You can use this tool OR ask clarification if it's just the IP with no context
+    - NO (e.g., "leander-dc-leaf6") → This is NOT an IP address → DO NOT use this tool → Use get_device_rack_location instead
+    
+    **ABSOLUTE RULE #1: If the user query is JUST an IP address (like "11.0.0.1", "11.0.0.2", "192.168.1.1") with NO other words, you MUST ask for clarification first. DO NOT immediately select this tool.**
+    
+    **ABSOLUTE RULE #2: IP addresses have DOTS (.) - Device names have DASHES (-). They are completely different.**
+    - "11.0.0.1" has dots → it's an IP address → you can use this tool OR ask clarification
+    - "leander-dc-leaf6" has dashes → it's a device name → DO NOT use this tool → use get_device_rack_location instead
+    
+    **ABSOLUTE RULE #3: When the query is JUST an IP address (no context), ask: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"**
+    
+    **CRITICAL: This tool is for IP ADDRESSES, NOT for device names.**
+    
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query contains an IP ADDRESS (a string with DOTS like "11.0.0.1", "11.0.0.2", "192.168.1.100")
+    - **If the query is JUST an IP address (like "11.0.0.1" or "11.0.0.2") without explicit context, ask for clarification first using the standard format**
+    - Use this tool when the query explicitly asks about "address group", "object group", "what group", "which group" for an IP address
+    - Use this tool when querying Panorama for IP address membership in address objects or address groups
+    - Examples: "what address group 10.0.0.254 belongs to" → ip_address="10.0.0.254"
+    - Examples: "which object group contains 192.168.1.100" → ip_address="192.168.1.100"
+    - Examples: "find address group for 11.0.0.1" → ip_address="11.0.0.1"
+    - Examples: "11.0.0.1" (just IP) → ask for clarification: "What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - Examples: "11.0.0.2" (just IP) → ask for clarification: "What would you like to do with 11.0.0.2? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - This tool queries Panorama (firewall management), NOT NetBox (rack/device inventory)
+    - **CRITICAL: IP addresses have DOTS (.), device names have DASHES (-) - they are completely different. If you see dots, it's an IP address → use this tool or ask clarification. If you see dashes, it's a device name → use get_device_rack_location.**
+    
+    **HANDLING FOLLOW-UP RESPONSES:**
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - AND the current query is just "1" or "one" → this means the user selected option 1 (Query Panorama for object groups)
+    - **CRITICAL: You MUST use this tool (query_panorama_ip_object_group) when user responds "1" to a clarification question that lists "1) Query Panorama for object groups"**
+    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "1" and the question lists "1) Query Panorama for object groups", use this tool**
+    - Extract the IP address from EARLIER messages in the conversation history (the message immediately before the clarification question)
+    - Use this tool (query_panorama_ip_object_group) with the IP address from history
+    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama for object groups, 2) Look up device..." → user responds "1" → use this tool (query_panorama_ip_object_group) with ip_address="11.0.0.1" (from history)
+    - **DO NOT use get_device_rack_location when user responds "1" to a clarification question - "1" ALWAYS means Panorama query in the standard format**
+    
+    **IMPORTANT: Do NOT confuse with other tools:**
+    - This is NOT for rack queries (use get_rack_details for rack names like "A4")
+    - This is NOT for device queries (use get_device_rack_location for device names with dashes like "leander-dc-leaf6")
+    - This tool does NOT use "site" parameter - Panorama uses "device_group" (firewall device groups), NOT NetBox sites
+    - If the query is JUST an IP address without context (like "11.0.0.1"), ask for clarification mentioning ALL possible intents
+    - **CRITICAL: When generating clarification questions, ALWAYS use this EXACT order:**
+      * "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+      * This order MUST be consistent: Panorama is ALWAYS option 1, device lookup is ALWAYS option 2, rack lookup is ALWAYS option 3, network path is ALWAYS option 4
+      * DO NOT change the order - it must always be: Panorama (1), Device (2), Rack (3), Network Path (4)
+    - When generating clarification questions for ambiguous IP addresses:
+      * ALWAYS include Panorama as option 1
+      * Ask what the user wants to DO with the IP (query Panorama, look up device, look up rack)
+      * DO NOT ask for "site" when the intent is about Panorama/object groups - Panorama doesn't use sites
+    - This is for Panorama address/object group queries for IP addresses
+    
+    This tool searches Panorama for address objects and address groups containing the specified IP address.
+    It checks both shared objects and device-group specific objects.
+    
+    Args:
+        ip_address: IP address to search for (e.g., "192.168.1.100", "10.0.0.1", "10.0.0.254")
+        device_group: Optional device group name to search within (if None, searches shared objects)
+        vsys: VSYS name (default: "vsys1")
+    
+    Returns:
+        dict: Object group information including:
+            - ip_address: The queried IP address
+            - address_objects: List of address objects containing this IP
+            - address_groups: List of address groups containing this IP or its address objects
+            - device_group: Device group where objects were found (if applicable)
+            - error: Error message if query fails
+    
+    **Examples:**
+    - Query: "what address group 10.0.0.254 belongs to" → ip_address="10.0.0.254", device_group=None
+    - Query: "which object group contains 192.168.1.100" → ip_address="192.168.1.100", device_group=None
+    - Query: "find group for IP 10.0.0.1" → ip_address="10.0.0.1", device_group=None
+    """
+    import xml.etree.ElementTree as ET
+    import urllib.parse
+    import ipaddress
+    
+    print(f"DEBUG: query_panorama_ip_object_group called with ip_address={ip_address}, device_group={device_group}, vsys={vsys}", file=sys.stderr, flush=True)
+    
+    # Validate IP address or CIDR notation
+    query_ip = None
+    query_network = None
+    is_cidr = '/' in ip_address
+    
+    try:
+        if is_cidr:
+            # CIDR notation - validate as network
+            # Use strict=False to allow host bits, but normalize it
+            query_network = ipaddress.ip_network(ip_address, strict=False)
+            query_ip = query_network.network_address  # Use network address for matching
+            print(f"DEBUG: Query is CIDR: {ip_address} -> normalized network: {query_network}", file=sys.stderr, flush=True)
+        else:
+            # Single IP address
+            query_ip = ipaddress.ip_address(ip_address)
+            print(f"DEBUG: Query is single IP: {ip_address}", file=sys.stderr, flush=True)
+    except (ValueError, ipaddress.AddressValueError) as e:
+        return {
+            "ip_address": ip_address,
+            "error": f"Invalid IP address or CIDR format: {ip_address} - {str(e)}"
+        }
+    
+    # Get API key from panoramaauth
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        return {
+            "ip_address": ip_address,
+            "error": "Failed to authenticate with Panorama. Check credentials in panoramaauth.py"
+        }
+    
+    # Create SSL context that doesn't verify certificates
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    
+    result = {
+        "ip_address": ip_address,
+        "address_objects": [],
+        "address_groups": [],
+        "device_group": device_group,
+        "vsys": vsys
+    }
+    
+    # Get Panorama URL from panoramaauth
+    panorama_url = panoramaauth.PANORAMA_URL
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Query address objects to find ones containing this IP
+            # Build list of locations to search
+            locations = []
+            
+            # If device_group is specified, only search that device group
+            if device_group:
+                locations.append(("device-group", device_group))
+            else:
+                # If no device_group specified, search shared AND all device groups
+                locations.append(("shared", None))
+                
+                # Get list of all device groups to search
+                print(f"DEBUG: Starting device group discovery (device_group=None, will search all groups)", file=sys.stderr, flush=True)
+                try:
+                    # Device groups are under /config/devices/entry[@name='localhost.localdomain']/device-group/entry
+                    # First, try to get the device groups from the correct location
+                    dg_list_url = f"{panorama_url}/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry&key={api_key}"
+                    print(f"DEBUG: Querying device groups list from: {dg_list_url[:200]}...", file=sys.stderr, flush=True)
+                    async with session.get(dg_list_url, ssl=ssl_context, timeout=15) as dg_response:
+                        print(f"DEBUG: Device groups list response status: {dg_response.status}", file=sys.stderr, flush=True)
+                        if dg_response.status == 200:
+                            dg_xml = await dg_response.text()
+                            print(f"DEBUG: Device groups XML response length: {len(dg_xml)}", file=sys.stderr, flush=True)
+                            print(f"DEBUG: Device groups XML (first 500 chars): {dg_xml[:500]}", file=sys.stderr, flush=True)
+                            try:
+                                dg_root = ET.fromstring(dg_xml)
+                                dg_entries = dg_root.findall('.//entry')
+                                print(f"DEBUG: Found {len(dg_entries)} device group entries in XML", file=sys.stderr, flush=True)
+                                for dg_entry in dg_entries:
+                                    dg_name = dg_entry.get('name')
+                                    if dg_name:
+                                        locations.append(("device-group", dg_name))
+                                        print(f"DEBUG: Added device group '{dg_name}' to search locations", file=sys.stderr, flush=True)
+                                    else:
+                                        print(f"DEBUG: Device group entry found but no 'name' attribute", file=sys.stderr, flush=True)
+                                print(f"DEBUG: Total locations to search after device group discovery: {len(locations)}", file=sys.stderr, flush=True)
+                            except ET.ParseError as e:
+                                print(f"DEBUG: Error parsing device groups list XML: {e}", file=sys.stderr, flush=True)
+                                import traceback
+                                print(f"DEBUG: Parse error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                        else:
+                            error_text = await dg_response.text()
+                            print(f"DEBUG: Failed to get device groups list, status: {dg_response.status}, response: {error_text[:500]}", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"DEBUG: Error getting device groups list: {str(e)}", file=sys.stderr, flush=True)
+                    import traceback
+                    print(f"DEBUG: Device group discovery exception traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    # Continue with just shared if we can't get device groups
+            
+            matching_address_objects = []
+            
+            for location_type, location_name in locations:
+                try:
+                    # Build XPath for address objects
+                    if location_type == "device-group":
+                        xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{location_name}']/address"
+                    else:  # shared
+                        xpath = "/config/shared/address"
+                    
+                    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+                    print(f"DEBUG: Querying address objects from {location_type}: {url[:200]}...", file=sys.stderr, flush=True)
+                    
+                    async with session.get(url, ssl=ssl_context, timeout=30) as response:
+                        if response.status == 200:
+                            xml_text = await response.text()
+                            print(f"DEBUG: Address objects XML response length: {len(xml_text)}", file=sys.stderr, flush=True)
+                            
+                            try:
+                                root = ET.fromstring(xml_text)
+                                # Find all address entries
+                                entries = root.findall('.//entry')
+                                print(f"DEBUG: Found {len(entries)} address objects in {location_type} {location_name or 'shared'}", file=sys.stderr, flush=True)
+                                
+                                for entry in entries:
+                                    obj_name = entry.get('name')
+                                    if not obj_name:
+                                        continue
+                                    
+                                    print(f"DEBUG: Checking address object '{obj_name}' in {location_type} {location_name or 'shared'}", file=sys.stderr, flush=True)
+                                    
+                                    # Check different IP formats in the address object
+                                    # Check for ip-netmask, ip-range, fqdn, etc.
+                                    ip_netmask = entry.find('ip-netmask')
+                                    ip_range = entry.find('ip-range')
+                                    fqdn = entry.find('fqdn')
+                                    
+                                    matches = False
+                                    obj_type = None
+                                    obj_value = None
+                                    
+                                    # Debug: print what we found in the entry
+                                    if ip_netmask is not None:
+                                        print(f"DEBUG: Object '{obj_name}' has ip-netmask: {ip_netmask.text}", file=sys.stderr, flush=True)
+                                    if ip_range is not None:
+                                        print(f"DEBUG: Object '{obj_name}' has ip-range: {ip_range.text}", file=sys.stderr, flush=True)
+                                    if fqdn is not None:
+                                        print(f"DEBUG: Object '{obj_name}' has fqdn: {fqdn.text}", file=sys.stderr, flush=True)
+                                    
+                                    if ip_netmask is not None and ip_netmask.text:
+                                        # Check if IP matches the netmask/CIDR
+                                        obj_value = ip_netmask.text.strip()
+                                        obj_type = "ip-netmask"
+                                        try:
+                                            if '/' in obj_value:
+                                                # CIDR notation in object - check if query IP/network overlaps
+                                                obj_network = ipaddress.ip_network(obj_value, strict=False)
+                                                print(f"DEBUG: Comparing query {ip_address} (is_cidr={is_cidr}) with object {obj_name} value {obj_value}", file=sys.stderr, flush=True)
+                                                if is_cidr:
+                                                    # Both are CIDR - check if networks are the same
+                                                    # For exact match, compare the normalized networks
+                                                    # ip_network() automatically normalizes, so direct comparison should work
+                                                    matches = (query_network == obj_network)
+                                                    if not matches:
+                                                        # Also check if they overlap (one contains the other)
+                                                        matches = query_network.overlaps(obj_network)
+                                                    print(f"DEBUG: CIDR vs CIDR: query_net={query_network} (normalized), obj_net={obj_network} (normalized), exact_match={query_network == obj_network}, overlaps={query_network.overlaps(obj_network) if query_network != obj_network else False}, final_matches={matches}", file=sys.stderr, flush=True)
+                                                else:
+                                                    # Query is single IP, object is CIDR - check if IP is in network
+                                                    matches = query_ip in obj_network
+                                                    print(f"DEBUG: Single IP in CIDR: query_ip={query_ip}, obj_net={obj_network}, matches={matches}", file=sys.stderr, flush=True)
+                                            else:
+                                                # Single IP in object
+                                                obj_ip = ipaddress.ip_address(obj_value)
+                                                if is_cidr:
+                                                    # Query is CIDR, object is single IP - check if IP is in query network
+                                                    matches = obj_ip in query_network
+                                                    print(f"DEBUG: CIDR contains IP: query_net={query_network}, obj_ip={obj_ip}, matches={matches}", file=sys.stderr, flush=True)
+                                                else:
+                                                    # Both are single IPs - compare directly
+                                                    matches = (query_ip == obj_ip)
+                                                    print(f"DEBUG: IP vs IP: query_ip={query_ip}, obj_ip={obj_ip}, matches={matches}", file=sys.stderr, flush=True)
+                                        except (ValueError, ipaddress.AddressValueError) as e:
+                                            matches = False
+                                            print(f"DEBUG: Error comparing {ip_address} with {obj_value}: {e}", file=sys.stderr, flush=True)
+                                    
+                                    elif ip_range is not None and ip_range.text:
+                                        obj_value = ip_range.text
+                                        obj_type = "ip-range"
+                                        # Check if IP is in range (format: "start-end")
+                                        if '-' in obj_value:
+                                            try:
+                                                start_ip, end_ip = obj_value.split('-', 1)
+                                                start = ipaddress.ip_address(start_ip.strip())
+                                                end = ipaddress.ip_address(end_ip.strip())
+                                                if is_cidr:
+                                                    # Query is CIDR - check if any IP in the network is in range
+                                                    # Simple check: if network address is in range
+                                                    matches = (start <= query_ip <= end)
+                                                else:
+                                                    # Query is single IP - check if it's between start and end
+                                                    matches = (start <= query_ip <= end)
+                                            except (ValueError, ipaddress.AddressValueError):
+                                                matches = False
+                                        else:
+                                            matches = False
+                                    
+                                    elif fqdn is not None and fqdn.text:
+                                        obj_type = "fqdn"
+                                        obj_value = fqdn.text
+                                        # FQDN doesn't match IP directly
+                                        matches = False
+                                    
+                                    if matches:
+                                        matching_address_objects.append({
+                                            "name": obj_name,
+                                            "type": obj_type,
+                                            "value": obj_value,
+                                            "location": location_type,
+                                            "device_group": location_name if location_type == "device-group" else None
+                                        })
+                                        print(f"DEBUG: ✓ MATCH FOUND! Address object: {obj_name} ({obj_type}: {obj_value}) in {location_type} {location_name or 'shared'}", file=sys.stderr, flush=True)
+                                    else:
+                                        print(f"DEBUG: ✗ No match for object '{obj_name}' (value: {obj_value or 'N/A'})", file=sys.stderr, flush=True)
+                            
+                            except ET.ParseError as e:
+                                print(f"DEBUG: Error parsing address objects XML: {e}", file=sys.stderr, flush=True)
+                        else:
+                            print(f"DEBUG: Address objects query failed with status {response.status}", file=sys.stderr, flush=True)
+                
+                except Exception as e:
+                    print(f"DEBUG: Error querying address objects from {location_type}: {str(e)}", file=sys.stderr, flush=True)
+            
+            result["address_objects"] = matching_address_objects
+            
+            print(f"DEBUG: Finished searching address objects. Found {len(matching_address_objects)} matching objects.", file=sys.stderr, flush=True)
+            
+            # Step 2: Query address groups to find ones containing the matching address objects
+            for location_type, location_name in locations:
+                try:
+                    # Build XPath for address groups
+                    if location_type == "device-group":
+                        xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{location_name}']/address-group"
+                    else:  # shared
+                        xpath = "/config/shared/address-group"
+                    
+                    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+                    print(f"DEBUG: Querying address groups from {location_type}: {url[:200]}...", file=sys.stderr, flush=True)
+                    
+                    async with session.get(url, ssl=ssl_context, timeout=30) as response:
+                        if response.status == 200:
+                            xml_text = await response.text()
+                            
+                            try:
+                                root = ET.fromstring(xml_text)
+                                entries = root.findall('.//entry')
+                                
+                                for entry in entries:
+                                    group_name = entry.get('name')
+                                    if not group_name:
+                                        continue
+                                    
+                                    # Get static members (address objects in the group)
+                                    static = entry.find('static')
+                                    if static is not None:
+                                        members = static.findall('member')
+                                        member_names = [m.text for m in members if m.text]
+                                        
+                                        # Check if any matching address object is in this group
+                                        for addr_obj in matching_address_objects:
+                                            if addr_obj["name"] in member_names:
+                                                result["address_groups"].append({
+                                                    "name": group_name,
+                                                    "location": location_type,
+                                                    "device_group": location_name if location_type == "device-group" else None,
+                                                    "contains_address_object": addr_obj["name"]
+                                                })
+                                                print(f"DEBUG: Found address group '{group_name}' containing address object '{addr_obj['name']}'", file=sys.stderr, flush=True)
+                                                break
+                            
+                            except ET.ParseError as e:
+                                print(f"DEBUG: Error parsing address groups XML: {e}", file=sys.stderr, flush=True)
+                        else:
+                            print(f"DEBUG: Address groups query failed with status {response.status}", file=sys.stderr, flush=True)
+                
+                except Exception as e:
+                    print(f"DEBUG: Error querying address groups from {location_type}: {str(e)}", file=sys.stderr, flush=True)
+            
+            # If no matches found, provide detailed debug info
+            if not matching_address_objects and not result["address_groups"]:
+                result["message"] = f"IP address {ip_address} not found in any address objects or address groups"
+                result["debug_info"] = {
+                    "locations_searched": len(locations),
+                    "location_details": [f"{loc_type}: {loc_name or 'shared'}" for loc_type, loc_name in locations]
+                }
+                locations_str = [f"{loc_type}: {loc_name or 'shared'}" for loc_type, loc_name in locations]
+                print(f"DEBUG: No matches found. Searched {len(locations)} locations: {locations_str}", file=sys.stderr, flush=True)
+            else:
+                result["message"] = f"Found {len(matching_address_objects)} address object(s) and {len(result['address_groups'])} address group(s)"
+                print(f"DEBUG: Success! Found {len(matching_address_objects)} address objects and {len(result['address_groups'])} address groups", file=sys.stderr, flush=True)
+        
+        # Send result to LLM for analysis and table format summary
+        llm = _get_llm()
+        if llm is not None and "error" not in result:
+            print(f"DEBUG: LLM available, starting analysis for Panorama IP object group query", file=sys.stderr, flush=True)
+            try:
+                from langchain_core.prompts import ChatPromptTemplate
+                
+                system_prompt = """You are a network security assistant. Analyze the Panorama address object and address group query results and provide a concise summary in TABLE FORMAT.
+
+Provide a summary that includes:
+- The queried IP address or CIDR
+- Address objects found (name, type, value, device group if applicable)
+- Address groups found (name, device group if applicable)
+- Location where objects were found (shared or device group)
+
+Format your response as a markdown table with columns for: IP Address, Address Object, Address Group, Location, and any other relevant details.
+
+Keep the summary concise and informative. Focus on the key findings."""
+                
+                analysis_prompt_template = ChatPromptTemplate.from_messages([
+                    ("system", system_prompt),
+                    ("human", "Analyze this Panorama query result:\n{query_result}")
+                ])
+                
+                formatted_messages = analysis_prompt_template.format_messages(
+                    query_result=json.dumps(result, indent=2)
+                )
+                
+                print(f"DEBUG: Invoking LLM for Panorama analysis", file=sys.stderr, flush=True)
+                response = await asyncio.wait_for(
+                    llm.ainvoke(formatted_messages),
+                    timeout=30.0
+                )
+                content = response.content if hasattr(response, 'content') else str(response)
+                
+                print(f"DEBUG: LLM response received: {content[:200]}...", file=sys.stderr, flush=True)
+                
+                # Extract JSON from response if present, otherwise use full content
+                import re
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        analysis = json.loads(json_match.group())
+                        result["ai_analysis"] = {
+                            "summary": analysis.get("summary", content)
+                        }
+                    except json.JSONDecodeError:
+                        result["ai_analysis"] = {"summary": content}
+                else:
+                    result["ai_analysis"] = {"summary": content}
+                    
+            except Exception as e:
+                print(f"DEBUG: LLM analysis failed: {str(e)}", file=sys.stderr, flush=True)
+                import traceback
+                print(f"DEBUG: LLM analysis traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                # Provide a basic summary if LLM fails
+                addr_objects_count = len(result.get("address_objects", []))
+                addr_groups_count = len(result.get("address_groups", []))
+                if addr_objects_count > 0 or addr_groups_count > 0:
+                    result["ai_analysis"] = {
+                        "summary": f"IP {ip_address} found in {addr_objects_count} address object(s) and {addr_groups_count} address group(s)."
+                    }
+                else:
+                    result["ai_analysis"] = {
+                        "summary": f"IP {ip_address} not found in any address objects or address groups."
+                    }
+    
+    except Exception as e:
+        print(f"ERROR: Exception querying Panorama for IP object group: {str(e)}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"ERROR: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        result["error"] = f"Error querying Panorama: {str(e)}"
+    
+    return result
+
+
 # Register a tool with the MCP server using the @mcp.tool() decorator
 # This makes the function callable via MCP protocol from clients
 @mcp.tool()
@@ -2156,6 +2674,16 @@ async def query_network_path(
 ):
     """
     Query network path between source and destination using NetBrain Path Calculation API.
+    
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query explicitly asks about network paths, connectivity, or routing between two IP addresses
+    - Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
+    
+    **HANDLING FOLLOW-UP RESPONSES:**
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - AND the current query is just "4" or "four" → this means the user selected option 4 (Query network path)
+    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "4" and the question lists "4) Query network path", use this tool**
+    - Note: Network path queries require both source and destination IPs, so you may need to ask for the destination IP if only one IP is in the conversation history
     
     This function follows the three-step process from NetBrain API documentation:
     1. Resolve device gateway (GET /V1/CMDB/Path/Gateways)

@@ -21,9 +21,21 @@ import sys
 # Import stdio_client helper function for creating stdio transport streams
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+try:
+    from mcp.shared.exceptions import McpError
+except ImportError:
+    # Fallback if McpError is not available
+    McpError = Exception
 
 # Import ChatOllama for LLM integration (currently imported but not actively used in client)
 from langchain_ollama import ChatOllama
+# Import Pydantic for structured outputs
+try:
+    from pydantic import BaseModel, Field
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+    print("DEBUG: Pydantic not available, falling back to manual JSON parsing", file=sys.stderr, flush=True)
 
 # Import pandas for reading spreadsheet files (CSV, Excel)
 import pandas as pd
@@ -1071,6 +1083,25 @@ def display_result_chat(result, container):
     
     print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
     
+    # Check if this is a Panorama result (not a path query) - exit early
+    if "ip_address" in result and ("address_objects" in result or "address_groups" in result or "device_group" in result or "vsys" in result or "error" in result):
+        print(f"DEBUG: Skipping path display - this is a Panorama result, not a path query", file=sys.stderr, flush=True)
+        print(f"DEBUG: Panorama result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+        # Display Panorama result properly instead
+        if "ai_analysis" in result:
+            ai_analysis = result["ai_analysis"]
+            if isinstance(ai_analysis, dict):
+                summary = ai_analysis.get("summary")
+                if summary:
+                    container.markdown(summary)
+            elif isinstance(ai_analysis, str):
+                container.markdown(ai_analysis)
+        elif "error" in result:
+            container.error(f"❌ {result['error']}")
+        else:
+            container.info("Query completed. No results found or analysis unavailable.")
+        return
+    
     # Debug: Print device cache info if available
     if "_debug_device_cache_size" in result:
         cache_size = result.get('_debug_device_cache_size', 0)
@@ -2019,6 +2050,65 @@ async def execute_racks_list_query(site_name=None, format_type=None, conversatio
         return {"error": f"Error executing query: {str(e)}"}
 
 
+async def execute_panorama_ip_object_group_query(ip_address, device_group=None, vsys="vsys1"):
+    """
+    Execute Panorama IP object group query via MCP server.
+    
+    Args:
+        ip_address: IP address to search for
+        device_group: Optional device group name
+        vsys: VSYS name (default: "vsys1")
+    
+    Returns:
+        dict: Object group information
+    """
+    import sys
+    print(f"DEBUG: Starting Panorama IP object group query for IP: {ip_address}, device_group: {device_group}", file=sys.stderr, flush=True)
+    
+    try:
+        server_params = get_server_params()
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                
+                tool_arguments = {"ip_address": ip_address}
+                if device_group:
+                    tool_arguments["device_group"] = device_group
+                if vsys:
+                    tool_arguments["vsys"] = vsys
+                
+                try:
+                    tool_result = await session.call_tool(
+                        "query_panorama_ip_object_group",
+                        arguments=tool_arguments
+                    )
+                    
+                    if tool_result and tool_result.content:
+                        result_text = tool_result.content[0].text
+                        print(f"DEBUG: Panorama result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                        try:
+                            result = json.loads(result_text)
+                            print(f"DEBUG: Panorama result parsed successfully", file=sys.stderr, flush=True)
+                            return result
+                        except json.JSONDecodeError as e:
+                            print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                            return {"result": result_text}
+                    return None
+                except Exception as tool_error:
+                    print(f"DEBUG: Error calling Panorama tool: {str(tool_error)}", file=sys.stderr, flush=True)
+                    import traceback
+                    print(f"DEBUG: Tool call traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    return {"error": f"Error calling Panorama tool: {str(tool_error)}"}
+    except asyncio.TimeoutError:
+        return {"error": "Panorama query timed out"}
+    except Exception as e:
+        import sys
+        import traceback
+        print(f"DEBUG: Error executing Panorama query: {str(e)}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing query: {str(e)}"}
+
+
 async def execute_rack_location_query(device_name, format_type=None, conversation_history=None, intent=None):
     """
     Execute rack location lookup via MCP server.
@@ -2149,8 +2239,27 @@ def main():
                             # Restore yes/no question state if present (for proper re-rendering)
                             yes_no_question = message["content"].get("yes_no_question")
                             display_rack_location_result(message["content"], st.container(), format_type, intent=intent, yes_no_question=yes_no_question)
-                        else:
+                        elif isinstance(message["content"], dict) and "ip_address" in message["content"] and ("address_objects" in message["content"] or "address_groups" in message["content"] or "device_group" in message["content"] or "vsys" in message["content"] or "error" in message["content"]):
+                            # Display Panorama IP object group result
+                            result = message["content"]
+                            if isinstance(result, dict) and "error" in result:
+                                st.error(f"❌ {result['error']}")
+                            elif isinstance(result, dict) and "ai_analysis" in result:
+                                # Display LLM summary (should be in table format)
+                                ai_analysis = result["ai_analysis"]
+                                if isinstance(ai_analysis, dict):
+                                    summary = ai_analysis.get("summary")
+                                    if summary:
+                                        st.markdown(summary)
+                                elif isinstance(ai_analysis, str):
+                                    st.markdown(ai_analysis)
+                            else:
+                                st.info("Query completed. No results found or analysis unavailable.")
+                        elif isinstance(message["content"], dict) and ("path_hops" in message["content"] or "simplified_hops" in message["content"] or "path_details" in message["content"]):
                             # Display network path result
+                            display_result_chat(message["content"], st.container())
+                        elif isinstance(message["content"], dict):
+                            # Other dict results - try display_result_chat but it should handle unknown types gracefully
                             display_result_chat(message["content"], st.container())
                     else:
                         st.markdown(message["content"])
@@ -2385,110 +2494,113 @@ def main():
         async def discover_and_execute_tool():
             try:
                 server_params = get_server_params()
+                print(f"DEBUG: Creating MCP server connection...", file=sys.stderr, flush=True)
                 async with stdio_client(server_params) as (read_stream, write_stream):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        await session.initialize()
+                    print(f"DEBUG: stdio_client context entered, creating session...", file=sys.stderr, flush=True)
+                    try:
+                        async with ClientSession(read_stream, write_stream) as session:
+                            print(f"DEBUG: ClientSession created, initializing...", file=sys.stderr, flush=True)
+                            try:
+                                await session.initialize()
+                                print(f"DEBUG: Session initialized successfully", file=sys.stderr, flush=True)
+                                
+                                # Get available tools and their descriptions
+                                tools_result = await session.list_tools()
+                                tools = tools_result.tools if tools_result else []
+                                
+                                print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
+                                
+                                # Build tool descriptions for LLM - format with clear structure
+                                tools_description = "\n\n" + "="*80 + "\n\n".join([
+                                    f"Tool Name: {tool.name}\n\nDescription:\n{tool.description or 'No description'}\n\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
+                                    for tool in tools
+                                ]) + "\n\n" + "="*80
+                                
+                                print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
+                                
+                                # Use production-grade tool selection module
+                                from mcp_client_tool_selection import select_tool_with_llm
+                                
+                                tool_selection_result = await select_tool_with_llm(
+                                    prompt=prompt,
+                                    tools_description=tools_description,
+                                    conversation_history=conversation_history
+                                )
+                                
+                                if not tool_selection_result.get("success"):
+                                    return tool_selection_result
+                                
+                                # Check if clarification is needed
+                                if tool_selection_result.get("needs_clarification", False):
+                                    clarification_question = tool_selection_result.get("clarification_question", "Could you please clarify what you're looking for?")
+                                    print(f"DEBUG: LLM requested clarification: {clarification_question}", file=sys.stderr, flush=True)
+                                    return {
+                                        "success": False,
+                                        "needs_clarification": True,
+                                        "clarification_question": clarification_question
+                                    }
+                                
+                                selected_tool = tool_selection_result.get("tool_name")
+                                tool_params = tool_selection_result.get("parameters", {})
+                                format_type = tool_selection_result.get("format", "table")
+                                intent = tool_selection_result.get("intent")
+                                
+                                # Move intent from parameters to top level if needed (don't pass it to tool)
+                                if "intent" in tool_params:
+                                    intent = tool_params.pop("intent")
+                                
+                                print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
+                                
+                                if not selected_tool:
+                                    print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
+                                    return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
+                                
+                                return {
+                                    "success": True,
+                                    "tool_name": selected_tool,
+                                    "parameters": tool_params,
+                                    "format": format_type,
+                                    "intent": intent
+                                }
+                            except Exception as session_error:
+                                import traceback
+                                error_type = type(session_error).__name__
+                                error_msg = str(session_error)
+                                print(f"DEBUG: Error in session operations: {error_type}: {error_msg}", file=sys.stderr, flush=True)
+                                print(f"DEBUG: Session error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                                
+                                # Provide more helpful error message for connection issues
+                                if "Connection closed" in error_msg or "McpError" in error_type:
+                                    return {"success": False, "error": f"MCP server connection failed. The server may not be running or may have crashed. Error: {error_msg}"}
+                                # Handle JSON parsing errors (server sending malformed JSON)
+                                if "JSON" in error_msg or "json" in error_msg or "EOF while parsing" in error_msg or "json_invalid" in error_msg:
+                                    return {"success": False, "error": f"MCP server sent invalid JSON response. The server may have encountered an internal error. Check mcp_server.log for details. Error: {error_msg}"}
+                                # Handle validation errors
+                                if "validation error" in error_msg.lower() or "JSONRPCMessage" in error_msg:
+                                    return {"success": False, "error": f"MCP protocol error: Server sent malformed response. The server may have crashed. Check mcp_server.log for details. Error: {error_msg}"}
+                                return {"success": False, "error": f"Error during tool discovery: {error_msg}"}
+                    except Exception as client_error:
+                        import traceback
+                        error_type = type(client_error).__name__
+                        error_msg = str(client_error)
+                        print(f"DEBUG: Error in client session: {error_type}: {error_msg}", file=sys.stderr, flush=True)
+                        print(f"DEBUG: Client error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
                         
-                        # Get available tools and their descriptions
-                        tools_result = await session.list_tools()
-                        tools = tools_result.tools if tools_result else []
-                        
-                        print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
-                        
-                        # Build tool descriptions for LLM - format with clear structure
-                        tools_description = "\n\n" + "="*80 + "\n\n".join([
-                            f"Tool Name: {tool.name}\n\nDescription:\n{tool.description or 'No description'}\n\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
-                            for tool in tools
-                        ]) + "\n\n" + "="*80
-                        
-                        print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
-                        
-                        # Use LLM to understand the query and select the appropriate tool based on tool descriptions
-                        llm = ChatOllama(model="llama3.2:latest", base_url="http://localhost:11434")
-                        
-                        parse_prompt = f"""You are a tool selection assistant. Your ONLY job is to read the tool descriptions below and select the correct tool based on what the tool descriptions say.
-
-Available tools:
-{tools_description}
-
-User query: "{prompt}"
-
-**CRITICAL RULES - FOLLOW THESE EXACTLY:**
-
-**RULE 1: Check for dashes FIRST**
-- If the query contains ANY name with DASHES (-) → it is ALWAYS a DEVICE NAME → use get_device_rack_location
-- Examples: "leander-dc-leaf5", "roundrock-dc-border-leaf1", "A4-device" (has dash = device)
-- NO EXCEPTIONS: If there's a dash, it's a device name
-
-**RULE 2: Short identifiers without dashes are ALWAYS racks**
-- If the query is JUST a short identifier (1-3 characters, letter+number, NO dashes) → it is ALWAYS a RACK NAME → use get_rack_details
-- Examples: "A4" → rack, "A1" → rack, "B2" → rack, "A12" → rack
-- Pattern: [letter(s)][number(s)] with NO dashes = RACK NAME
-- NO EXCEPTIONS: "A4" is ALWAYS a rack, NEVER a device
-
-**RULE 3: Explicit examples for common queries:**
-- Query: "A4" → tool: get_rack_details, rack_name: "A4"
-- Query: "A1" → tool: get_rack_details, rack_name: "A1"
-- Query: "leander-dc-leaf5" → tool: get_device_rack_location, device_name: "leander-dc-leaf5"
-- Query: "roundrock-dc-border-leaf1" → tool: get_device_rack_location, device_name: "roundrock-dc-border-leaf1"
-
-**DO NOT:**
-- Treat "A4" or "A1" as device names - they have NO dashes, so they are racks!
-- Use get_device_rack_location for "A4" - that's WRONG, use get_rack_details!
-- Add your own logic - follow the rules above exactly
-
-Respond with JSON only (no other text):
-{{
-    "tool_name": "tool name from the available tools",
-    "parameters": {{
-        "device_name": "if device query, extract full device name with dashes",
-        "rack_name": "if rack query, extract short rack identifier",
-        "site_name": "if site is mentioned, extract site name",
-        "intent": "for device queries: device_details, rack_location_only, device_type_only, status_only, site_only, or manufacturer_only",
-        "format": "table"
-    }}
-}}"""
-                        
-                        response = llm.invoke(parse_prompt)
-                        content = response.content if hasattr(response, 'content') else str(response)
-                        
-                        print(f"DEBUG: LLM tool selection response: {content[:500]}", file=sys.stderr, flush=True)
-                        
-                        # Extract JSON from response
-                        import re
-                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-                        if json_match:
-                            parsed = json.loads(json_match.group())
-                            selected_tool = parsed.get("tool_name")
-                            tool_params = parsed.get("parameters", {})
-                            format_type = tool_params.get("format") or parsed.get("format") or "table"
-                            intent = tool_params.get("intent") or parsed.get("intent")  # Check both parameters and top level
-                            
-                            # Move intent from parameters to top level if needed (don't pass it to tool)
-                            if "intent" in tool_params:
-                                intent = tool_params.pop("intent")
-                            
-                            # Trust the LLM's extraction - no validation or fallback logic
-                            
-                            print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
-                            
-                            # Trust the LLM - if tool_name is missing, return error
-                            if not selected_tool:
-                                print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
-                                return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
-                            
-                            return {
-                                "success": True,
-                                "tool_name": selected_tool,
-                                "parameters": tool_params,
-                                "format": format_type,
-                                "intent": intent
-                            }
-                        
-                        return {"success": False, "error": "Failed to parse tool selection"}
+                        # Handle JSON/protocol errors at client level
+                        if "JSON" in error_msg or "json" in error_msg or "EOF while parsing" in error_msg or "json_invalid" in error_msg or "validation error" in error_msg.lower() or "JSONRPCMessage" in error_msg:
+                            return {"success": False, "error": f"MCP protocol error: Server sent malformed JSON response. The server may have crashed. Check mcp_server.log for details. Error: {error_msg}"}
+                        return {"success": False, "error": f"Error establishing MCP connection: {error_msg}"}
             except Exception as e:
-                print(f"DEBUG: Tool discovery failed: {str(e)}", file=sys.stderr, flush=True)
-                return {"success": False, "error": str(e)}
+                import traceback
+                error_type = type(e).__name__
+                error_msg = str(e)
+                print(f"DEBUG: Tool discovery failed: {error_type}: {error_msg}", file=sys.stderr, flush=True)
+                print(f"DEBUG: Full traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                
+                # Handle JSON/protocol errors at outer level
+                if "JSON" in error_msg or "json" in error_msg or "EOF while parsing" in error_msg or "json_invalid" in error_msg or "validation error" in error_msg.lower() or "JSONRPCMessage" in error_msg:
+                    return {"success": False, "error": f"MCP protocol error: Server sent malformed JSON response. The server may have crashed. Check mcp_server.log for details. Error: {error_msg}"}
+                return {"success": False, "error": f"Tool discovery error: {error_msg}"}
         
         # No pre-checks - rely entirely on LLM + tool descriptions
         
@@ -2505,17 +2617,39 @@ Respond with JSON only (no other text):
             except RuntimeError:
                 tool_selection = asyncio.run(discover_and_execute_tool())
             
+            # Check if LLM requested clarification
+            if tool_selection.get("needs_clarification", False):
+                clarification_question = tool_selection.get("clarification_question", "Could you please clarify what you're looking for?")
+                with st.chat_message("assistant"):
+                    st.info(clarification_question)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": clarification_question
+                })
+                return
+            
             if tool_selection.get("success") and tool_selection.get("tool_name"):
                 selected_tool = tool_selection["tool_name"]
+                
+                # Safeguard: If tool_name is "needs_clarification", treat it as an error
+                if selected_tool == "needs_clarification" or selected_tool is None:
+                    error_msg = "Invalid tool selection. Please rephrase your query."
+                    with st.chat_message("assistant"):
+                        st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    return
+                
                 tool_params = tool_selection.get("parameters", {})
                 format_type = tool_selection.get("format")
                 intent = tool_selection.get("intent")
+                
+                print(f"DEBUG: Executing tool: {selected_tool} with params: {tool_params}", file=sys.stderr, flush=True)
                 
                 # Execute the selected tool - trust LLM's parameter extraction
                 if selected_tool == "get_device_rack_location":
                     device_name = tool_params.get("device_name", "").strip()
                     if not device_name:
-                        # If LLM didn't extract device_name, return error instead of guessing
+                        # No fallback - LLM should have asked for clarification if device name was unclear
                         error_msg = "Device name not found in query. Please specify a device name."
                         with st.chat_message("assistant"):
                             st.error(error_msg)
@@ -2867,293 +3001,113 @@ Respond with JSON only (no other text):
                                 st.error(error_msg)
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
                             return
-        except Exception as e:
-            print(f"DEBUG: Tool discovery execution failed: {str(e)}", file=sys.stderr, flush=True)
-            # Fall back to old parsing logic
-        
-        # Fallback: Use LLM to parse the query and extract device name and format
-        device_name = None
-        format_type = None
-        
-        try:
-            # Use LLM to parse the query and extract device name and format
-            llm = ChatOllama(model="llama3.2:latest", base_url="http://localhost:11434")
-            
-            parse_prompt = f"""Parse this user query and extract the device name and format preference.
-
-User query: "{prompt}"
-
-The user is asking about a device. Extract:
-1. The device name (e.g., "leander-dc-border-leaf1")
-2. The format preference if mentioned: "table", "json", "list", or null
-
-Respond with JSON only:
-{{
-    "device_name": "exact device name as written in the query",
-    "format": "table" or "json" or "list" or null
-}}
-
-Important: Extract the device name exactly as it appears. Do not include any extra words like "provide", "give", "show", etc."""
-            
-            response = llm.invoke(parse_prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
-            
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group())
-                device_name = parsed.get("device_name")
-                format_type = parsed.get("format")
-                intent = parsed.get("intent")  # Extract intent from fallback parsing
-                print(f"DEBUG: LLM parsed device_name: {device_name}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"DEBUG: LLM parsing failed, falling back to regex: {str(e)}", file=sys.stderr, flush=True)
-            # Fallback to regex parsing if LLM fails
-            rack_query = parse_rack_location_query(prompt)
-            if rack_query and rack_query.get("device_name"):
-                device_name = rack_query["device_name"]
-                format_type = rack_query.get("format")
-                intent = None  # No intent from regex fallback
-        
-        # Default to table format for device details queries if no format specified
-        if device_name and not format_type:
-            format_type = "table"
-            print(f"DEBUG: Defaulting to table format for device query", file=sys.stderr, flush=True)
-        
-        # Default to device_details if no intent extracted (let LLM handle intent extraction)
-        if device_name and not intent:
-            intent = "device_details"
-            print(f"DEBUG: No intent extracted, defaulting to device_details", file=sys.stderr, flush=True)
-        
-        if device_name:
-            status_msg = f"🔎 Looking up device details for **{device_name}**..."
-            with st.chat_message("assistant"):
-                st.info(status_msg)
-
-            try:
-                max_timeout = 60
-                try:
-                    asyncio.get_running_loop()
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(
-                            lambda: asyncio.run(
+                
+                elif selected_tool == "query_panorama_ip_object_group":
+                    # Handle Panorama IP object group query
+                    ip_address = tool_params.get("ip_address", "").strip()
+                    device_group = tool_params.get("device_group")
+                    vsys = tool_params.get("vsys", "vsys1")
+                    
+                    if not ip_address:
+                        error_msg = "IP address not found in query. Please specify an IP address (e.g., 'what address group 10.0.0.254 belongs to')."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                    
+                    status_msg = f"🔎 Querying Panorama for address groups containing **{ip_address}**..."
+                    with st.chat_message("assistant"):
+                        st.info(status_msg)
+                    
+                    try:
+                        max_timeout = 60
+                        try:
+                            asyncio.get_running_loop()
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(
+                                    lambda: asyncio.run(
+                                        asyncio.wait_for(
+                                            execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
+                                            timeout=max_timeout
+                                        )
+                                    )
+                                )
+                                result = future.result(timeout=max_timeout + 5)
+                        except RuntimeError:
+                            result = asyncio.run(
                                 asyncio.wait_for(
-                                    execute_rack_location_query(device_name, format_type, conversation_history, intent),
+                                    execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
                                     timeout=max_timeout
                                 )
                             )
-                        )
-                        result = future.result(timeout=max_timeout + 5)
-                except RuntimeError:
-                    result = asyncio.run(
-                        asyncio.wait_for(
-                            execute_rack_location_query(device_name, format_type, conversation_history, intent),
-                            timeout=max_timeout
-                        )
-                    )
-
-                with st.chat_message("assistant"):
-                    display_rack_location_result(result, st.container(), format_type, intent=intent)
-
-                # Store result with format_type and intent for proper re-rendering
-                result_with_format = result.copy() if isinstance(result, dict) else result
-                if isinstance(result_with_format, dict):
-                    result_with_format["format_output"] = format_type
-                    result_with_format["intent_output"] = intent if intent else "device_details"
-                    # Store yes/no question state if present (for proper re-rendering)
-                    yes_no_question = st.session_state.get("yes_no_question")
-                    if yes_no_question:
-                        result_with_format["yes_no_question"] = yes_no_question
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": result_with_format
-                })
-                # Clear yes/no question state after storing (it's now in the message)
-                st.session_state.pop("yes_no_question", None)
-            except asyncio.TimeoutError:
-                error_msg = "⏱️ Rack location lookup timed out. Please try again."
-                with st.chat_message("assistant"):
-                    st.error(error_msg)
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            except Exception as e:
-                error_msg = f"An error occurred: {str(e)}"
-                with st.chat_message("assistant"):
-                    st.error(error_msg)
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            return
-
-        # Parse query for network path
-        default_live = st.session_state.get('default_live_data', True)
-        parsed = parse_query(prompt, default_live)
-        
-        # Check if we have required information
-        if not parsed['source'] or not parsed['destination']:
-            # Ask a clarifying question instead of assuming a NetBrain path query
-            import re
-            clean_prompt = prompt.strip()
-            if clean_prompt:
-                # If user replies with clarification answer, reuse last unclear input
-                clean_lower = clean_prompt.lower().strip()
-                clarification_keywords = [
-                    "rack location", "rack", "location", "rack location.",
-                    "device details", "device details.", "details", "device info", "device information"
-                ]
-                
-                # Check if the prompt is a clarification response (starts with or is a clarification keyword)
-                is_clarification = False
-                format_type = None
-                
-                # Check for format requests in clarification
-                if "table" in clean_lower or "in a table" in clean_lower:
-                    format_type = "table"
-                elif "json" in clean_lower:
-                    format_type = "json"
-                elif "list" in clean_lower:
-                    format_type = "list"
-                
-                # Remove format phrases to check for clarification keywords
-                clean_for_check = re.sub(r"\s+in\s+(a\s+)?(table|json|list|format).*$", "", clean_lower, flags=re.IGNORECASE).strip()
-                
-                # Check if it matches clarification keywords (exact or starts with)
-                for kw in clarification_keywords:
-                    if clean_for_check == kw.lower() or clean_for_check.startswith(kw.lower() + " "):
-                        is_clarification = True
-                        break
-                
-                if is_clarification:
-                    # Try to find device name from chat history
-                    device_name = None
-                    
-                    # First, try last_unclear_prompt (most recent unclear query)
-                    last_unclear = st.session_state.get("last_unclear_prompt", "").strip()
-                    if last_unclear:
-                        device_name = last_unclear
-                    else:
-                        # Look through recent chat messages to find device name
-                        # Check the last few assistant messages for clarifying questions
-                        messages = st.session_state.get("messages", [])
-                        for i in range(len(messages) - 1, max(-1, len(messages) - 10), -1):
-                            msg = messages[i]
-                            if msg.get("role") == "assistant":
-                                content = msg.get("content", "")
-                                if isinstance(content, str):
-                                    # Look for device name in clarifying question pattern
-                                    # Pattern: "Did you want device details (including rack location) for **device-name**, or..."
-                                    import re
-                                    match = re.search(r"for \*\*([^*]+)\*\*", content)
-                                    if match:
-                                        device_name = match.group(1).strip()
-                                        break
-                            elif msg.get("role") == "user":
-                                # Check if user message contains a device name (not a clarification)
-                                user_content = msg.get("content", "")
-                                if isinstance(user_content, str):
-                                    # Try to parse as device query
-                                    rack_query = parse_rack_location_query(user_content)
-                                    if rack_query and rack_query.get("device_name"):
-                                        # Make sure it's not a clarification response itself
-                                        user_lower = user_content.lower().strip()
-                                        if not any(kw in user_lower for kw in clarification_keywords):
-                                            device_name = rack_query["device_name"]
-                                            break
-                    
-                    if device_name:
-                        # Route to device details lookup using the found device name
-                        format_text = f" in {format_type} format" if format_type else ""
-                        status_msg = f"🔎 Looking up device details for **{device_name}**{format_text}..."
+                        except Exception as async_error:
+                            print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
+                            import traceback
+                            print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                            result = {"error": f"Error executing query: {str(async_error)}"}
+                        
+                        # Display result - show LLM summary in table format
                         with st.chat_message("assistant"):
-                            st.info(status_msg)
-
-                        try:
-                            max_timeout = 60
-                            try:
-                                asyncio.get_running_loop()
-                                import concurrent.futures
-                                with concurrent.futures.ThreadPoolExecutor() as executor:
-                                    future = executor.submit(
-                                        lambda: asyncio.run(
-                                            asyncio.wait_for(
-                                                execute_rack_location_query(device_name, format_type, conversation_history, intent),
-                                                timeout=max_timeout
-                                            )
-                                        )
-                                    )
-                                    result = future.result(timeout=max_timeout + 5)
-                            except RuntimeError:
-                                result = asyncio.run(
-                                    asyncio.wait_for(
-                                        execute_rack_location_query(device_name, format_type, conversation_history, intent),
-                                        timeout=max_timeout
-                                    )
-                                )
-
-                            with st.chat_message("assistant"):
-                                display_rack_location_result(result, st.container(), format_type, intent=intent)
-
-                            # Store result with format_type and intent for proper re-rendering from history
-                            result_with_format = result.copy() if isinstance(result, dict) else result
-                            if isinstance(result_with_format, dict):
-                                result_with_format["format_output"] = format_type
-                                result_with_format["intent_output"] = intent if intent else "device_details"
-                                # Store yes/no question state if present
-                                yes_no_question = st.session_state.get("yes_no_question")
-                                if yes_no_question:
-                                    result_with_format["yes_no_question"] = yes_no_question
-                            st.session_state.messages.append({
-                                "role": "assistant",
-                                "content": result_with_format
-                            })
-                            # Clear the unclear prompt after successful lookup
-                            st.session_state["last_unclear_prompt"] = ""
-                            return  # Exit after successful lookup
-                        except asyncio.TimeoutError:
-                            error_msg = "⏱️ Rack location lookup timed out. Please try again."
-                            with st.chat_message("assistant"):
-                                st.error(error_msg)
-                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                            return  # Exit after error
-                        except Exception as e:
-                            error_msg = f"An error occurred: {str(e)}"
-                            with st.chat_message("assistant"):
-                                st.error(error_msg)
-                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                            return  # Exit after error
-                    else:
-                        # No device name found in history, ask for clarification
-                        clarifying_text = (
-                            "I need a device name to look up. Please provide the device name."
-                        )
-                        with st.chat_message("assistant"):
-                            st.info(clarifying_text)
+                            if isinstance(result, dict) and "error" in result:
+                                st.error(f"❌ {result['error']}")
+                            elif isinstance(result, dict) and "ai_analysis" in result:
+                                # Display LLM summary (should be in table format)
+                                ai_analysis = result["ai_analysis"]
+                                if isinstance(ai_analysis, dict):
+                                    summary = ai_analysis.get("summary")
+                                    if summary:
+                                        st.markdown(summary)
+                                elif isinstance(ai_analysis, str):
+                                    st.markdown(ai_analysis)
+                            else:
+                                # Fallback if no LLM analysis
+                                st.info("Query completed. No results found or analysis unavailable.")
+                        
+                        # Store result for persistence
                         st.session_state.messages.append({
                             "role": "assistant",
-                            "content": clarifying_text
+                            "content": result
                         })
-                        return  # Exit after asking for device name
-
-                # Only show clarifying question if we haven't handled it as a clarification response
-                clarifying_text = (
-                    f"Did you want device details (including rack location) for **{clean_prompt}**, "
-                    "or a network path query? If it's a path, please provide both source "
-                    "and destination IPs (e.g., *'Find path from 10.0.0.1 to 10.0.1.1'*)."
-                )
-                st.session_state["last_unclear_prompt"] = clean_prompt
+                        return
+                    except asyncio.TimeoutError:
+                        error_msg = "⏱️ Panorama query timed out. Please try again."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                    except Exception as e:
+                        error_msg = f"An error occurred: {str(e)}"
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                else:
+                    # Tool was selected but not handled - this shouldn't happen
+                    print(f"DEBUG: WARNING - Tool '{selected_tool}' was selected but not handled!", file=sys.stderr, flush=True)
+                    error_msg = f"Tool '{selected_tool}' is not yet implemented or handled."
+                    with st.chat_message("assistant"):
+                        st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    return
             else:
-                clarifying_text = (
-                    "Do you want device details (including rack location) or a network path query? "
-                    "If it's a path, please provide both source and destination IPs "
-                    "(e.g., *'Find path from 10.0.0.1 to 10.0.1.1'*)."
-                )
-                st.session_state["last_unclear_prompt"] = ""
+                # Tool selection failed or no tool selected - show error, no fallback
+                error_msg = tool_selection.get('error', 'Failed to select a tool. Please rephrase your query.')
+                print(f"DEBUG: Tool selection failed. success={tool_selection.get('success')}, tool_name={tool_selection.get('tool_name')}, error={error_msg}", file=sys.stderr, flush=True)
+                with st.chat_message("assistant"):
+                    st.error(f"❌ {error_msg}")
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                return
+        except Exception as e:
+            print(f"DEBUG: Tool discovery execution failed: {str(e)}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            # Show error, no fallback
+            error_msg = f"Error processing query: {str(e)}"
             with st.chat_message("assistant"):
-                st.info(clarifying_text)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": clarifying_text
-                })
-        else:
+                st.error(f"❌ {error_msg}")
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            return
             # Store pending query for confirmation
             query_id = len(st.session_state.messages)
             pending_key = f"pending_query_{query_id}"
@@ -3371,25 +3325,43 @@ Important: Extract the device name exactly as it appears. Do not include any ext
                                 "content": result
                             })
                         else:
-                            print(f"DEBUG: Displaying result using display_result_chat", file=sys.stderr, flush=True)
-                            if isinstance(result, dict):
-                                print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
-                                print(f"DEBUG: Has path_hops: {'path_hops' in result}, Has simplified_hops: {'simplified_hops' in result}", file=sys.stderr, flush=True)
-                                if 'path_hops' in result:
-                                    print(f"DEBUG: path_hops type: {type(result['path_hops'])}, length: {len(result['path_hops']) if result['path_hops'] else 0}", file=sys.stderr, flush=True)
-                                if 'simplified_hops' in result:
-                                    print(f"DEBUG: simplified_hops type: {type(result['simplified_hops'])}, length: {len(result['simplified_hops']) if result['simplified_hops'] else 0}", file=sys.stderr, flush=True)
-                            # Display result in a new chat message
-                            with st.chat_message("assistant"):
-                                try:
-                                    display_result_chat(result, st.container())
-                                    print(f"DEBUG: display_result_chat completed", file=sys.stderr, flush=True)
-                                except Exception as display_error:
-                                    print(f"DEBUG: Error in display_result_chat: {display_error}", file=sys.stderr, flush=True)
-                                    import traceback
-                                    print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                                    # Fallback: show as JSON
-                                    st.json(result)
+                            # Check if this is a Panorama result
+                            if isinstance(result, dict) and "ip_address" in result and ("address_objects" in result or "error" in result):
+                                print(f"DEBUG: Displaying Panorama result", file=sys.stderr, flush=True)
+                                with st.chat_message("assistant"):
+                                    if "error" in result:
+                                        st.error(f"❌ {result['error']}")
+                                    elif "ai_analysis" in result:
+                                        # Display LLM summary (should be in table format)
+                                        ai_analysis = result["ai_analysis"]
+                                        if isinstance(ai_analysis, dict):
+                                            summary = ai_analysis.get("summary")
+                                            if summary:
+                                                st.markdown(summary)
+                                        elif isinstance(ai_analysis, str):
+                                            st.markdown(ai_analysis)
+                                    else:
+                                        st.info("Query completed. No results found or analysis unavailable.")
+                            else:
+                                print(f"DEBUG: Displaying result using display_result_chat", file=sys.stderr, flush=True)
+                                if isinstance(result, dict):
+                                    print(f"DEBUG: Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                                    print(f"DEBUG: Has path_hops: {'path_hops' in result}, Has simplified_hops: {'simplified_hops' in result}", file=sys.stderr, flush=True)
+                                    if 'path_hops' in result:
+                                        print(f"DEBUG: path_hops type: {type(result['path_hops'])}, length: {len(result['path_hops']) if result['path_hops'] else 0}", file=sys.stderr, flush=True)
+                                    if 'simplified_hops' in result:
+                                        print(f"DEBUG: simplified_hops type: {type(result['simplified_hops'])}, length: {len(result['simplified_hops']) if result['simplified_hops'] else 0}", file=sys.stderr, flush=True)
+                                # Display result in a new chat message
+                                with st.chat_message("assistant"):
+                                    try:
+                                        display_result_chat(result, st.container())
+                                        print(f"DEBUG: display_result_chat completed", file=sys.stderr, flush=True)
+                                    except Exception as display_error:
+                                        print(f"DEBUG: Error in display_result_chat: {display_error}", file=sys.stderr, flush=True)
+                                        import traceback
+                                        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                                        # Fallback: show as JSON
+                                        st.json(result)
                             
                             # Add to chat history
                             st.session_state.messages.append({
