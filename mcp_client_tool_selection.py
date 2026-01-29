@@ -28,9 +28,14 @@ class ToolParameters(BaseModel):
     ip_address: Optional[str] = Field(None, description="IP address if applicable")
     device_name: Optional[str] = Field(None, description="Device name if applicable")
     rack_name: Optional[str] = Field(None, description="Rack name if applicable")
+    address_group_name: Optional[str] = Field(None, description="Address group name if applicable (e.g., 'leander_web', 'web_servers')")
     device_group: Optional[str] = Field(None, description="Device group if applicable")
     site_name: Optional[str] = Field(None, description="Site name if applicable")
     intent: Optional[str] = Field(None, description="Intent (e.g., site_only, manufacturer_only)")
+    source: Optional[str] = Field(None, description="Source IP address for network path queries")
+    destination: Optional[str] = Field(None, description="Destination IP address for network path queries")
+    protocol: Optional[str] = Field(None, description="Protocol for network path queries (e.g., 'TCP', 'UDP')")
+    port: Optional[str] = Field(None, description="Port number for network path queries")
     format: str = Field("table", description="Output format")
 
 
@@ -44,48 +49,19 @@ class ToolSelection(BaseModel):
 
 def extract_value_from_history(conversation_history: List[Dict[str, str]], value_type: str = "any") -> Optional[str]:
     """
-    Extract IP address, device name, or rack name from conversation history.
+    Extract values from conversation history for follow-up responses.
+    
+    This function is kept for backward compatibility but no longer uses pattern matching.
+    The LLM should extract values directly from the conversation history in the prompt.
     
     Args:
         conversation_history: List of message dicts with 'role' and 'content'
         value_type: Type to extract - "ip", "device", "rack", or "any"
     
     Returns:
-        Extracted value or None
+        None - LLM should extract values from conversation history in the prompt
     """
-    if not conversation_history:
-        return None
-    
-    # Look for the message immediately before the clarification question
-    for msg in reversed(conversation_history[-10:]):
-        content = str(msg.get('content', ''))
-        role = msg.get('role', '')
-        
-        # Skip clarification questions themselves
-        if role == 'assistant' and any(opt in content for opt in ['1)', '2)', '3)', '4)']):
-            continue
-        
-        if role == 'user':
-            # Look for rack name first (short identifier like A4, A1, B2)
-            if value_type in ("rack", "any"):
-                rack_match = re.search(r'\b([A-Za-z]{1,2}\d{1,2})\b', content)
-                if rack_match:
-                    rack_value = rack_match.group(1)
-                    if '-' not in rack_value and '.' not in rack_value and len(rack_value) <= 3:
-                        return rack_value
-            
-            # Look for IP address
-            if value_type in ("ip", "any"):
-                ip_match = re.search(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', content)
-                if ip_match:
-                    return ip_match.group(1)
-            
-            # Look for device name (has dashes)
-            if value_type in ("device", "any"):
-                device_match = re.search(r'\b([a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)+)\b', content)
-                if device_match:
-                    return device_match.group(1)
-    
+    # No pattern matching - rely entirely on LLM to extract from conversation history
     return None
 
 
@@ -117,11 +93,12 @@ def build_tool_selection_prompt(
             conv_lines.append(f"{i}. {role}: {content}")
         conversation_context = f"\n\nPrevious conversation (most recent first):\n" + "\n".join(conv_lines)
         
-        # For follow-ups, extract and highlight the value
+        # For follow-ups, instruct LLM to extract from conversation history
         if is_followup:
-            extracted_value = extract_value_from_history(conversation_history)
-            if extracted_value:
-                conversation_context += f"\n\n**EXTRACTED VALUE FROM HISTORY: {extracted_value}**\n**Use this exact value in quotes: \"{extracted_value}\"**"
+            conversation_context += "\n\n**IMPORTANT: For follow-up responses (like '1', '2', '3', '4'), extract the relevant value (IP address, device name, rack name, or address group name) from the conversation history above. Look at the user's message immediately before the clarification question.**"
+        else:
+            # For new queries, explicitly tell LLM to ignore old context
+            conversation_context += "\n\n**CRITICAL: This is a NEW query, NOT a follow-up. Extract values ONLY from the CURRENT USER QUERY above. DO NOT use values from previous conversation history. Each new query should be processed independently.**"
     
     # Build examples based on query type
     if is_followup:
@@ -132,46 +109,186 @@ Previous conversation:
 2. Assistant: What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path
 Current query: "1"
 Correct response:
-{"tool_name": "query_panorama_ip_object_group", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "11.0.0.1", "device_name": null, "rack_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+{"tool_name": "query_panorama_ip_object_group", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "11.0.0.1", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
 
 **MAPPING FOR FOLLOW-UP RESPONSES:**
 - "1" or "one" → query_panorama_ip_object_group
 - "2" or "two" → get_device_rack_location
 - "3" or "three" → get_rack_details
-- "4" or "four" → query_network_path
+- "4" or "four" → query_network_path (NOT query_panorama_network_path - the correct tool name is "query_network_path")
 """
     else:
         examples = """
+**⚠️ DECISION TREE FOR ADDRESS GROUP QUERIES - READ THIS FIRST:**
+
+Step 1: Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
+  YES → Go to Step 2
+  NO → Check if it contains an address group name (has underscores like "leander_web")
+
+Step 2: What does the query ask?
+  - "what address group is [IP] part of" → You have IP, want groups → use query_panorama_ip_object_group
+  - "which group contains [IP]" → You have IP, want groups → use query_panorama_ip_object_group
+  - "what object group is [IP] in" → You have IP, want groups → use query_panorama_ip_object_group
+
+Step 3: Does the query contain an address group name (has underscores like "leander_web")?
+  YES → What does the query ask?
+    - "what IPs are in address group [NAME]" → You have group name, want IPs → use query_panorama_address_group_members
+    - "list IPs in group [NAME]" → You have group name, want IPs → use query_panorama_address_group_members
+
+**CRITICAL: The query structure tells you the direction:**
+- IP → Groups = query_panorama_ip_object_group
+- Group → IPs = query_panorama_address_group_members
+
 **EXAMPLE - Standalone IP address (needs clarification):**
 Current query: "11.0.0.1"
 Correct response:
-{"tool_name": null, "needs_clarification": true, "clarification_question": "What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path", "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+{"tool_name": null, "needs_clarification": true, "clarification_question": "What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path", "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
 
 **EXAMPLE - Device name (direct tool selection):**
-Current query: "leander-dc-leaf6"
+Current query: "where is leander-dc-border-leaf1 racked"
 Correct response:
-{"tool_name": "get_device_rack_location", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": "leander-dc-leaf6", "rack_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+{"tool_name": "get_device_rack_location", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": "leander-dc-border-leaf1", "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": "rack_location_only", "format": "table"}}
+
+**EXAMPLE - Device rack location query (variations):**
+Current query: "What is the rack location of leander-dc-leaf6"
+Correct response:
+{"tool_name": "get_device_rack_location", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": "leander-dc-leaf6", "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": "rack_location_only", "format": "table"}}
+
+**CRITICAL RULE FOR DEVICE QUERIES:**
+- If query contains a device name (has DASHES like "leander-dc-leaf6", "roundrock-dc-border-leaf1") AND asks about "rack location", "where is", "racked", or similar → use get_device_rack_location
+- Device names have DASHES (-), NOT dots (.)
+- "leander-dc-leaf6" has dashes → it's a device name → use get_device_rack_location
+- "11.0.0.1" has dots → it's an IP address → do NOT use get_device_rack_location
+
+**NOTE: Extract the EXACT device name from the query. If query says "leander-dc-leaf6", use "leander-dc-leaf6", NOT "leander-dc-border-leaf1" or any other device name.**
 
 **EXAMPLE - Rack name (direct tool selection, NO clarification needed):**
 Current query: "A4"
 Correct response:
-{"tool_name": "get_rack_details", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": "A4", "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+{"tool_name": "get_rack_details", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": "A4", "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
 
-**TOOL SELECTION RULES:**
-- Short identifiers (1-3 chars, letter + number, no dashes/dots) like "A4", "A1" → RACK NAME → use get_rack_details
-- Contains dots (.) like "11.0.0.1" → IP ADDRESS → ask clarification (unless explicitly mentions Panorama)
-- Contains dashes (-) like "leander-dc-leaf6" → DEVICE NAME → use get_device_rack_location
+**EXAMPLE - Rack details query (direct tool selection, NO clarification needed):**
+Current query: "rack details of A4"
+Correct response:
+{"tool_name": "get_rack_details", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": "A4", "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+
+**ABSOLUTE RULE: If the query contains a short identifier (1-3 characters, letter + number, no dashes, no dots) like "A4", "A1", "B2" AND the query mentions "rack", "rack details", "rack information", or similar rack-related terms, you MUST use get_rack_details with the rack name extracted from the query. Do NOT return tool_name as null.**
+**ABSOLUTE RULE: If the query is just a short identifier (1-3 characters, letter + number, no dashes, no dots) like "A4", "A1", "B2" with no other context, you MUST use get_rack_details. Do NOT return tool_name as null.**
+
+**⚠️ CRITICAL DISTINCTION - READ THIS FIRST FOR ADDRESS GROUP QUERIES:**
+
+**DIRECTION MATTERS:**
+- Query structure: "what address group is [IP] part of" or "which group contains [IP]" → You have an IP, want to find groups → use query_panorama_ip_object_group
+- Query structure: "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → You have a group name, want to list IPs → use query_panorama_address_group_members
+
+**EXAMPLE - Find which address group an IP belongs to (IP → Groups):**
+Current query: "what address group is 11.0.0.0/24 part of"
+Step-by-step analysis:
+1. Query contains IP address: "11.0.0.0/24" (has dots)
+2. Query structure: "what address group is [IP] part of"
+3. Direction: IP is INPUT, groups are OUTPUT
+4. Decision: Use query_panorama_ip_object_group with ip_address="11.0.0.0/24"
+Correct response:
+{"tool_name": "query_panorama_ip_object_group", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "11.0.0.0/24", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+
+**WRONG EXAMPLE (DO NOT DO THIS):**
+Current query: "what address group is 11.0.0.0/24 part of"
+WRONG response: {"tool_name": "query_panorama_address_group_members", ...} ← This is WRONG because the query has an IP and asks which groups contain it, not which IPs are in a group
+
+**EXAMPLE - List IPs in an address group (Group → IPs):**
+Current query: "what other IPs are in the address group leander_web"
+Step-by-step analysis:
+1. Query contains address group name: "leander_web" (has underscore)
+2. Query structure: "what IPs are in address group [NAME]"
+3. Direction: Group name is INPUT, IPs are OUTPUT
+4. Decision: Use query_panorama_address_group_members with address_group_name="leander_web"
+Correct response:
+{"tool_name": "query_panorama_address_group_members", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": "leander_web", "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+
+**EXAMPLE - Network path query (direct tool selection):**
+Current query: "Find path from 10.0.0.1 to 10.0.1.1"
+Step-by-step analysis:
+1. Query contains "path from [IP] to [IP]" or "find path" or "network path"
+2. Extract source IP: "10.0.0.1" (the IP after "from")
+3. Extract destination IP: "10.0.1.1" (the IP after "to")
+4. Decision: Use query_network_path with source="10.0.0.1" and destination="10.0.1.1"
+Correct response:
+{"tool_name": "query_network_path", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": null, "port": null, "format": "table"}}
+
+**EXAMPLE - Network path query with protocol and port:**
+Current query: "Find path from 10.0.0.1 to 10.0.1.1 using TCP port 80"
+Step-by-step analysis:
+1. Query contains "path from [IP] to [IP]"
+2. Extract source IP: "10.0.0.1"
+3. Extract destination IP: "10.0.1.1"
+4. Extract protocol: "TCP" (mentioned in query)
+5. Extract port: "80" (mentioned in query)
+6. Decision: Use query_network_path with source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="80"
+Correct response:
+{"tool_name": "query_network_path", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
+
+**CRITICAL: For network path queries, use tool name "query_network_path" (NOT "query_panorama_network_path"). The correct tool name is "query_network_path".**
+
+**ABSOLUTE RULE FOR ADDRESS GROUP QUERIES:**
+- If query contains an IP address (has dots like "11.0.0.0/24", "11.0.0.1") AND asks "what address group is [IP] part of" or "which group contains [IP]" → use query_panorama_ip_object_group with ip_address parameter
+- If query contains an address group name (has underscores like "leander_web") AND asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members with address_group_name parameter
+- DO NOT confuse these two - the direction of the query (IP→Groups vs Group→IPs) determines which tool to use
+
+**TOOL SELECTION RULES (APPLY IN THIS ORDER):**
+1. **FIRST: Check query direction for address group queries:**
+   - Query asks "what address group is [IP] part of" or "which group contains [IP]" → IP is INPUT, groups are OUTPUT → use query_panorama_ip_object_group with ip_address
+   - Query asks "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → Group name is INPUT, IPs are OUTPUT → use query_panorama_address_group_members with address_group_name
+   - **DO NOT confuse these - the query structure tells you the direction**
+
+2. **Rack queries:**
+   - Query mentions "rack", "rack details", "rack information", "rack utilization" AND contains short identifier (1-3 chars, letter + number, no dashes/dots) like "A4", "A1" → use get_rack_details
+   - Short identifiers (1-3 chars, letter + number, no dashes/dots) like "A4", "A1" → use get_rack_details
+
+3. **Device queries:**
+   - Contains dashes (-) like "leander-dc-border-leaf1" → DEVICE NAME → use get_device_rack_location
+
+4. **Standalone IP (no context):**
+   - Contains dots (.) like "11.0.0.1" with no other context → ask clarification
+
+5. **CRITICAL: Extract the EXACT value from the CURRENT USER QUERY. Do NOT use values from examples.**
 """
+    
+    # No pattern matching - rely entirely on LLM to extract values from the prompt
+    # The tool descriptions and examples should be sufficient for the LLM to understand
+    
+    # Extract exact tool names from tools_description for validation
+    import re
+    tool_names = re.findall(r'Tool Name: ([^\n]+)', tools_description)
+    available_tool_names = ', '.join(tool_names) if tool_names else 'See tool descriptions above'
     
     prompt_text = f"""You must respond with ONLY a valid JSON object. No explanations, no code, no markdown.
 
+**⚠️ MANDATORY FIRST STEP - ANALYZE QUERY STRUCTURE:**
+Before selecting any tool, analyze the CURRENT USER QUERY structure:
+1. Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
+2. Does the query contain an address group name (has underscores like "leander_web")?
+3. What is the query asking for?
+   - If query has IP and asks "what address group is [IP] part of" → IP is INPUT, groups are OUTPUT → use query_panorama_ip_object_group
+   - If query has group name and asks "what IPs are in address group [NAME]" → Group is INPUT, IPs are OUTPUT → use query_panorama_address_group_members
+   - **DO NOT confuse these two directions**
+
 Available tools:
 {tools_description}
+
+**CRITICAL: Available tool names (use EXACTLY as shown): {available_tool_names}**
+**You MUST use one of these exact tool names. Do NOT invent or modify tool names.**
 
 {examples}
 
 **CURRENT USER QUERY: "{prompt}"**
 {conversation_context}
+
+**CRITICAL - PRIORITIZE CURRENT QUERY:**
+- **ALWAYS extract values from the CURRENT USER QUERY first. The current query is: "{prompt}"**
+- **ONLY use conversation history if the current query is a follow-up response (like "1", "2", "3", "4")**
+- **If the current query is a NEW question (not a follow-up), IGNORE previous conversation context and extract values ONLY from the current query**
+- **DO NOT extract values from old queries in conversation history when processing a new, unrelated query**
+- Use the tool descriptions to understand what each tool does and what parameters it needs. The examples are just for format reference.
 
 Return ONLY this JSON structure:
 {{
@@ -182,14 +299,22 @@ Return ONLY this JSON structure:
         "ip_address": "value_in_quotes" or null,
         "device_name": "value_in_quotes" or null,
         "rack_name": "value_in_quotes" or null,
+        "address_group_name": "value_in_quotes" or null,
         "device_group": "value_in_quotes" or null,
         "site_name": "value_in_quotes" or null,
         "intent": "value_in_quotes" or null,
+        "source": "value_in_quotes" or null,
+        "destination": "value_in_quotes" or null,
+        "protocol": "value_in_quotes" or null,
+        "port": "value_in_quotes" or null,
         "format": "table"
     }}
 }}
 
-**CRITICAL: All string values MUST be in double quotes. Write "11.0.0.1" NOT ip_address.**
+**CRITICAL RULES:**
+1. All string values MUST be in double quotes. Extract the EXACT value from the CURRENT USER QUERY, not from examples.
+2. The tool_name MUST be one of the exact tool names listed above. Do NOT invent tool names like "query_panorama_object_groups" - use "query_panorama_ip_object_group" exactly.
+3. If you are unsure which tool to use, return needs_clarification: true with a clarification question.
 """
     return prompt_text
 
@@ -198,7 +323,7 @@ async def select_tool_with_llm(
     prompt: str,
     tools_description: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    llm_model: str = "llama3.2:latest",
+    llm_model: str = "llama3.1:8b",
     llm_base_url: str = "http://localhost:11434"
 ) -> Dict[str, Any]:
     """
@@ -220,7 +345,37 @@ async def select_tool_with_llm(
         Dict with keys: success, tool_name, parameters, format, intent, needs_clarification, clarification_question, error
     """
     try:
-        llm = ChatOllama(model=llm_model, base_url=llm_base_url)
+        # Check if Ollama is accessible before creating LLM instance
+        import socket
+        from urllib.parse import urlparse
+        parsed_url = urlparse(llm_base_url)
+        host = parsed_url.hostname or 'localhost'
+        port = parsed_url.port or 11434
+        
+        # Try to connect to Ollama server
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)  # 2 second timeout
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result != 0:
+                return {
+                    "success": False,
+                    "error": f"Ollama server is not running or not accessible at {llm_base_url}. Please start Ollama with 'ollama serve' or check if it's running on a different port.",
+                    "tool_name": None,
+                    "parameters": {},
+                    "needs_clarification": None
+                }
+        except Exception as conn_error:
+            return {
+                "success": False,
+                "error": f"Cannot connect to Ollama server at {llm_base_url}: {str(conn_error)}. Please ensure Ollama is running with 'ollama serve'.",
+                "tool_name": None,
+                "parameters": {},
+                "needs_clarification": None
+            }
+        
+        llm = ChatOllama(model=llm_model, base_url=llm_base_url, temperature=0.0)
         
         # Use Pydantic structured outputs if available
         if PYDANTIC_AVAILABLE and BaseModel:
@@ -241,13 +396,17 @@ async def select_tool_with_llm(
                 else:
                     tool_params = params.model_dump() if hasattr(params, 'model_dump') else {}
                 
+                tool_name = result.get("tool_name")
+                needs_clarification = result.get("needs_clarification", False)
+                print(f"DEBUG: Pydantic result - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {result.get('clarification_question')}", file=sys.stderr, flush=True)
+                
                 return {
                     "success": True,
-                    "tool_name": result.get("tool_name"),
+                    "tool_name": tool_name,
                     "parameters": tool_params,
                     "format": tool_params.get("format", "table"),
                     "intent": tool_params.get("intent"),
-                    "needs_clarification": result.get("needs_clarification", False),
+                    "needs_clarification": needs_clarification,
                     "clarification_question": result.get("clarification_question")
                 }
             except Exception as pydantic_error:
@@ -274,7 +433,7 @@ async def select_tool_with_llm(
         
         json_str = content[first_brace:last_brace + 1]
         
-        # Clean up common issues
+        # Clean up Python boolean/None values to JSON (minimal cleanup only)
         json_str = re.sub(r'\bNone\b', 'null', json_str)
         json_str = re.sub(r'\bTrue\b', 'true', json_str)
         json_str = re.sub(r'\bFalse\b', 'false', json_str)
@@ -289,14 +448,18 @@ async def select_tool_with_llm(
         
         # Extract values
         tool_params = parsed.get("parameters", {})
+        needs_clarification = parsed.get("needs_clarification", False)
+        tool_name = parsed.get("tool_name")
+        
+        print(f"DEBUG: Parsed JSON - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {parsed.get('clarification_question')}", file=sys.stderr, flush=True)
         
         return {
             "success": True,
-            "tool_name": parsed.get("tool_name"),
+            "tool_name": tool_name,
             "parameters": tool_params,
             "format": tool_params.get("format", "table"),
             "intent": tool_params.get("intent"),
-            "needs_clarification": parsed.get("needs_clarification", False),
+            "needs_clarification": needs_clarification,
             "clarification_question": parsed.get("clarification_question")
         }
         

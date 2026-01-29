@@ -15,11 +15,31 @@ import streamlit as st
 # Import asyncio for handling asynchronous operations (needed for MCP client)
 import asyncio
 import sys
+from typing import Optional
+import warnings
 
-# Import ClientSession for managing MCP client connections
-# Import StdioServerParameters for configuring stdio-based server communication
-# Import stdio_client helper function for creating stdio transport streams
-from mcp import ClientSession, StdioServerParameters
+# Suppress asyncio cleanup warnings on Windows (these are harmless cleanup errors)
+if sys.platform == 'win32':
+    # Suppress ConnectionResetError in asyncio cleanup callbacks on Windows
+    def _suppress_asyncio_cleanup_warnings():
+        import logging
+        logging.getLogger('asyncio').setLevel(logging.ERROR)
+    
+    # Set up warning filter for asyncio cleanup errors
+    warnings.filterwarnings('ignore', category=RuntimeWarning, module='asyncio')
+
+# Import ClientSession for managing MCP client connections (for stdio fallback)
+from mcp import ClientSession
+# Try to import FastMCP Client for HTTP transport (preferred)
+try:
+    from fastmcp import Client as FastMCPClient
+    FASTMCP_CLIENT_AVAILABLE = True
+except ImportError:
+    FASTMCP_CLIENT_AVAILABLE = False
+    print("DEBUG: FastMCP Client not available, will use stdio transport", file=sys.stderr, flush=True)
+
+# Fallback to stdio if HTTP client not available
+from mcp import StdioServerParameters
 from mcp.client.stdio import stdio_client
 try:
     from mcp.shared.exceptions import McpError
@@ -81,26 +101,211 @@ def extract_interface_name(interface_data):
     if not interface_data:
         return None
     
-    # If it's already a string, return it
+    import re
+    
+    # If it's already a string, check if it's a string representation of a dict
     if isinstance(interface_data, str):
-        return interface_data
+        interface_str = interface_data.strip()
+        
+        # If it's a plain interface name (doesn't look like a dict), return it
+        if not interface_str.startswith('{') and not interface_str.startswith("'"):
+            # Check if it contains dict-like patterns
+            if "'intfKeyObj'" not in interface_str and '"intfKeyObj"' not in interface_str:
+                if "'intfDisplaySchemaObj'" not in interface_str and '"intfDisplaySchemaObj"' not in interface_str:
+                    # Looks like a plain interface name
+                    return interface_str
+        
+        # It's a dict string representation - try to extract interface name
+        # Priority 1: Look for PhysicalInftName (most reliable)
+        patterns = [
+            r"['\"]PhysicalInftName['\"]\s*:\s*['\"]([^'\"]+)['\"]",  # PhysicalInftName
+            r"PhysicalInftName['\"]?\s*:\s*['\"]?([a-zA-Z0-9/_-]+)",  # More flexible
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, interface_str)
+            if match:
+                val = match.group(1).strip()
+                if val and val not in ['', 'None', 'null']:
+                    return val
+        
+        # Priority 2: Look for 'value': 'ethernetX/Y' (prefer ethernet interfaces)
+        ethernet_patterns = [
+            r"['\"]value['\"]\s*:\s*['\"](ethernet[^'\"]+)['\"]",  # ethernet interfaces
+            r"value['\"]?\s*:\s*['\"]?(ethernet[a-zA-Z0-9/_-]+)",  # More flexible
+        ]
+        for pattern in ethernet_patterns:
+            match = re.search(pattern, interface_str)
+            if match:
+                val = match.group(1).strip()
+                if val and val not in ['', 'None', 'null']:
+                    return val
+        
+        # Priority 3: Look for any 'value': 'something' 
+        value_patterns = [
+            r"['\"]value['\"]\s*:\s*['\"]([^'\"]+)['\"]",  # Standard value
+            r"value['\"]?\s*:\s*['\"]?([a-zA-Z0-9/_-]+)",  # More flexible
+        ]
+        for pattern in value_patterns:
+            match = re.search(pattern, interface_str)
+            if match:
+                val = match.group(1).strip()
+                # Skip empty values, None, null, or schema strings
+                if val and val not in ['', 'None', 'null', 'schema']:
+                    return val
+        
+        # Priority 4: Try to parse as JSON
+        try:
+            import json
+            # Try with single quotes replaced (Python repr format)
+            json_str = interface_str.replace("'", '"')
+            parsed = json.loads(json_str)
+            if isinstance(parsed, dict):
+                interface_data = parsed  # Fall through to dict handling
+        except (json.JSONDecodeError, ValueError):
+            # If JSON parsing fails, try ast.literal_eval for Python repr format
+            try:
+                import ast
+                parsed = ast.literal_eval(interface_str)
+                if isinstance(parsed, dict):
+                    interface_data = parsed  # Fall through to dict handling
+            except (ValueError, SyntaxError):
+                # Can't parse - return None to indicate failure
+                return None
     
     # If it's a dictionary, try to extract the interface name
     if isinstance(interface_data, dict):
         # Try PhysicalInftName first (as seen in the UI)
         if 'PhysicalInftName' in interface_data:
-            return interface_data['PhysicalInftName']
+            val = interface_data['PhysicalInftName']
+            if val and str(val).strip() and str(val).strip() not in ['None', 'null', '']:
+                return str(val).strip()
+        
+        # Try intfKeyObj.value (NetBrain out_interface structure)
+        if 'intfKeyObj' in interface_data and isinstance(interface_data['intfKeyObj'], dict):
+            val = interface_data['intfKeyObj'].get('value')
+            if val and str(val).strip() and str(val).strip() not in ['None', 'null', '', 'schema']:
+                return str(val).strip()
+        
         # Try intfDisplaySchemaObj.value
         if 'intfDisplaySchemaObj' in interface_data and isinstance(interface_data['intfDisplaySchemaObj'], dict):
-            if 'value' in interface_data['intfDisplaySchemaObj']:
-                return interface_data['intfDisplaySchemaObj']['value']
+            val = interface_data['intfDisplaySchemaObj'].get('value')
+            if val and str(val).strip() and str(val).strip() not in ['None', 'null', '', 'schema']:
+                return str(val).strip()
+        
         # Try common field names
-        for field in ['name', 'interface', 'intf', 'interfaceName', 'intfName']:
+        for field in ['name', 'interface', 'intf', 'interfaceName', 'intfName', 'value']:
             if field in interface_data:
-                return interface_data[field]
+                val = interface_data[field]
+                if val and str(val).strip() and str(val).strip() not in ['None', 'null', '']:
+                    return str(val).strip()
     
     # If we can't extract it, return None
     return None
+
+def get_device_icon_path(device_type: str) -> Optional[str]:
+    """
+    Get icon image file path for device type based on NetBrain UI conventions.
+    
+    Args:
+        device_type: Device type name (e.g., "Palo Alto Firewall", "Arista Switch")
+    
+    Returns:
+        str: Path to icon image file, or None if not found
+    """
+    if not device_type:
+        return None
+    
+    import os
+    device_type_lower = device_type.lower()
+    
+    # Base directory for icons (create if needed)
+    icons_dir = os.path.join(os.path.dirname(__file__), "icons")
+    
+    # Map device types to icon filenames
+    icon_mapping = {
+        "palo alto": "paloalto_firewall.png",
+        "paloalto": "paloalto_firewall.png",
+        "pan-": "paloalto_firewall.png",
+        "arista": "arista_switch.png",
+        "cisco": "cisco_device.png",
+        "juniper": "juniper_device.png",
+        "switch": "generic_switch.png",
+        "router": "generic_router.png",
+        "firewall": "generic_firewall.png",
+    }
+    
+    # Find matching icon
+    for key, filename in icon_mapping.items():
+        if key in device_type_lower:
+            icon_path = os.path.join(icons_dir, filename)
+            if os.path.exists(icon_path):
+                return icon_path
+    
+    # Default icon
+    default_path = os.path.join(icons_dir, "default_device.png")
+    if os.path.exists(default_path):
+        return default_path
+    
+    return None
+
+def create_device_icon_image(device_type: str, size: int = 64) -> Optional[Image.Image]:
+    """
+    Create a programmatic icon image for device type.
+    Falls back to this if icon files don't exist.
+    For devices without specific types, creates a simple colored square.
+    
+    Args:
+        device_type: Device type name
+        size: Icon size in pixels
+    
+    Returns:
+        PIL Image or None
+    """
+    if not IMAGE_FETCH_AVAILABLE:
+        return None
+    
+    try:
+        from PIL import Image, ImageDraw
+        
+        # Create a colored square icon based on device type
+        device_type_lower = device_type.lower() if device_type else ""
+        
+        # Determine color based on device type
+        if "palo alto" in device_type_lower or "paloalto" in device_type_lower or "pan-" in device_type_lower or "firewall" in device_type_lower:
+            # Red for firewalls (Palo Alto style)
+            bg_color = (220, 50, 50)  # Red
+        elif "arista" in device_type_lower:
+            # Blue for Arista switches
+            bg_color = (33, 150, 243)  # Blue
+        elif "cisco" in device_type_lower:
+            # Light blue for Cisco
+            bg_color = (100, 181, 246)  # Light blue
+        elif "switch" in device_type_lower:
+            # Blue for switches
+            bg_color = (33, 150, 243)  # Blue
+        elif "router" in device_type_lower:
+            # Green for routers
+            bg_color = (76, 175, 80)  # Green
+        else:
+            # Gray for default/unknown devices - simple square, no text
+            bg_color = (158, 158, 158)  # Gray
+        
+        # Create image with transparency support - simple square, no text
+        img = Image.new('RGBA', (size, size), (*bg_color, 255))
+        
+        # For unknown devices, just return the simple square
+        # For known device types without icon files, also return simple square
+        # (This keeps it clean - only actual icon files will have detailed graphics)
+        if not device_type_lower or device_type_lower == "":
+            # Unknown device - simple gray square
+            return img
+        
+        # For known device types, return colored square (they should have icon files)
+        # If we're here, it means no icon file was found, so use simple colored square
+        return img
+    except Exception as e:
+        print(f"DEBUG: Error creating device icon: {e}", file=sys.stderr, flush=True)
+        return None
 
 def create_path_graph(path_hops, source, destination):
     """
@@ -127,13 +332,43 @@ def create_path_graph(path_hops, source, destination):
     # Track device types for each device
     device_types = {}  # {device_name: 'device_type'}
     
+    # Track device IP addresses
+    device_ips = {}  # {device_name: 'ip_address'}
+    
+    # Try to infer device type for source/destination if they're IPs
+    # (They won't be in path_hops, so we need to handle them separately)
+    def infer_device_type_from_name(device_name):
+        """Infer device type from device name patterns"""
+        if not device_name:
+            return None
+        name_lower = device_name.lower()
+        if 'fw' in name_lower or 'firewall' in name_lower or 'palo' in name_lower:
+            return 'Palo Alto Firewall'
+        elif 'switch' in name_lower or 'sw' in name_lower:
+            if 'arista' in name_lower:
+                return 'Arista Switch'
+            return 'Switch'
+        elif 'router' in name_lower or 'rtr' in name_lower:
+            return 'Router'
+        # If it's an IP address, we can't infer type
+        if device_name.replace('.', '').replace(':', '').replace('/', '').isdigit():
+            return None
+        return None
+    
+    # Track device groups for all devices (not just firewalls)
+    device_groups = {}  # {device_name: 'device_group'}
+    
     # Track firewall interfaces, zones, and device groups for overlay
     firewall_interfaces = {}  # {device_name: {'in': 'interface', 'out': 'interface', 'in_zone': 'zone', 'out_zone': 'zone', 'device_group': 'group'}}
     
     # Add source node
     if source:
         devices.add(source)
-        print(f"DEBUG: Added source node: {source}", file=sys.stderr, flush=True)
+        # Try to infer device type for source
+        inferred_type = infer_device_type_from_name(source)
+        if inferred_type:
+            device_types[source] = inferred_type
+        print(f"DEBUG: Added source node: {source} (type: {inferred_type})", file=sys.stderr, flush=True)
     
     # Process each hop - filter out invalid hops (None/null values)
     print(f"DEBUG: create_path_graph - Processing {len(path_hops)} hops", file=sys.stderr, flush=True)
@@ -189,6 +424,15 @@ def create_path_graph(path_hops, source, destination):
             device_types[to_dev] = to_device_type
             print(f"DEBUG: Graph - Set device type for '{to_dev}': '{to_device_type}'", file=sys.stderr, flush=True)
         
+        # Extract IP addresses if available
+        from_dev_ip = hop.get('from_device_ip') or hop.get('fromDev', {}).get('devIP') if isinstance(hop.get('fromDev'), dict) else None
+        to_dev_ip = hop.get('to_device_ip') or hop.get('toDev', {}).get('devIP') if isinstance(hop.get('toDev'), dict) else None
+        
+        if from_dev and from_dev_ip:
+            device_ips[from_dev] = from_dev_ip
+        if to_dev and to_dev_ip:
+            device_ips[to_dev] = to_dev_ip
+        
         # Check if devices are firewalls and collect interface information
         is_firewall = hop.get('is_firewall', False)
         if is_firewall:
@@ -213,19 +457,49 @@ def create_path_graph(path_hops, source, destination):
                 # Debug: Print zone and device group information from hop
                 print(f"DEBUG: Graph - Extracting info for {firewall_device}: in_zone={in_zone}, out_zone={out_zone}, device_group={device_group}", file=sys.stderr, flush=True)
                 
+                # Determine if firewall is "from" or "to" device in this hop
+                from_dev = hop.get('from_device', '')
+                to_dev = hop.get('to_device', '')
+                is_firewall_from = (from_dev == firewall_device)
+                is_firewall_to = (to_dev == firewall_device)
+                
                 # Use extract_interface_name helper to get clean interface names
                 in_intf_name = extract_interface_name(in_interface) if in_interface else None
                 out_intf_name = extract_interface_name(out_interface) if out_interface else None
+                
+                # Server logic: When firewall is "from", in_interface is actually the firewall's OUT interface
+                # When firewall is "to", out_interface is actually the firewall's IN interface
+                # So we need to map them correctly
+                if is_firewall_from and in_intf_name and not out_intf_name:
+                    # Firewall is "from" device - in_interface is actually the OUT interface
+                    out_intf_name = in_intf_name
+                    in_intf_name = None  # Clear in since we used it for out
+                    print(f"DEBUG: Graph - Firewall {firewall_device} is 'from' device, using in_interface as out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                elif is_firewall_to and out_intf_name and not in_intf_name:
+                    # Firewall is "to" device - out_interface is actually the IN interface
+                    in_intf_name = out_intf_name
+                    out_intf_name = None  # Clear out since we used it for in
+                    print(f"DEBUG: Graph - Firewall {firewall_device} is 'to' device, using out_interface as in_interface: {in_intf_name}", file=sys.stderr, flush=True)
                 
                 # Store interface, zone, and device group information for this firewall
                 if firewall_device not in firewall_interfaces:
                     firewall_interfaces[firewall_device] = {'in': None, 'out': None, 'in_zone': None, 'out_zone': None, 'device_group': None}
                 
                 # Update interfaces if we have new information
-                if in_intf_name and not firewall_interfaces[firewall_device]['in']:
-                    firewall_interfaces[firewall_device]['in'] = in_intf_name
-                if out_intf_name and not firewall_interfaces[firewall_device]['out']:
-                    firewall_interfaces[firewall_device]['out'] = out_intf_name
+                if in_intf_name:
+                    # Only update if we don't have a value yet
+                    if not firewall_interfaces[firewall_device]['in']:
+                        firewall_interfaces[firewall_device]['in'] = in_intf_name
+                        print(f"DEBUG: Graph - Set in interface for {firewall_device} to {in_intf_name}", file=sys.stderr, flush=True)
+                
+                if out_intf_name:
+                    # Only update if we don't have a value yet
+                    if not firewall_interfaces[firewall_device]['out']:
+                        firewall_interfaces[firewall_device]['out'] = out_intf_name
+                        print(f"DEBUG: Graph - Set out interface for {firewall_device} to {out_intf_name}", file=sys.stderr, flush=True)
+                elif not out_intf_name and out_interface:
+                    # Debug: log when out_interface exists but extraction failed
+                    print(f"DEBUG: Graph - Failed to extract out_interface for {firewall_device}. Raw value: {out_interface}", file=sys.stderr, flush=True)
                 
                 # Update zones if we have new information (use 'or' to allow overwriting None)
                 if in_zone:
@@ -236,6 +510,7 @@ def create_path_graph(path_hops, source, destination):
                     print(f"DEBUG: Graph - Set out_zone for {firewall_device} to {out_zone}", file=sys.stderr, flush=True)
                 if device_group:
                     firewall_interfaces[firewall_device]['device_group'] = device_group
+                    device_groups[firewall_device] = device_group  # Track for all devices
                     print(f"DEBUG: Graph - Set device_group for {firewall_device} to {device_group}", file=sys.stderr, flush=True)
         
         # Add valid devices
@@ -244,30 +519,21 @@ def create_path_graph(path_hops, source, destination):
         if to_dev and to_dev not in [None, 'None', 'null', '']:
             devices.add(to_dev)
         
-        # Determine edge color and style based on status
-        if status == 'Success':
+        # Only add successful edges (green lines only for successful paths)
+        if status == 'Success' and not failure_reason:
             edge_color = 'green'
             edge_style = 'solid'
             edge_width = 2.0
-        elif status == 'Failed' or failure_reason:
-            # Show failed hops with red/dashed style so users can see what was discovered
-            edge_color = 'red'
-            edge_style = 'dashed'
-            edge_width = 1.5
-        else:
-            edge_color = 'gray'
-            edge_style = 'solid'
-            edge_width = 1.5
-        
-        # Add edge with attributes - for all valid device pairs (including failed ones)
-        if from_dev and to_dev and to_dev not in [None, 'None', 'null', '']:
-            edges.append((from_dev, to_dev, {
-                'color': edge_color,
-                'style': edge_style,
-                'width': edge_width,
-                'status': status,
-                'failure_reason': failure_reason
-            }))
+            
+            # Add edge with attributes - only for successful hops
+            if from_dev and to_dev and to_dev not in [None, 'None', 'null', '']:
+                edges.append((from_dev, to_dev, {
+                    'color': edge_color,
+                    'style': edge_style,
+                    'width': edge_width,
+                    'status': status,
+                    'failure_reason': failure_reason
+                }))
             print(f"DEBUG: Added edge: {from_dev} -> {to_dev} (status: {status})", file=sys.stderr, flush=True)
         elif from_dev and (not to_dev or to_dev in [None, 'None', 'null', '']):
             # Last hop - connect to destination if available
@@ -284,11 +550,11 @@ def create_path_graph(path_hops, source, destination):
     # Add destination if not already added
     if destination and destination not in devices:
         devices.add(destination)
-    
-    # Add destination node if not already added
-    if destination and destination not in devices:
-        devices.add(destination)
-        print(f"DEBUG: Added destination node: {destination}", file=sys.stderr, flush=True)
+        # Try to infer device type for destination
+        inferred_type = infer_device_type_from_name(destination)
+        if inferred_type:
+            device_types[destination] = inferred_type
+        print(f"DEBUG: Added destination node: {destination} (type: {inferred_type})", file=sys.stderr, flush=True)
     
     # If no edges were created from hops, but we have source and destination, add a direct edge
     # This is a fallback to show at least a connection attempt
@@ -321,99 +587,256 @@ def create_path_graph(path_hops, source, destination):
     
     print(f"DEBUG: Graph created with {len(G.nodes())} nodes and {len(G.edges())} edges", file=sys.stderr, flush=True)
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(12, 6))
+    # Create figure with more vertical space for path visualization
+    fig, ax = plt.subplots(figsize=(16, 10))
     
-    # Use hierarchical layout for better path visualization
-    try:
-        # Try to create a hierarchical layout
-        pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
-        # If we have a clear path, try to arrange it linearly
-        if len(path_hops) > 0:
-            # Create a more linear layout for path visualization
-            pos = {}
-            x_pos = 0
-            y_center = 0
-            
-            # Position source
-            if source and source in G.nodes():
-                pos[source] = (x_pos, y_center)
-                x_pos += 2
-            
-            # Position intermediate devices - only valid ones
-            for hop in path_hops:
-                from_dev = hop.get('from_device', 'Unknown')
-                to_dev = hop.get('to_device')
-                
-                # Skip invalid devices
-                if from_dev and from_dev not in [None, 'None', 'null', ''] and from_dev != 'Unknown' and from_dev not in pos:
-                    pos[from_dev] = (x_pos, y_center)
-                    x_pos += 2
-                
-                if to_dev and to_dev not in [None, 'None', 'null', ''] and to_dev not in pos:
-                    pos[to_dev] = (x_pos, y_center)
-                    x_pos += 2
-            
-            # Position destination
-            if destination and destination not in pos:
-                pos[destination] = (x_pos, y_center)
-            
-            # Fill in any missing positions
-            for node in G.nodes():
-                if node not in pos:
-                    pos[node] = (x_pos, y_center)
-                    x_pos += 2
-    except:
-        # Fallback to spring layout
-        pos = nx.spring_layout(G, seed=42)
+    # Add padding at top to avoid overlap with title
+    plt.subplots_adjust(top=0.90, bottom=0.05, left=0.05, right=0.95)
     
-    # Draw nodes
-    node_colors = []
+    # Clear any existing graph state and create layout based on actual path order
+    pos = {}
+    
+    # Build ordered device list from path_hops (following the actual path sequence)
+    ordered_devices = []
+    seen_devices = set()
+    
+    # Add source first if it exists
+    if source and source in G.nodes():
+        ordered_devices.append(source)
+        seen_devices.add(source)
+    
+    # Follow the path sequence from hops
+    for hop in path_hops:
+        from_dev = hop.get('from_device', 'Unknown')
+        to_dev = hop.get('to_device')
+        
+        # Skip invalid devices
+        if not from_dev or from_dev in [None, 'None', 'null', ''] or from_dev == 'Unknown':
+            continue
+        if not to_dev or to_dev in [None, 'None', 'null', '']:
+            continue
+        
+        # Add from_device if not seen
+        if from_dev not in seen_devices and from_dev in G.nodes():
+            ordered_devices.append(from_dev)
+            seen_devices.add(from_dev)
+        
+        # Add to_device if not seen
+        if to_dev not in seen_devices and to_dev in G.nodes():
+            ordered_devices.append(to_dev)
+            seen_devices.add(to_dev)
+    
+    # Add destination if not already in the list
+    if destination and destination in G.nodes() and destination not in seen_devices:
+        ordered_devices.append(destination)
+        seen_devices.add(destination)
+    
+    # Add any remaining devices that weren't in the path
     for node in G.nodes():
+        if node not in seen_devices:
+            ordered_devices.append(node)
+    
+    print(f"DEBUG: Ordered devices: {ordered_devices}", file=sys.stderr, flush=True)
+    
+    # Position devices in a linear path from left to right
+    # Use hierarchical positioning: switches on top, firewalls on bottom, others in middle
+    x_pos = 0
+    spacing = 3.0  # Horizontal spacing between devices
+    
+    y_top = 1.0      # Switches
+    y_middle = 0.0  # Other devices
+    y_bottom = -1.0 # Firewalls
+    y_source = 1.5  # Source endpoint
+    y_dest = -1.5   # Destination endpoint
+    
+    for device in ordered_devices:
+        device_type = device_types.get(device, '').lower()
+        
+        # Determine Y position based on device type
+        if device == source:
+            y = y_source
+        elif device == destination:
+            y = y_dest
+        elif 'switch' in device_type or 'sw' in device_type:
+            y = y_top
+        elif 'firewall' in device_type or 'fw' in device_type or 'palo' in device_type:
+            y = y_bottom
+        else:
+            y = y_middle
+        
+        pos[device] = (x_pos, y)
+        x_pos += spacing
+    
+    # Center the layout horizontally
+    if pos:
+        min_x = min([p[0] for p in pos.values()])
+        max_x = max([p[0] for p in pos.values()])
+        center_x = (min_x + max_x) / 2
+        # Shift all positions to center
+        for node in pos:
+            pos[node] = (pos[node][0] - center_x, pos[node][1])
+    
+    # Draw nodes with icons based on device type
+    node_colors = []
+    node_icon_images = {}  # Store icon images for each node
+    
+    for node in G.nodes():
+        # Determine node color
         if node == source:
             node_colors.append('#4CAF50')  # Green for source
         elif node == destination:
             node_colors.append('#FF9800')  # Orange for destination
         else:
             node_colors.append('#2196F3')  # Blue for intermediate devices
-    
-    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=1500, 
-                           alpha=0.9, ax=ax)
-    
-    # Draw edges with colors and styles
-    for from_dev, to_dev, data in G.edges(data=True):
-        edge_color = data.get('color', 'gray')
-        edge_style = data.get('style', 'solid')
-        edge_width = data.get('width', 1.5)
         
-        nx.draw_networkx_edges(G, pos, edgelist=[(from_dev, to_dev)], 
-                              edge_color=edge_color, style=edge_style,
-                              width=edge_width, alpha=0.7, arrows=True,
-                              arrowsize=20, ax=ax, connectionstyle='arc3,rad=0.1')
+        # Get icon image based on device type
+        device_type = device_types.get(node, '')
+        icon_path = get_device_icon_path(device_type)
+        
+        icon_image = None
+        if icon_path and IMAGE_FETCH_AVAILABLE:
+            # Try to load icon from file
+            try:
+                from PIL import Image
+                icon_image = Image.open(icon_path)
+                # Convert to RGBA if needed
+                if icon_image.mode != 'RGBA':
+                    icon_image = icon_image.convert('RGBA')
+                icon_image = icon_image.resize((64, 64), Image.Resampling.LANCZOS)
+            except Exception as e:
+                print(f"DEBUG: Could not load icon from {icon_path}: {e}", file=sys.stderr, flush=True)
+                icon_image = None
+        
+        # If no icon file, create programmatic icon
+        if icon_image is None and IMAGE_FETCH_AVAILABLE:
+            icon_image = create_device_icon_image(device_type, size=64)  # Smaller size for cleaner look
+        
+        if icon_image:
+            node_icon_images[node] = icon_image
     
-    # Draw labels with device type information, positioned slightly above nodes
+    # Draw nodes - reduced size for cleaner look
+    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=1500, 
+                           alpha=0.7, ax=ax, edgecolors='black', linewidths=1.5)
+    
+    # Draw edges FIRST so icons appear on top
+    # Only draw edges that are part of the successful path (green lines only)
+    # Build edges from the ordered path sequence
+    successful_edges = []
+    
+    # Create edges following the ordered device sequence
+    for i in range(len(ordered_devices) - 1):
+        from_dev = ordered_devices[i]
+        to_dev = ordered_devices[i + 1]
+        if from_dev in pos and to_dev in pos:
+            successful_edges.append((from_dev, to_dev))
+    
+    # Also check graph edges that are marked as successful
+    for from_dev, to_dev, data in G.edges(data=True):
+        status = data.get('status', 'Unknown')
+        failure_reason = data.get('failure_reason')
+        
+        # Only include successful edges (no red lines)
+        if status == 'Success' and not failure_reason:
+            if (from_dev, to_dev) not in successful_edges and from_dev in pos and to_dev in pos:
+                successful_edges.append((from_dev, to_dev))
+    
+    # Draw only successful edges in green
+    for from_dev, to_dev in successful_edges:
+        if from_dev in pos and to_dev in pos:
+            # Calculate curve direction based on vertical position
+            from_y = pos[from_dev][1]
+            to_y = pos[to_dev][1]
+            
+            # Use more pronounced curves for vertical connections
+            if abs(from_y - to_y) > 0.5:
+                # Vertical connection - use U-shaped curve
+                rad = 0.3 if from_y > to_y else -0.3
+            else:
+                # Horizontal connection - use gentle curve
+                rad = 0.1
+            
+            nx.draw_networkx_edges(G, pos, edgelist=[(from_dev, to_dev)], 
+                                  edge_color='green', style='solid',
+                                  width=2.0, alpha=0.7, arrows=True,
+                                  arrowsize=15, ax=ax, connectionstyle=f'arc3,rad={rad}')
+    
+    # Add icon images to nodes using matplotlib's OffsetImage (AFTER edges so they're on top)
+    if IMAGE_FETCH_AVAILABLE:
+        try:
+            from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+            import numpy as np
+            
+            for node in G.nodes():
+                if node in pos and node in node_icon_images:
+                    x, y = pos[node]
+                    icon_image = node_icon_images[node]
+                    
+                    # Convert PIL image to numpy array for matplotlib
+                    # Handle RGBA images properly
+                    if icon_image.mode == 'RGBA':
+                        icon_array = np.array(icon_image)
+                    else:
+                        icon_array = np.array(icon_image.convert('RGBA'))
+                    
+                    # Create OffsetImage with smaller zoom for cleaner, less intrusive icons
+                    # Node size is 2500, icon is 64x64, so zoom of 0.6-0.8 should work well
+                    # Icons should be visible but not dominate the graph
+                    imagebox = OffsetImage(icon_array, zoom=0.7)
+                    ab = AnnotationBbox(imagebox, (x, y), frameon=False, pad=0.0, zorder=10)
+                    ax.add_artist(ab)
+                    print(f"DEBUG: Added icon image for node '{node}' (type: {device_types.get(node, 'unknown')}) at position ({x:.3f}, {y:.3f})", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"DEBUG: Error adding icon images to graph: {e}", file=sys.stderr, flush=True)
+            import traceback
+            print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+    
+    
+    # Draw labels with device name, IP, and device type
+    # For firewalls, position labels differently to avoid overlap with interface/zone labels
     print(f"DEBUG: Graph - Device types collected: {device_types}", file=sys.stderr, flush=True)
-    label_offset = 0.015  # Offset to position labels above nodes (reduced further to bring closer)
+    
     for node in G.nodes():
         if node in pos:
             x, y = pos[node]
-            node_label = node[:15] + '...' if len(node) > 15 else node
+            node_label = node[:20] + '...' if len(node) > 20 else node
+            
+            # Check if this is a firewall - use different positioning
+            is_firewall = node in firewall_interfaces
+            device_type = device_types.get(node, '').lower()
+            is_firewall_type = 'firewall' in device_type or 'fw' in device_type or 'palo' in device_type
+            
+            # Build label text with IP address if available
+            label_parts = [node_label]
+            
+            # Add IP address if available
+            if node in device_ips and device_ips[node]:
+                label_parts.append(device_ips[node])
+            
             # Add device type if available
             if node in device_types and device_types[node]:
-                device_type = device_types[node]
-                # Format device type nicely (e.g., "Palo Alto Firewall" -> "Palo Alto Firewall")
-                label_text = f"{node_label}\n({device_type})"
-                print(f"DEBUG: Graph - Label for '{node}': '{node_label}\\n({device_type})'", file=sys.stderr, flush=True)
-            else:
-                label_text = node_label
-                print(f"DEBUG: Graph - No device type for '{node}', using label: '{node_label}'", file=sys.stderr, flush=True)
+                device_type_full = device_types[node]
+                label_parts.append(device_type_full)
             
-            # Draw label slightly above the node
-            ax.text(x, y + label_offset, label_text, 
-                   fontsize=7, fontweight='bold', ha='center', va='bottom',
-                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8, edgecolor='gray', linewidth=0.5))
+            label_text = '\n'.join(label_parts)
+            
+            # For firewalls, position label at the very top (above device group badge)
+            # For other devices, use standard positioning
+            if is_firewall or is_firewall_type:
+                # Firewall labels go at the very top, above device group badge
+                label_y = y + 0.50  # Above device group badge (which is at y + 0.35)
+            else:
+                # Standard positioning for non-firewall devices
+                label_y = y + 0.25
+            
+            # Draw label with high z-order and better visibility
+            # For firewalls, ensure hostname is at the very top above all other elements
+            ax.text(x, label_y, label_text, 
+                   fontsize=9, fontweight='bold', ha='center', va='bottom',
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.95, 
+                           edgecolor='black', linewidth=1.5),
+                   zorder=15)  # Highest z-order to ensure it's always visible on top
     
-    # Overlay firewall interface and zone information
+    # Overlay firewall interface and zone information - make them clearer and more readable
     for firewall_device, interfaces in firewall_interfaces.items():
         if firewall_device in pos:
             x, y = pos[firewall_device]
@@ -421,50 +844,103 @@ def create_path_graph(path_hops, source, destination):
             # Debug: Print what we have for this firewall
             print(f"DEBUG: Graph overlay for {firewall_device}: interfaces={interfaces}", file=sys.stderr, flush=True)
             
-            # Calculate vertical positions for labels
-            # Cleaner layout: interface+zone combined on top/bottom, device group in middle
-            top_offset = 0.02  # Top label position (reduced further to bring closer)
-            bottom_offset = 0.02  # Bottom label position (reduced further to bring closer)
-            device_group_offset = 0.005  # Device group label position (slightly below center, reduced further)
+            # Calculate vertical positions for labels - reorganize to prevent overlap
+            # Hostname is at y + 0.50 (drawn above this section)
+            # Device group badge below hostname
+            device_group_badge_y = y + 0.35
+            device_group_label_y = y + 0.25
+            # In interface label below device group
+            in_interface_y = y + 0.15
+            # Out interface label below device
+            out_interface_y = y - 0.20
             
-            # Build top label: In interface with zone
-            top_label_parts = []
-            if interfaces.get('in'):
-                in_zone = interfaces.get('in_zone')
-                if in_zone:
-                    top_label_parts.append(f"In: {interfaces['in']} ({in_zone})")
-                else:
-                    top_label_parts.append(f"In: {interfaces['in']}")
-            
-            # Build bottom label: Out interface with zone
-            bottom_label_parts = []
-            if interfaces.get('out'):
-                out_zone = interfaces.get('out_zone')
-                print(f"DEBUG: {firewall_device} - Out zone: {out_zone}", file=sys.stderr, flush=True)
-                if out_zone:
-                    bottom_label_parts.append(f"Out: {interfaces['out']} ({out_zone})")
-                else:
-                    bottom_label_parts.append(f"Out: {interfaces['out']}")
-            
-            # Add top label (In interface + zone)
-            if top_label_parts:
-                ax.text(x, y + top_offset, top_label_parts[0], 
-                       fontsize=6, ha='center', va='bottom',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
-            
-            # Add bottom label (Out interface + zone)
-            if bottom_label_parts:
-                ax.text(x, y - bottom_offset, bottom_label_parts[0], 
-                       fontsize=6, ha='center', va='top',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.8))
-            
-            # Add device group label in the middle (if available)
+            # Add device group badge at the very top (above everything)
             device_group = interfaces.get('device_group')
             if device_group:
-                ax.text(x, y - device_group_offset, f"DG: {device_group}", 
-                       fontsize=6, ha='center', va='center',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='orange', alpha=0.9),
-                       weight='bold')
+                # Use different colors for different device groups
+                group_colors = {
+                    'roundrock': 'orange',
+                    'leander': 'green',
+                }
+                badge_color = group_colors.get(device_group.lower(), 'orange')
+                # Use first letter of device group for badge
+                badge_text = device_group[0].upper() if device_group else '?'
+                
+                # Circular badge at top
+                ax.text(x, device_group_badge_y, badge_text, 
+                       fontsize=12, ha='center', va='center', weight='bold',
+                       bbox=dict(boxstyle='circle,pad=0.4', facecolor=badge_color, alpha=0.95, 
+                               edgecolor='black', linewidth=2),
+                       color='white', zorder=13)
+                
+                # Device group text label below badge
+                ax.text(x, device_group_label_y, f"DG: {device_group}", 
+                       fontsize=8, ha='center', va='center', weight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                               edgecolor='black', linewidth=1),
+                       zorder=12)
+            
+            # Build In interface label with zone - positioned below device group
+            if interfaces.get('in'):
+                in_intf = interfaces.get('in', '')
+                in_zone = interfaces.get('in_zone', '')
+                
+                # Build label with interface and zone on separate lines for clarity
+                if in_zone:
+                    in_label = f"In: {in_intf}\nZone: {in_zone}"
+                else:
+                    in_label = f"In: {in_intf}"
+                
+                # Add In interface label - larger font, better padding, clear zone display
+                ax.text(x, in_interface_y, in_label, 
+                       fontsize=9, ha='center', va='center', weight='bold',
+                       bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.95, 
+                               edgecolor='darkblue', linewidth=1.5),
+                       zorder=11)
+            
+            # Build Out interface label with zone - positioned below device
+            out_intf = interfaces.get('out', '')
+            out_zone = interfaces.get('out_zone', '')
+            print(f"DEBUG: {firewall_device} - Out interface: '{out_intf}', zone: '{out_zone}'", file=sys.stderr, flush=True)
+            
+            # Always show Out label, even if interface is empty (show zone if available)
+            if out_intf:
+                # Build label with interface and zone on separate lines for clarity
+                if out_zone:
+                    out_label = f"Out: {out_intf}\nZone: {out_zone}"
+                else:
+                    out_label = f"Out: {out_intf}"
+            elif out_zone:
+                # If no interface but we have zone, show zone only
+                out_label = f"Out: (unknown)\nZone: {out_zone}"
+            else:
+                # No interface or zone - skip displaying
+                out_label = None
+            
+            # Add Out interface label if we have something to show
+            if out_label:
+                ax.text(x, out_interface_y, out_label, 
+                       fontsize=9, ha='center', va='center', weight='bold',
+                       bbox=dict(boxstyle='round,pad=0.5', facecolor='lightgreen', alpha=0.95,
+                               edgecolor='darkgreen', linewidth=1.5),
+                       zorder=11)
+    
+    # Add device group badges for all devices (not just firewalls)
+    for device_name, device_group in device_groups.items():
+        if device_name in pos and device_name not in firewall_interfaces:
+            x, y = pos[device_name]
+            # Create circular badge above device
+            badge_y = y + 0.15
+            group_colors = {
+                'roundrock': 'orange',
+                'leander': 'green',
+            }
+            badge_color = group_colors.get(device_group.lower(), 'orange')
+            badge_letter = device_group[0].upper() if device_group else '?'
+            ax.text(x, badge_y, badge_letter, 
+                   fontsize=10, ha='center', va='center',
+                   bbox=dict(boxstyle='circle,pad=0.3', facecolor=badge_color, alpha=0.9, edgecolor='black', linewidth=1),
+                   weight='bold', color='white', zorder=12)
     
     # Add legend
     from matplotlib.patches import Patch
@@ -700,9 +1176,57 @@ def display_result(result):
         # Display result as JSON for any other type
         st.json(result)
 
+def get_server_url():
+    """
+    Get the HTTP URL for the MCP server.
+    
+    Returns:
+        str: Server URL for HTTP transport (streamable-http uses /mcp endpoint)
+    """
+    return "http://127.0.0.1:8765/mcp"
+
+async def get_mcp_session():
+    """
+    Get an MCP session using HTTP transport (preferred) or stdio (fallback).
+    This is a generator that yields the session within the proper context.
+    
+    Yields:
+        FastMCPClient or ClientSession: MCP client session
+    """
+    if FASTMCP_CLIENT_AVAILABLE:
+        # Use FastMCP Client for HTTP transport (automatically handles streamable-http)
+        try:
+            server_url = get_server_url()
+            print(f"DEBUG: Connecting to MCP server via HTTP at {server_url}...", file=sys.stderr, flush=True)
+            # FastMCP Client automatically infers streamable-http from URL
+            # Try to configure with longer timeout for long-running requests
+            try:
+                # Check if FastMCPClient accepts timeout parameters
+                client = FastMCPClient(server_url, timeout=600)  # 10 minute timeout
+            except TypeError:
+                # If timeout parameter not supported, use default
+                client = FastMCPClient(server_url)
+            async with client:
+                print(f"DEBUG: FastMCP HTTP client connected successfully", file=sys.stderr, flush=True)
+                yield client
+        except Exception as e:
+            # HTTP connection failed - this is expected if server is running in stdio mode
+            # Silently fall back to stdio (don't print verbose traceback as it's expected)
+            print(f"DEBUG: HTTP connection unavailable (server may be in stdio mode), using stdio transport...", file=sys.stderr, flush=True)
+            # Fall through to stdio fallback
+    
+    # Fallback to stdio transport
+    server_params = get_server_params()
+    print(f"DEBUG: Connecting to MCP server via stdio...", file=sys.stderr, flush=True)
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            print(f"DEBUG: Stdio session initialized successfully", file=sys.stderr, flush=True)
+            yield session
+
 def get_server_params():
     """
-    Create server parameters for stdio communication.
+    Create server parameters for stdio communication (fallback).
     
     This function creates the configuration needed to spawn the MCP server
     as a subprocess via stdio transport.
@@ -719,6 +1243,7 @@ def get_server_params():
     # - command: The command to run (python interpreter)
     # - args: Arguments to pass (the mcp_server.py script with full path)
     # This configures the client to spawn mcp_server.py as a subprocess
+    from mcp import StdioServerParameters
     return StdioServerParameters(
         command="python",  # Use Python interpreter to run the server
         args=[server_path]  # Pass mcp_server.py with full path as argument
@@ -1129,13 +1654,44 @@ def display_result_chat(result, container):
         else:
             print(f"DEBUG: Could not extract hops from path_details", file=sys.stderr, flush=True)
     
-    # Only skip if no path data AND failure reason is L2 connection discovery
+    # Display error information if no path data is available
     if not hops_to_display:
         path_failure_reason = result.get('path_failure_reason', '')
-        if path_failure_reason and 'L2 connections has not been discovered' in path_failure_reason:
-            print(f"DEBUG: Skipping display - no path data and L2 connection discovery issue", file=sys.stderr, flush=True)
-            return
+        path_status = result.get('path_status', '')
+        path_status_description = result.get('path_status_description', '')
+        
         print(f"DEBUG: No path hops found in result", file=sys.stderr, flush=True)
+        
+        # Display failure information if available
+        if path_failure_reason or path_status == 'Failed' or 'Failed' in str(path_status):
+            container.error("❌ Network Path Calculation Failed")
+            
+            if path_status_description:
+                container.error(f"**Path Status:** {path_status_description}")
+            elif path_status and path_status != 'Unknown':
+                container.error(f"**Path Status:** {path_status}")
+            
+            if path_failure_reason:
+                container.error(f"**Failure Reason:** {path_failure_reason}")
+            
+            # Show additional details if available
+            if result.get('statusDescription'):
+                container.info(f"Status: {result.get('statusDescription')}")
+            if result.get('gateway_used'):
+                container.info(f"Gateway Used: {result.get('gateway_used')}")
+            if result.get('path_hops_count'):
+                container.info(f"Hops Found: {result.get('path_hops_count')}")
+        
+        # If result only has error, display it
+        elif "error" in result and len(result) == 1:
+            container.error(f"❌ {result['error']}")
+        else:
+            # Display basic result information even if no hops
+            container.warning("⚠️ Path query completed but no path data available to display.")
+            if result.get('statusDescription'):
+                container.info(f"Status: {result.get('statusDescription')}")
+        
+        return
     
     # Display graph visualization of the full path if hops are available
     if hops_to_display:
@@ -1177,6 +1733,22 @@ def display_result_chat(result, container):
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
                     
+                    # Server logic: When firewall is "from", in_interface is actually the firewall's OUT interface
+                    # When firewall is "to", out_interface is actually the firewall's IN interface
+                    # Match the server's mapping logic (same as graph code)
+                    if from_dev == firewall_device:
+                        # Firewall is "from" device - in_interface is actually the OUT interface
+                        if in_intf_name and not out_intf_name:
+                            out_intf_name = in_intf_name
+                            in_intf_name = None  # Don't use in_interface for IN when firewall is "from"
+                            print(f"DEBUG: Table - Firewall {firewall_device} is 'from' device, mapping in_interface to out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                    elif to_dev == firewall_device:
+                        # Firewall is "to" device - out_interface is actually the IN interface
+                        if out_intf_name and not in_intf_name:
+                            in_intf_name = out_intf_name
+                            out_intf_name = None  # Don't use out_interface for OUT when firewall is "to"
+                            print(f"DEBUG: Table - Firewall {firewall_device} is 'to' device, mapping out_interface to in_interface: {in_intf_name}", file=sys.stderr, flush=True)
+                    
                     firewalls_found[firewall_device] = {
                         'in_interface': in_intf_name,
                         'out_interface': out_intf_name,
@@ -1195,10 +1767,26 @@ def display_result_chat(result, container):
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
                     
+                    # Server logic: When firewall is "from", in_interface is actually the firewall's OUT interface
+                    # When firewall is "to", out_interface is actually the firewall's IN interface
+                    # Match the server's mapping logic (same as graph code)
+                    from_dev = hop.get('from_device', '')
+                    to_dev = hop.get('to_device', '')
+                    if from_dev == firewall_device:
+                        # Firewall is "from" device - in_interface is actually the OUT interface
+                        if in_intf_name and not out_intf_name:
+                            out_intf_name = in_intf_name
+                            in_intf_name = None  # Don't use in_interface for IN when firewall is "from"
+                            print(f"DEBUG: Table merge - Firewall {firewall_device} is 'from' device, mapping in_interface to out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                    elif to_dev == firewall_device:
+                        # Firewall is "to" device - out_interface is actually the IN interface
+                        if out_intf_name and not in_intf_name:
+                            in_intf_name = out_intf_name
+                            out_intf_name = None  # Don't use out_interface for OUT when firewall is "to"
+                            print(f"DEBUG: Table merge - Firewall {firewall_device} is 'to' device, mapping out_interface to in_interface: {in_intf_name}", file=sys.stderr, flush=True)
+                    
                     # Extract device type if not already set
                     if not firewalls_found[firewall_device].get('device_type'):
-                        from_dev = hop.get('from_device', '')
-                        to_dev = hop.get('to_device', '')
                         if from_dev == firewall_device:
                             device_type = hop.get('from_device_type')
                         elif to_dev == firewall_device:
@@ -1208,10 +1796,20 @@ def display_result_chat(result, container):
                         if device_type:
                             firewalls_found[firewall_device]['device_type'] = device_type
                     
-                    if in_intf_name and not firewalls_found[firewall_device]['in_interface']:
-                        firewalls_found[firewall_device]['in_interface'] = in_intf_name
-                    if out_intf_name and not firewalls_found[firewall_device]['out_interface']:
-                        firewalls_found[firewall_device]['out_interface'] = out_intf_name
+                    # Update interfaces if we have new information (same logic for both)
+                    if in_intf_name:
+                        # Only update if we don't have a value yet
+                        if not firewalls_found[firewall_device]['in_interface']:
+                            firewalls_found[firewall_device]['in_interface'] = in_intf_name
+                            print(f"DEBUG: Table - Set in_interface for {firewall_device} to {in_intf_name}", file=sys.stderr, flush=True)
+                    if out_intf_name:
+                        # Only update if we don't have a value yet
+                        if not firewalls_found[firewall_device]['out_interface']:
+                            firewalls_found[firewall_device]['out_interface'] = out_intf_name
+                            print(f"DEBUG: Table - Set out_interface for {firewall_device} to {out_intf_name}", file=sys.stderr, flush=True)
+                    else:
+                        # Debug when out_interface extraction fails
+                        print(f"DEBUG: Table - Failed to extract out_interface for {firewall_device}. Raw value: {out_interface}", file=sys.stderr, flush=True)
                     # Always update zones if available (they might come from different hops)
                     if in_zone:
                         firewalls_found[firewall_device]['in_zone'] = in_zone
@@ -1280,27 +1878,49 @@ def display_result_chat(result, container):
             print(f"DEBUG: Graph traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
             container.warning(f"⚠️ Could not generate path visualization: {str(e)}")
         
-        # Display firewall information in the requested format
+        # Display firewall information in table format
         if firewalls_found:
             print(f"DEBUG: Found {len(firewalls_found)} firewalls", file=sys.stderr, flush=True)
             container.markdown("#### Firewalls in Path")
+            
+            # Prepare table data
+            table_data = []
             for fw_name, fw_info in firewalls_found.items():
-                interface_parts = []
-                if fw_info['in_interface']:
-                    in_zone = fw_info.get('in_zone')
-                    zone_text = f" ({in_zone})" if in_zone else ""
-                    interface_parts.append(f"In: {fw_info['in_interface']}{zone_text}")
-                if fw_info['out_interface']:
-                    out_zone = fw_info.get('out_zone')
-                    zone_text = f" ({out_zone})" if out_zone else ""
-                    interface_parts.append(f"Out: {fw_info['out_interface']}{zone_text}")
+                # Use stored interface names directly (already extracted when building firewalls_found)
+                # Same logic for both source and destination - just use the stored values
+                source_intf = fw_info.get('in_interface')  # Already extracted
+                dest_intf = fw_info.get('out_interface')   # Already extracted
                 
-                if interface_parts:
-                    device_group = fw_info.get('device_group')
-                    device_group_text = f" [DG: {device_group}]" if device_group else ""
-                    device_type = fw_info.get('device_type')
-                    device_type_text = f" ({device_type})" if device_type else ""
-                    container.markdown(f"{fw_name}{device_type_text}{device_group_text}: {', '.join(interface_parts)}")
+                # Get zones and device group
+                in_zone = fw_info.get('in_zone')
+                out_zone = fw_info.get('out_zone')
+                device_group = fw_info.get('device_group', '')
+                
+                # Zone display: In zone → Out zone when both present
+                zone_display = '-'
+                if in_zone and out_zone:
+                    zone_display = f"{in_zone} → {out_zone}" if in_zone != out_zone else str(in_zone)
+                elif in_zone:
+                    zone_display = str(in_zone)
+                elif out_zone:
+                    zone_display = str(out_zone)
+                
+                dg_display = (device_group or '-').strip() if device_group else '-'
+                
+                # Add row to table (includes Zone and Device Group)
+                table_data.append({
+                    'Name': fw_name,
+                    'Source Interface': source_intf or '-',
+                    'Destination Interface': dest_intf or '-',
+                    'Zone': zone_display,
+                    'Device Group': dg_display
+                })
+            
+            # Display as table using Streamlit's dataframe display
+            if table_data:
+                import pandas as pd
+                df = pd.DataFrame(table_data)
+                container.dataframe(df, use_container_width=True, hide_index=True)
         else:
             print(f"DEBUG: No firewalls found in path", file=sys.stderr, flush=True)
     else:
@@ -1888,53 +2508,189 @@ async def execute_network_query(source, destination, protocol, port, is_live):
     print(f"DEBUG: Starting network query: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
     
     try:
-        server_params = get_server_params()
-        print(f"DEBUG: Server params created, connecting to MCP server...", file=sys.stderr, flush=True)
-        
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            print(f"DEBUG: Connected to MCP server, initializing session...", file=sys.stderr, flush=True)
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                print(f"DEBUG: Session initialized, calling tool...", file=sys.stderr, flush=True)
-                
-                tool_arguments = {
-                    "source": source,
-                    "destination": destination,
-                    "protocol": protocol,
-                    "port": port,
-                    "is_live": 1 if is_live else 0,
-                    "continue_on_policy_denial": True  # Always continue even if denied by policy
-                }
-                print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
-                
-                tool_result = await session.call_tool(
-                    "query_network_path",
-                    arguments=tool_arguments
-                )
-                print(f"DEBUG: Tool call completed, processing result...", file=sys.stderr, flush=True)
-                
-                if tool_result and tool_result.content:
-                    import json
-                    result_text = tool_result.content[0].text
-                    print(f"DEBUG: Result text length: {len(result_text)}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Connecting to MCP server...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized, calling tool...", file=sys.stderr, flush=True)
+            
+            # Use defaults if protocol or port are None (server expects strings, not None)
+            protocol_str = protocol if protocol is not None else "TCP"
+            port_str = port if port is not None else "0"
+            
+            tool_arguments = {
+                "source": source,
+                "destination": destination,
+                "protocol": protocol_str,
+                "port": port_str,
+                "is_live": 1 if is_live else 0,
+                "continue_on_policy_denial": True  # Always continue even if denied by policy
+            }
+            print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            print(f"DEBUG: Calling tool with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            print(f"DEBUG: Client type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}, FASTMCP_CLIENT_AVAILABLE: {FASTMCP_CLIENT_AVAILABLE}", file=sys.stderr, flush=True)
+            try:
+                # Try to detect FastMCP Client - be conservative, default to standard format
+                is_fastmcp = False
+                if FASTMCP_CLIENT_AVAILABLE:
                     try:
-                        result = json.loads(result_text)
-                        print(f"DEBUG: Result parsed successfully", file=sys.stderr, flush=True)
-                        return result
-                    except json.JSONDecodeError as e:
-                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
-                        return {"result": result_text}
+                        # Check if it's actually a FastMCPClient instance
+                        is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                        print(f"DEBUG: isinstance check result: {is_fastmcp}", file=sys.stderr, flush=True)
+                    except (NameError, TypeError) as e:
+                        print(f"DEBUG: isinstance check failed: {e}, checking by module name", file=sys.stderr, flush=True)
+                        # Fallback: check by module name (more reliable)
+                        module_name = type(client_or_session).__module__
+                        is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+                        print(f"DEBUG: Module-based check result: {is_fastmcp} (module: {module_name})", file=sys.stderr, flush=True)
+                
+                print(f"DEBUG: Final detection - is_fastmcp: {is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+                
+                # Try standard format first (safest), then FastMCP format if needed
+                try:
+                    # Standard MCP ClientSession format: pass arguments as a dictionary
+                    print(f"DEBUG: Trying standard format (arguments=dict) for query_network_path...", file=sys.stderr, flush=True)
+                    tool_result = await asyncio.wait_for(
+                        client_or_session.call_tool("query_network_path", arguments=tool_arguments),
+                        timeout=360.0  # 6 minute timeout for network path queries (server polls up to 120 times)
+                    )
+                    print(f"DEBUG: Standard format succeeded for query_network_path, result type: {type(tool_result)}", file=sys.stderr, flush=True)
+                except TypeError as e:
+                    error_str = str(e)
+                    # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
+                    if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
+                        print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_network_path...", file=sys.stderr, flush=True)
+                        tool_result_list = await asyncio.wait_for(
+                            client_or_session.call_tool("query_network_path", **tool_arguments),
+                            timeout=360.0  # 6 minute timeout for network path queries (server polls up to 120 times)
+                        )
+                        print(f"DEBUG: FastMCP call completed, result type: {type(tool_result_list)}, length: {len(tool_result_list) if isinstance(tool_result_list, list) else 'N/A'}", file=sys.stderr, flush=True)
+                        # FastMCP returns a list of results, each with .text attribute
+                        # Convert to standard format for processing
+                        if tool_result_list and len(tool_result_list) > 0:
+                            # Create a mock tool_result object with content attribute
+                            class FastMCPToolResult:
+                                def __init__(self, results):
+                                    self.content = []
+                                    for r in results:
+                                        text = r.text if hasattr(r, 'text') else str(r)
+                                        self.content.append(type('Content', (), {'text': text})())
+                            tool_result = FastMCPToolResult(tool_result_list)
+                            print(f"DEBUG: FastMCP result wrapped, content items: {len(tool_result.content)}", file=sys.stderr, flush=True)
+                        else:
+                            tool_result = None
+                            print(f"DEBUG: FastMCP returned empty result", file=sys.stderr, flush=True)
+                        print(f"DEBUG: FastMCP format succeeded for query_network_path", file=sys.stderr, flush=True)
+                    else:
+                        # Re-raise if it's a different error
+                        print(f"DEBUG: Error calling query_network_path: {e}", file=sys.stderr, flush=True)
+                        raise
+                print(f"DEBUG: Tool call completed, processing result...", file=sys.stderr, flush=True)
+            except asyncio.TimeoutError:
+                print(f"DEBUG: Tool call timed out after 360 seconds", file=sys.stderr, flush=True)
+                return {"error": "Network path query timed out after 6 minutes. The query may be too complex or the server may be slow. Please try again or use baseline data instead of live data."}
+            except (ConnectionResetError, ConnectionError, OSError) as conn_error:
+                # Connection was closed, but server may have completed - check if we got partial result
+                print(f"DEBUG: Connection error during tool call: {conn_error}", file=sys.stderr, flush=True)
+                print(f"DEBUG: Connection error type: {type(conn_error).__name__}", file=sys.stderr, flush=True)
+                # If we have a tool_result, try to process it anyway
+                if 'tool_result' in locals() and tool_result:
+                    print(f"DEBUG: Connection closed but we have a result, attempting to process...", file=sys.stderr, flush=True)
+                    # Fall through to result processing below
                 else:
-                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
-                    return None
+                    import traceback
+                    print(f"DEBUG: Connection error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    return {"error": f"Connection was closed during query. The server may have completed processing, but the connection was lost. Error: {str(conn_error)}"}
+            except Exception as tool_error:
+                print(f"DEBUG: Tool call failed with error: {tool_error}", file=sys.stderr, flush=True)
+                import traceback
+                print(f"DEBUG: Tool call error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                # If we have a tool_result despite the error, try to process it
+                if 'tool_result' in locals() and tool_result:
+                    print(f"DEBUG: Error occurred but we have a result, attempting to process...", file=sys.stderr, flush=True)
+                    # Fall through to result processing below
+                else:
+                    return {"error": f"Tool call failed: {str(tool_error)}"}
+            
+            if tool_result:
+                print(f"DEBUG: Tool result received, type: {type(tool_result)}, dir: {[x for x in dir(tool_result) if not x.startswith('_')]}", file=sys.stderr, flush=True)
+                result_text = None
+                
+                # Handle FastMCP Client response (list of results or FastMCPToolResult wrapper)
+                if isinstance(tool_result, list):
+                    if len(tool_result) > 0:
+                        # FastMCP returns list of result objects with .text attribute
+                        first_result = tool_result[0]
+                        if hasattr(first_result, 'text'):
+                            result_text = first_result.text
+                        else:
+                            result_text = str(first_result)
+                        print(f"DEBUG: FastMCP list result (first 500 chars): {result_text[:500] if result_text else 'None'}", file=sys.stderr, flush=True)
+                    else:
+                        return {"error": "Tool call returned empty result"}
+                # Handle FastMCPToolResult wrapper or standard MCP ClientSession response (both have .content)
+                elif hasattr(tool_result, 'content') and tool_result.content:
+                    import json
+                    print(f"DEBUG: Standard MCP result content length: {len(tool_result.content)}", file=sys.stderr, flush=True)
+                    if isinstance(tool_result.content, list) and len(tool_result.content) > 0:
+                        content_item = tool_result.content[0]
+                        if hasattr(content_item, 'text'):
+                            result_text = content_item.text
+                        else:
+                            result_text = str(content_item)
+                    else:
+                        result_text = str(tool_result.content)
+                    print(f"DEBUG: Result text length: {len(result_text) if result_text else 0}", file=sys.stderr, flush=True)
+                    print(f"DEBUG: Result text (first 500 chars): {result_text[:500] if result_text else 'None'}", file=sys.stderr, flush=True)
+                else:
+                    # Try to convert to string or check if it's already a dict
+                    if isinstance(tool_result, dict):
+                        print(f"DEBUG: Tool result is already a dict, returning directly", file=sys.stderr, flush=True)
+                        return tool_result
+                    result_text = str(tool_result)
+                    print(f"DEBUG: Converted result to string (first 500 chars): {result_text[:500]}", file=sys.stderr, flush=True)
+                
+                if not result_text:
+                    print(f"DEBUG: ERROR - result_text is None or empty", file=sys.stderr, flush=True)
+                    return {"error": "Tool call returned empty or unparseable result"}
+                
+                # Try to parse as JSON
+                import json
+                try:
+                    result = json.loads(result_text)
+                    print(f"DEBUG: Result parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                    return result
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: JSON decode error: {e}, result_text: {result_text[:200]}", file=sys.stderr, flush=True)
+                    # Try to extract JSON from the text if it's embedded
+                    import re
+                    json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+                    if json_match:
+                        try:
+                            result = json.loads(json_match.group())
+                            print(f"DEBUG: Extracted JSON from text, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                            return result
+                        except json.JSONDecodeError as e2:
+                            print(f"DEBUG: Failed to parse extracted JSON: {e2}", file=sys.stderr, flush=True)
+                    # If still can't parse, return the raw text wrapped
+                    print(f"DEBUG: Returning raw text as result", file=sys.stderr, flush=True)
+                    return {"error": f"Failed to parse JSON result: {str(e)}", "raw_result": result_text[:1000]}
+            else:
+                print(f"DEBUG: Tool result is None or empty", file=sys.stderr, flush=True)
+                return {"error": "Tool call returned no result"}
     except asyncio.TimeoutError:
         print(f"DEBUG: Query timed out", file=sys.stderr, flush=True)
         return {"error": "Query timed out. The network path calculation is taking longer than expected."}
     except Exception as e:
         import traceback
+        error_traceback = traceback.format_exc()
         print(f"DEBUG: Exception in execute_network_query: {e}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-        return {"error": f"Error executing query: {str(e)}"}
+        print(f"DEBUG: Traceback: {error_traceback}", file=sys.stderr, flush=True)
+        # Include more details in the error message
+        error_msg = f"Error executing query: {str(e)}"
+        if "JSON" in str(e) or "json" in str(e):
+            error_msg += " (JSON parsing error - check server logs)"
+        elif "TaskGroup" in str(e) or "unhandled errors" in str(e):
+            error_msg += " (MCP protocol error - server may have crashed, check mcp_server.log)"
+        return {"error": error_msg}
 
 
 async def execute_rack_details_query(rack_name, format_type=None, conversation_history=None, site_name=None):
@@ -1954,38 +2710,78 @@ async def execute_rack_details_query(rack_name, format_type=None, conversation_h
     print(f"DEBUG: Starting rack details query for rack: {rack_name}, site: {site_name}, format: {format_type}", file=sys.stderr, flush=True)
 
     try:
-        server_params = get_server_params()
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-
-                tool_arguments = {"rack_name": rack_name}
-                if site_name:
-                    tool_arguments["site_name"] = site_name
-                if format_type:
-                    tool_arguments["format"] = format_type
-                if conversation_history:
-                    tool_arguments["conversation_history"] = conversation_history
-                
-                tool_result = await session.call_tool(
-                    "get_rack_details",
-                    arguments=tool_arguments
+        print(f"DEBUG: Connecting to MCP server for rack details query...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized for rack details query", file=sys.stderr, flush=True)
+            
+            tool_arguments = {"rack_name": rack_name}
+            if site_name:
+                tool_arguments["site_name"] = site_name
+            if format_type:
+                tool_arguments["format"] = format_type
+            if conversation_history:
+                tool_arguments["conversation_history"] = conversation_history
+            
+            # Detect client type for fallback
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
+                try:
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    module_name = type(client_or_session).__module__
+                    is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+            
+            print(f"DEBUG: Client type for rack details: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+            
+            # Try standard format first (safest), then FastMCP format if needed
+            try:
+                # Standard MCP ClientSession format: pass arguments as a dictionary
+                print(f"DEBUG: Trying standard format (arguments=dict) for get_rack_details...", file=sys.stderr, flush=True)
+                tool_result = await asyncio.wait_for(
+                    client_or_session.call_tool("get_rack_details", arguments=tool_arguments),
+                    timeout=60.0
                 )
-
-                if tool_result and tool_result.content:
-                    import json
-                    result_text = tool_result.content[0].text
-                    print(f"DEBUG: Rack details result text length: {len(result_text)}", file=sys.stderr, flush=True)
-                    try:
-                        result = json.loads(result_text)
-                        print(f"DEBUG: Rack details result parsed successfully", file=sys.stderr, flush=True)
-                        return result
-                    except json.JSONDecodeError as e:
-                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
-                        return {"result": result_text}
+                print(f"DEBUG: Standard format succeeded for get_rack_details", file=sys.stderr, flush=True)
+            except TypeError as e:
+                error_str = str(e)
+                # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
+                if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
+                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for get_rack_details...", file=sys.stderr, flush=True)
+                    tool_result_list = await asyncio.wait_for(
+                        client_or_session.call_tool("get_rack_details", **tool_arguments),
+                        timeout=60.0
+                    )
+                    # Convert FastMCP result to standard format
+                    if tool_result_list and len(tool_result_list) > 0:
+                        class FastMCPToolResult:
+                            def __init__(self, results):
+                                self.content = []
+                                for r in results:
+                                    text = r.text if hasattr(r, 'text') else str(r)
+                                    self.content.append(type('Content', (), {'text': text})())
+                        tool_result = FastMCPToolResult(tool_result_list)
+                        print(f"DEBUG: FastMCP format succeeded for get_rack_details", file=sys.stderr, flush=True)
+                    else:
+                        tool_result = None
                 else:
-                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
-                    return None
+                    # Re-raise if it's a different error
+                    print(f"DEBUG: Error calling get_rack_details: {e}", file=sys.stderr, flush=True)
+                    raise
+
+            if tool_result and tool_result.content:
+                import json
+                result_text = tool_result.content[0].text
+                print(f"DEBUG: Rack details result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                try:
+                    result = json.loads(result_text)
+                    print(f"DEBUG: Rack details result parsed successfully", file=sys.stderr, flush=True)
+                    return result
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    return {"result": result_text}
+            else:
+                print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+                return None
     except asyncio.TimeoutError:
         return {"error": "Rack details lookup timed out"}
     except Exception as e:
@@ -2050,6 +2846,101 @@ async def execute_racks_list_query(site_name=None, format_type=None, conversatio
         return {"error": f"Error executing query: {str(e)}"}
 
 
+async def execute_panorama_address_group_members_query(address_group_name, device_group=None, vsys="vsys1"):
+    """
+    Execute Panorama address group members query via MCP server.
+    
+    Args:
+        address_group_name: Address group name to query
+        device_group: Optional device group name
+        vsys: VSYS name (default: "vsys1")
+    
+    Returns:
+        dict: Address group members information
+    """
+    import sys
+    print(f"DEBUG: Starting Panorama address group members query for group: {address_group_name}, device_group: {device_group}", file=sys.stderr, flush=True)
+    
+    try:
+        print(f"DEBUG: Connecting to MCP server for Panorama address group members query...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized for Panorama address group members query", file=sys.stderr, flush=True)
+            
+            tool_arguments = {"address_group_name": address_group_name}
+            if device_group:
+                tool_arguments["device_group"] = device_group
+            if vsys:
+                tool_arguments["vsys"] = vsys
+            
+            print(f"DEBUG: Calling query_panorama_address_group_members with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            
+            # Detect client type for fallback
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
+                try:
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    module_name = type(client_or_session).__module__
+                    is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+            
+            print(f"DEBUG: Client type for Panorama query: FastMCP={is_fastmcp}", file=sys.stderr, flush=True)
+            
+            # Try standard format first (safest), then FastMCP format if needed
+            try:
+                # Standard MCP ClientSession format: pass arguments as a dictionary
+                print(f"DEBUG: Trying standard format (arguments=dict) for query_panorama_address_group_members...", file=sys.stderr, flush=True)
+                tool_result = await asyncio.wait_for(
+                    client_or_session.call_tool("query_panorama_address_group_members", arguments=tool_arguments),
+                    timeout=60.0
+                )
+                print(f"DEBUG: Standard format succeeded for query_panorama_address_group_members", file=sys.stderr, flush=True)
+            except TypeError as e:
+                error_str = str(e)
+                # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
+                if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
+                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_panorama_address_group_members...", file=sys.stderr, flush=True)
+                    tool_result_list = await asyncio.wait_for(
+                        client_or_session.call_tool("query_panorama_address_group_members", **tool_arguments),
+                        timeout=60.0
+                    )
+                    # Convert FastMCP result to standard format
+                    if tool_result_list and len(tool_result_list) > 0:
+                        class FastMCPToolResult:
+                            def __init__(self, results):
+                                self.content = []
+                                for r in results:
+                                    text = r.text if hasattr(r, 'text') else str(r)
+                                    self.content.append(type('Content', (), {'text': text})())
+                        tool_result = FastMCPToolResult(tool_result_list)
+                        print(f"DEBUG: FastMCP format succeeded for query_panorama_address_group_members", file=sys.stderr, flush=True)
+                    else:
+                        tool_result = None
+                else:
+                    # Re-raise if it's a different error
+                    print(f"DEBUG: Error calling query_panorama_address_group_members: {e}", file=sys.stderr, flush=True)
+                    raise
+            
+            if tool_result and tool_result.content:
+                result_text = tool_result.content[0].text
+                print(f"DEBUG: Panorama address group members result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                try:
+                    result = json.loads(result_text)
+                    print(f"DEBUG: Panorama address group members result parsed successfully", file=sys.stderr, flush=True)
+                    return result
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    return {"result": result_text}
+            return None
+    except asyncio.TimeoutError:
+        print(f"DEBUG: Panorama address group members query timed out", file=sys.stderr, flush=True)
+        return {"error": "Panorama query timed out. Please try again."}
+    except Exception as e:
+        print(f"DEBUG: Error in Panorama address group members query: {str(e)}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {"error": f"Error querying Panorama: {str(e)}"}
+
+
 async def execute_panorama_ip_object_group_query(ip_address, device_group=None, vsys="vsys1"):
     """
     Execute Panorama IP object group query via MCP server.
@@ -2066,39 +2957,75 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
     print(f"DEBUG: Starting Panorama IP object group query for IP: {ip_address}, device_group: {device_group}", file=sys.stderr, flush=True)
     
     try:
-        server_params = get_server_params()
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                
-                tool_arguments = {"ip_address": ip_address}
-                if device_group:
-                    tool_arguments["device_group"] = device_group
-                if vsys:
-                    tool_arguments["vsys"] = vsys
-                
+        print(f"DEBUG: Connecting to MCP server for Panorama IP object group query...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized for Panorama IP object group query", file=sys.stderr, flush=True)
+            
+            tool_arguments = {"ip_address": ip_address}
+            if device_group:
+                tool_arguments["device_group"] = device_group
+            if vsys:
+                tool_arguments["vsys"] = vsys
+            
+            print(f"DEBUG: Calling query_panorama_ip_object_group with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            
+            # Detect client type for fallback
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
                 try:
-                    tool_result = await session.call_tool(
-                        "query_panorama_ip_object_group",
-                        arguments=tool_arguments
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    module_name = type(client_or_session).__module__
+                    is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+            
+            print(f"DEBUG: Client type for Panorama query: FastMCP={is_fastmcp}", file=sys.stderr, flush=True)
+            
+            # Try standard format first (safest), then FastMCP format if needed
+            try:
+                # Standard MCP ClientSession format: pass arguments as a dictionary
+                print(f"DEBUG: Trying standard format (arguments=dict) for query_panorama_ip_object_group...", file=sys.stderr, flush=True)
+                tool_result = await asyncio.wait_for(
+                    client_or_session.call_tool("query_panorama_ip_object_group", arguments=tool_arguments),
+                    timeout=60.0
+                )
+                print(f"DEBUG: Standard format succeeded for query_panorama_ip_object_group", file=sys.stderr, flush=True)
+            except TypeError as e:
+                error_str = str(e)
+                # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
+                if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
+                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_panorama_ip_object_group...", file=sys.stderr, flush=True)
+                    tool_result_list = await asyncio.wait_for(
+                        client_or_session.call_tool("query_panorama_ip_object_group", **tool_arguments),
+                        timeout=60.0
                     )
-                    
-                    if tool_result and tool_result.content:
-                        result_text = tool_result.content[0].text
-                        print(f"DEBUG: Panorama result text length: {len(result_text)}", file=sys.stderr, flush=True)
-                        try:
-                            result = json.loads(result_text)
-                            print(f"DEBUG: Panorama result parsed successfully", file=sys.stderr, flush=True)
-                            return result
-                        except json.JSONDecodeError as e:
-                            print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
-                            return {"result": result_text}
-                    return None
-                except Exception as tool_error:
-                    print(f"DEBUG: Error calling Panorama tool: {str(tool_error)}", file=sys.stderr, flush=True)
-                    import traceback
-                    print(f"DEBUG: Tool call traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                    return {"error": f"Error calling Panorama tool: {str(tool_error)}"}
+                    # Convert FastMCP result to standard format
+                    if tool_result_list and len(tool_result_list) > 0:
+                        class FastMCPToolResult:
+                            def __init__(self, results):
+                                self.content = []
+                                for r in results:
+                                    text = r.text if hasattr(r, 'text') else str(r)
+                                    self.content.append(type('Content', (), {'text': text})())
+                        tool_result = FastMCPToolResult(tool_result_list)
+                        print(f"DEBUG: FastMCP format succeeded for query_panorama_ip_object_group", file=sys.stderr, flush=True)
+                    else:
+                        tool_result = None
+                else:
+                    # Re-raise if it's a different error
+                    print(f"DEBUG: Error calling query_panorama_ip_object_group: {e}", file=sys.stderr, flush=True)
+                    raise
+            
+            if tool_result and tool_result.content:
+                result_text = tool_result.content[0].text
+                print(f"DEBUG: Panorama result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                try:
+                    result = json.loads(result_text)
+                    print(f"DEBUG: Panorama result parsed successfully", file=sys.stderr, flush=True)
+                    return result
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    return {"result": result_text}
+            return None
     except asyncio.TimeoutError:
         return {"error": "Panorama query timed out"}
     except Exception as e:
@@ -2126,43 +3053,88 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
     print(f"DEBUG: Starting rack location query for device: {device_name}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
 
     try:
-        server_params = get_server_params()
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-
-                tool_arguments = {"device_name": device_name}
-                if format_type:
-                    tool_arguments["format"] = format_type
-                if intent:
-                    tool_arguments["intent"] = intent
-                if conversation_history:
-                    tool_arguments["conversation_history"] = conversation_history
-                
-                tool_result = await session.call_tool(
-                    "get_device_rack_location",
-                    arguments=tool_arguments
+        print(f"DEBUG: Connecting to MCP server for rack location query...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized for rack location query", file=sys.stderr, flush=True)
+            
+            tool_arguments = {"device_name": device_name}
+            if format_type:
+                tool_arguments["format"] = format_type
+            if intent:
+                tool_arguments["intent"] = intent
+            if conversation_history:
+                tool_arguments["conversation_history"] = conversation_history
+            
+            print(f"DEBUG: Calling get_device_rack_location with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            
+            # Detect client type and call appropriately
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
+                try:
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    module_name = type(client_or_session).__module__
+                    is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+            
+            print(f"DEBUG: Client type for rack location: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+            
+            # Try standard format first (safest), then FastMCP format if needed
+            try:
+                # Standard MCP ClientSession format: pass arguments as a dictionary
+                print(f"DEBUG: Trying standard format (arguments=dict) for get_device_rack_location...", file=sys.stderr, flush=True)
+                tool_result = await asyncio.wait_for(
+                    client_or_session.call_tool("get_device_rack_location", arguments=tool_arguments),
+                    timeout=60.0
                 )
-
-                if tool_result and tool_result.content:
-                    result_text = tool_result.content[0].text
-                    print(f"DEBUG: Raw result text length: {len(result_text)}", file=sys.stderr, flush=True)
-                    print(f"DEBUG: Raw result text preview: {result_text[:500]}", file=sys.stderr, flush=True)
-                    try:
-                        result = json.loads(result_text)
-                        print(f"DEBUG: Rack location result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
-                        if isinstance(result, dict) and "ai_analysis" in result:
-                            print(f"DEBUG: AI analysis found in result!", file=sys.stderr, flush=True)
-                            print(f"DEBUG: AI analysis type: {type(result['ai_analysis'])}, content: {str(result['ai_analysis'])[:500]}", file=sys.stderr, flush=True)
-                        else:
-                            print(f"DEBUG: No AI analysis in result. Available keys: {list(result.keys())}", file=sys.stderr, flush=True)
-                        return result
-                    except json.JSONDecodeError:
-                        return {"result": result_text}
-                return None
+                print(f"DEBUG: Standard format succeeded for get_device_rack_location", file=sys.stderr, flush=True)
+            except TypeError as e:
+                error_str = str(e)
+                # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
+                if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
+                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for get_device_rack_location...", file=sys.stderr, flush=True)
+                    tool_result_list = await asyncio.wait_for(
+                        client_or_session.call_tool("get_device_rack_location", **tool_arguments),
+                        timeout=60.0
+                    )
+                    # Convert FastMCP result to standard format
+                    if tool_result_list and len(tool_result_list) > 0:
+                        class FastMCPToolResult:
+                            def __init__(self, results):
+                                self.content = []
+                                for r in results:
+                                    text = r.text if hasattr(r, 'text') else str(r)
+                                    self.content.append(type('Content', (), {'text': text})())
+                        tool_result = FastMCPToolResult(tool_result_list)
+                        print(f"DEBUG: FastMCP format succeeded for get_device_rack_location", file=sys.stderr, flush=True)
+                    else:
+                        tool_result = None
+                else:
+                    # Re-raise if it's a different error
+                    print(f"DEBUG: Error calling get_device_rack_location: {e}", file=sys.stderr, flush=True)
+                    raise
+            
+            if tool_result and tool_result.content:
+                result_text = tool_result.content[0].text
+                print(f"DEBUG: Raw result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                print(f"DEBUG: Raw result text preview: {result_text[:500]}", file=sys.stderr, flush=True)
+                try:
+                    result = json.loads(result_text)
+                    print(f"DEBUG: Rack location result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+                    if isinstance(result, dict) and "ai_analysis" in result:
+                        print(f"DEBUG: AI analysis found in result!", file=sys.stderr, flush=True)
+                        print(f"DEBUG: AI analysis type: {type(result['ai_analysis'])}, content: {str(result['ai_analysis'])[:500]}", file=sys.stderr, flush=True)
+                    else:
+                        print(f"DEBUG: No AI analysis in result. Available keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                    return result
+                except json.JSONDecodeError:
+                    return {"result": result_text}
+            return None
     except asyncio.TimeoutError:
         return {"error": "Rack location lookup timed out. Please try again."}
     except Exception as e:
+        import traceback
+        print(f"DEBUG: Error in execute_rack_location_query: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
         return {"error": f"Error executing rack location lookup: {str(e)}"}
 
 def main():
@@ -2177,8 +3149,8 @@ def main():
     """
     print(f"DEBUG: main() function called", file=sys.stderr, flush=True)
     # Display the main page title
-    st.title("🌐 NetBrain Network Assistant")
-    st.markdown("Ask me about network paths! Try: *'Find path from 10.0.0.1 to 10.0.1.1 using TCP port 80'*")
+    st.title("🌐 Network Management Assistant")
+    st.markdown("Ask me about network paths, device locations, or Panorama address groups! Try: *'Find path from 10.0.0.1 to 10.0.1.1 using TCP port 80'* or *'What address group is 11.0.0.0/24 part of?'*")
     
     # Sidebar for settings
     with st.sidebar:
@@ -2193,10 +3165,21 @@ def main():
         st.markdown("---")
         st.markdown("### 💡 Example Queries")
         st.markdown("""
+        **NetBox Queries:**
+        - *Where is leander-dc-border-leaf1 racked?*
+        - *Show me rack details for A4*
+        - *What is the rack location of leander-dc-leaf6?*
+        
+        **Panorama Address Group Queries:**
+        - *What address group is 11.0.0.0/24 part of?*
+        - *Which address group contains 11.0.0.1?*
+        - *What IPs are in the address group leander_web?*
+        - *List all IPs in address group web_servers*
+        
+        **Network Path Queries:**
         - *Find path from 10.0.0.1 to 10.0.1.1*
         - *Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443*
-        - *Show me the network path from 10.10.3.253 to 172.24.32.225 UDP port 53 with live data*
-        - *Check path from source 10.0.0.254 to destination 10.0.1.254 port 80*
+        - *Show me the network path from 10.10.3.253 to 172.24.32.225 UDP port 53*
         """)
         
         if st.button("🗑️ Clear Chat History"):
@@ -2208,7 +3191,7 @@ def main():
         st.session_state.messages = [
             {
                 "role": "assistant",
-                "content": "Hello! I'm your NetBrain Network Assistant. I can help you query network paths between devices. Just tell me the source and destination IPs, and optionally the protocol and port. For example: *'Find path from 10.0.0.1 to 10.0.1.1'*"
+                "content": "Hello! I'm your Network Management Assistant. I can help you with:\n\n• **NetBox Queries**: Find device rack locations and rack details\n• **Panorama Queries**: Query address groups, find which groups contain an IP, or list IPs in a group\n• **Network Path Queries**: Find network paths between devices\n\nJust ask me a question! For example: *'What address group is 11.0.0.0/24 part of?'* or *'Where is leander-dc-border-leaf1 racked?'*"
             }
         ]
     
@@ -2493,92 +3476,111 @@ def main():
         # NO pattern matching, NO pre-checks - let the LLM use tool descriptions to decide
         async def discover_and_execute_tool():
             try:
-                server_params = get_server_params()
                 print(f"DEBUG: Creating MCP server connection...", file=sys.stderr, flush=True)
-                async with stdio_client(server_params) as (read_stream, write_stream):
-                    print(f"DEBUG: stdio_client context entered, creating session...", file=sys.stderr, flush=True)
+                # Use the same HTTP connection approach as execute_network_query
+                async for client_or_session in get_mcp_session():
+                    print(f"DEBUG: Session created, initializing...", file=sys.stderr, flush=True)
                     try:
-                        async with ClientSession(read_stream, write_stream) as session:
-                            print(f"DEBUG: ClientSession created, initializing...", file=sys.stderr, flush=True)
-                            try:
-                                await session.initialize()
-                                print(f"DEBUG: Session initialized successfully", file=sys.stderr, flush=True)
-                                
-                                # Get available tools and their descriptions
-                                tools_result = await session.list_tools()
+                        print(f"DEBUG: Session initialized successfully", file=sys.stderr, flush=True)
+                        
+                        # Get available tools and their descriptions
+                        # FastMCP Client and standard MCP ClientSession have different APIs
+                        if FASTMCP_CLIENT_AVAILABLE and isinstance(client_or_session, FastMCPClient):
+                            # FastMCP Client - check available methods
+                            if hasattr(client_or_session, 'list_tools'):
+                                tools_result = await client_or_session.list_tools()
+                                # FastMCP might return a list directly
+                                tools = tools_result if isinstance(tools_result, list) else (tools_result.tools if hasattr(tools_result, 'tools') else [])
+                            else:
+                                # Try alternative method or get tools from server info
+                                print(f"DEBUG: FastMCP Client doesn't have list_tools, trying alternative...", file=sys.stderr, flush=True)
+                                tools = []
+                        else:
+                            # Standard MCP ClientSession
+                            tools_result = await client_or_session.list_tools()
+                            if isinstance(tools_result, list):
+                                tools = tools_result
+                            elif hasattr(tools_result, 'tools'):
                                 tools = tools_result.tools if tools_result else []
-                                
-                                print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
-                                
-                                # Build tool descriptions for LLM - format with clear structure
-                                tools_description = "\n\n" + "="*80 + "\n\n".join([
-                                    f"Tool Name: {tool.name}\n\nDescription:\n{tool.description or 'No description'}\n\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
-                                    for tool in tools
-                                ]) + "\n\n" + "="*80
-                                
-                                print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
-                                
-                                # Use production-grade tool selection module
-                                from mcp_client_tool_selection import select_tool_with_llm
-                                
-                                tool_selection_result = await select_tool_with_llm(
-                                    prompt=prompt,
-                                    tools_description=tools_description,
-                                    conversation_history=conversation_history
-                                )
-                                
-                                if not tool_selection_result.get("success"):
-                                    return tool_selection_result
-                                
-                                # Check if clarification is needed
-                                if tool_selection_result.get("needs_clarification", False):
-                                    clarification_question = tool_selection_result.get("clarification_question", "Could you please clarify what you're looking for?")
-                                    print(f"DEBUG: LLM requested clarification: {clarification_question}", file=sys.stderr, flush=True)
-                                    return {
-                                        "success": False,
-                                        "needs_clarification": True,
-                                        "clarification_question": clarification_question
-                                    }
-                                
-                                selected_tool = tool_selection_result.get("tool_name")
-                                tool_params = tool_selection_result.get("parameters", {})
-                                format_type = tool_selection_result.get("format", "table")
-                                intent = tool_selection_result.get("intent")
-                                
-                                # Move intent from parameters to top level if needed (don't pass it to tool)
-                                if "intent" in tool_params:
-                                    intent = tool_params.pop("intent")
-                                
-                                print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
-                                
-                                if not selected_tool:
-                                    print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
-                                    return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
-                                
-                                return {
-                                    "success": True,
-                                    "tool_name": selected_tool,
-                                    "parameters": tool_params,
-                                    "format": format_type,
-                                    "intent": intent
-                                }
-                            except Exception as session_error:
-                                import traceback
-                                error_type = type(session_error).__name__
-                                error_msg = str(session_error)
-                                print(f"DEBUG: Error in session operations: {error_type}: {error_msg}", file=sys.stderr, flush=True)
-                                print(f"DEBUG: Session error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                                
-                                # Provide more helpful error message for connection issues
-                                if "Connection closed" in error_msg or "McpError" in error_type:
-                                    return {"success": False, "error": f"MCP server connection failed. The server may not be running or may have crashed. Error: {error_msg}"}
-                                # Handle JSON parsing errors (server sending malformed JSON)
-                                if "JSON" in error_msg or "json" in error_msg or "EOF while parsing" in error_msg or "json_invalid" in error_msg:
-                                    return {"success": False, "error": f"MCP server sent invalid JSON response. The server may have encountered an internal error. Check mcp_server.log for details. Error: {error_msg}"}
-                                # Handle validation errors
-                                if "validation error" in error_msg.lower() or "JSONRPCMessage" in error_msg:
-                                    return {"success": False, "error": f"MCP protocol error: Server sent malformed response. The server may have crashed. Check mcp_server.log for details. Error: {error_msg}"}
-                                return {"success": False, "error": f"Error during tool discovery: {error_msg}"}
+                            else:
+                                tools = tools_result if tools_result else []
+                        
+                        print(f"DEBUG: Found {len(tools)} available tools", file=sys.stderr, flush=True)
+                        
+                        # Build tool descriptions for LLM - format with clear structure
+                        tool_names_list = [tool.name for tool in tools]
+                        tools_description = f"\n\n**AVAILABLE TOOL NAMES (use EXACTLY as shown): {', '.join(tool_names_list)}**\n\n" + "="*80 + "\n\n".join([
+                            f"Tool Name: {tool.name}\n\nDescription:\n{tool.description or 'No description'}\n\nParameters: {', '.join([p for p in (tool.inputSchema.get('properties', {}).keys() if isinstance(tool.inputSchema, dict) else [])])}"
+                            for tool in tools
+                        ]) + "\n\n" + "="*80
+                        
+                        print(f"DEBUG: Tools description: {tools_description[:500]}...", file=sys.stderr, flush=True)
+                        
+                        # Use production-grade tool selection module
+                        from mcp_client_tool_selection import select_tool_with_llm
+                        
+                        print(f"DEBUG: Calling select_tool_with_llm for prompt: '{prompt}'", file=sys.stderr, flush=True)
+                        tool_selection_result = await select_tool_with_llm(
+                            prompt=prompt,
+                            tools_description=tools_description,
+                            conversation_history=conversation_history
+                        )
+                        
+                        print(f"DEBUG: select_tool_with_llm returned: success={tool_selection_result.get('success')}, needs_clarification={tool_selection_result.get('needs_clarification')}, tool_name={tool_selection_result.get('tool_name')}, error={tool_selection_result.get('error')}", file=sys.stderr, flush=True)
+                        
+                        if not tool_selection_result.get("success"):
+                            print(f"DEBUG: Tool selection failed, returning error result", file=sys.stderr, flush=True)
+                            return tool_selection_result
+                        
+                        # Check if clarification is needed
+                        if tool_selection_result.get("needs_clarification", False):
+                            clarification_question = tool_selection_result.get("clarification_question", "Could you please clarify what you're looking for?")
+                            print(f"DEBUG: LLM requested clarification: {clarification_question}", file=sys.stderr, flush=True)
+                            return {
+                                "success": False,
+                                "needs_clarification": True,
+                                "clarification_question": clarification_question
+                            }
+                        
+                        selected_tool = tool_selection_result.get("tool_name")
+                        tool_params = tool_selection_result.get("parameters", {})
+                        format_type = tool_selection_result.get("format", "table")
+                        intent = tool_selection_result.get("intent")
+                        
+                        # Move intent from parameters to top level if needed (don't pass it to tool)
+                        if "intent" in tool_params:
+                            intent = tool_params.pop("intent")
+                        
+                        print(f"DEBUG: Selected tool: {selected_tool}, params: {tool_params}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
+                        
+                        if not selected_tool:
+                            print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
+                            return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
+                        
+                        return {
+                            "success": True,
+                            "tool_name": selected_tool,
+                            "parameters": tool_params,
+                            "format": format_type,
+                            "intent": intent
+                        }
+                    except Exception as session_error:
+                        import traceback
+                        error_type = type(session_error).__name__
+                        error_msg = str(session_error)
+                        print(f"DEBUG: Error in session operations: {error_type}: {error_msg}", file=sys.stderr, flush=True)
+                        print(f"DEBUG: Session error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                        
+                        # Provide more helpful error message for connection issues
+                        if "Connection closed" in error_msg or "McpError" in error_type:
+                            return {"success": False, "error": f"MCP server connection failed. The server may not be running or may have crashed. Error: {error_msg}"}
+                        # Handle JSON parsing errors (server sending malformed JSON)
+                        if "JSON" in error_msg or "json" in error_msg or "EOF while parsing" in error_msg or "json_invalid" in error_msg:
+                            return {"success": False, "error": f"MCP server sent invalid JSON response. The server may have encountered an internal error. Check mcp_server.log for details. Error: {error_msg}"}
+                        # Handle validation errors
+                        if "validation error" in error_msg.lower() or "JSONRPCMessage" in error_msg:
+                            return {"success": False, "error": f"MCP protocol error: Server sent malformed response. The server may have crashed. Check mcp_server.log for details. Error: {error_msg}"}
+                        return {"success": False, "error": f"Error during tool discovery: {error_msg}"}
                     except Exception as client_error:
                         import traceback
                         error_type = type(client_error).__name__
@@ -2616,6 +3618,8 @@ def main():
                     tool_selection = future.result(timeout=30)
             except RuntimeError:
                 tool_selection = asyncio.run(discover_and_execute_tool())
+            
+            print(f"DEBUG: Tool selection result: success={tool_selection.get('success')}, needs_clarification={tool_selection.get('needs_clarification')}, tool_name={tool_selection.get('tool_name')}, error={tool_selection.get('error')}", file=sys.stderr, flush=True)
             
             # Check if LLM requested clarification
             if tool_selection.get("needs_clarification", False):
@@ -2965,7 +3969,9 @@ def main():
                         is_live = tool_params.get("is_live", 1 if default_live else 0)
                         
                         try:
-                            max_timeout = 120
+                            # Network path queries can take a long time (server polls for task completion)
+                            # Set timeout to 380 seconds to allow for server processing (tool call timeout is 360s)
+                            max_timeout = 380
                             try:
                                 asyncio.get_running_loop()
                                 import concurrent.futures
@@ -2978,7 +3984,7 @@ def main():
                                             )
                                         )
                                     )
-                                    result = future.result(timeout=max_timeout + 5)
+                                    result = future.result(timeout=max_timeout + 10)  # Add buffer for thread overhead
                             except RuntimeError:
                                 result = asyncio.run(
                                     asyncio.wait_for(
@@ -2986,6 +3992,20 @@ def main():
                                         timeout=max_timeout
                                     )
                                 )
+                            
+                            # Unwrap result if it's wrapped in {"result": ...}
+                            if isinstance(result, dict) and "result" in result and len(result) == 1:
+                                # Check if the inner result is a string that might be JSON
+                                inner_result = result["result"]
+                                if isinstance(inner_result, str):
+                                    try:
+                                        import json
+                                        unwrapped = json.loads(inner_result)
+                                        print(f"DEBUG: Unwrapped result from string, keys: {list(unwrapped.keys()) if isinstance(unwrapped, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                                        result = unwrapped
+                                    except (json.JSONDecodeError, TypeError):
+                                        # If it's not JSON, keep the wrapped version
+                                        pass
                             
                             with st.chat_message("assistant"):
                                 display_result_chat(result, st.container())
@@ -3038,6 +4058,86 @@ def main():
                             result = asyncio.run(
                                 asyncio.wait_for(
                                     execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
+                                    timeout=max_timeout
+                                )
+                            )
+                        except Exception as async_error:
+                            print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
+                            import traceback
+                            print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                            result = {"error": f"Error executing query: {str(async_error)}"}
+                        
+                        # Display result - show LLM summary in table format
+                        with st.chat_message("assistant"):
+                            if isinstance(result, dict) and "error" in result:
+                                st.error(f"❌ {result['error']}")
+                            elif isinstance(result, dict) and "ai_analysis" in result:
+                                # Display LLM summary (should be in table format)
+                                ai_analysis = result["ai_analysis"]
+                                if isinstance(ai_analysis, dict):
+                                    summary = ai_analysis.get("summary")
+                                    if summary:
+                                        st.markdown(summary)
+                                elif isinstance(ai_analysis, str):
+                                    st.markdown(ai_analysis)
+                            else:
+                                # Fallback if no LLM analysis
+                                st.info("Query completed. No results found or analysis unavailable.")
+                        
+                        # Store result for persistence
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": result
+                        })
+                        return
+                    except asyncio.TimeoutError:
+                        error_msg = "⏱️ Panorama query timed out. Please try again."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                    except Exception as e:
+                        error_msg = f"An error occurred: {str(e)}"
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                elif selected_tool == "query_panorama_address_group_members":
+                    # Handle Panorama address group members query
+                    address_group_name = tool_params.get("address_group_name", "").strip()
+                    device_group = tool_params.get("device_group")
+                    vsys = tool_params.get("vsys", "vsys1")
+                    
+                    if not address_group_name:
+                        error_msg = "Address group name not found in query. Please specify an address group name (e.g., 'what other IPs are in the address group leander_web')."
+                        with st.chat_message("assistant"):
+                            st.error(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                    
+                    status_msg = f"🔎 Querying Panorama for members of address group **{address_group_name}**..."
+                    with st.chat_message("assistant"):
+                        st.info(status_msg)
+                    
+                    try:
+                        max_timeout = 60
+                        try:
+                            asyncio.get_running_loop()
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(
+                                    lambda: asyncio.run(
+                                        asyncio.wait_for(
+                                            execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
+                                            timeout=max_timeout
+                                        )
+                                    )
+                                )
+                                result = future.result(timeout=max_timeout + 5)
+                        except RuntimeError:
+                            result = asyncio.run(
+                                asyncio.wait_for(
+                                    execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
                                     timeout=max_timeout
                                 )
                             )
