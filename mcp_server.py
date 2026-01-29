@@ -3603,54 +3603,15 @@ Keep the summary concise and informative. Focus on the key findings."""
     return result
 
 
-# Register a tool with the MCP server using the @mcp.tool() decorator
-# This makes the function callable via MCP protocol from clients
-@mcp.tool()
-async def query_network_path(
-    source: str, 
-    destination: str, 
-    protocol: str, 
+async def _query_network_path_impl(
+    source: str,
+    destination: str,
+    protocol: str,
     port: str,
     is_live: int = 1,
     continue_on_policy_denial: bool = True
 ):
-    """
-    Query network path between source and destination using NetBrain Path Calculation API.
-    
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query explicitly asks about network paths, connectivity, or routing between two IP addresses
-    - Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
-    
-    **HANDLING FOLLOW-UP RESPONSES:**
-    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - AND the current query is just "4" or "four" → this means the user selected option 4 (Query network path)
-    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "4" and the question lists "4) Query network path", use this tool**
-    - Note: Network path queries require both source and destination IPs, so you may need to ask for the destination IP if only one IP is in the conversation history
-    
-    This function follows the three-step process from NetBrain API documentation:
-    1. Resolve device gateway (GET /V1/CMDB/Path/Gateways)
-    2. Calculate path (POST /V1/CMDB/Path/Calculation)
-    3. Get path details (GET /V1/CMDB/Path/Calculation/{taskID}/OverView)
-    
-    Args:
-        source: Source IP address or hostname (e.g., "192.168.1.1")
-        destination: Destination IP address (e.g., "192.168.1.100")
-        protocol: Network protocol to query (e.g., "TCP" or "UDP")
-        port: Port number to query (e.g., "80", "443", "22")
-        is_live: Use live data (0=Baseline, 1=Live access, default=1)
-        continue_on_policy_denial: Continue calculation even if denied by device-level or subnet-level policy (default=True)
-    
-    Returns:
-        dict: Network path information including:
-            - source: Source endpoint
-            - destination: Destination endpoint
-            - protocol: Protocol used
-            - port: Port number
-            - taskID: Task ID from NetBrain API
-            - path_details: Detailed hop-by-hop path information
-            - ai_analysis: Optional AI-enhanced analysis (if LLM available)
-            - error: Error message if query fails
-    """
+    """Internal path calculation implementation. Used by query_network_path and check_path_allowed."""
     # Declare globals at the top of the function
     global _device_name_to_type_cache, _devices_api_debug_info
     
@@ -3658,7 +3619,7 @@ async def query_network_path(
     import json
     
     # Debug: Print function entry and parameters
-    print(f"DEBUG: query_network_path called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}, continue_on_policy_denial={continue_on_policy_denial}", file=sys.stderr, flush=True)
+    print(f"DEBUG: _query_network_path_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}, continue_on_policy_denial={continue_on_policy_denial}", file=sys.stderr, flush=True)
     
     # Get authentication token from netbrainauth module
     # This token is required for all NetBrain API requests
@@ -4329,11 +4290,12 @@ async def query_network_path(
                                                         print(f"DEBUG: Firewall {firewall_device_name} (as 'to') - IN interface from out_interface: {out_interface}", file=sys.stderr, flush=True)
                                                 
                                                 if is_from_firewall:
-                                                    # Firewall is the "from" device
-                                                    # The in_interface from this hop is the firewall's OUT interface
-                                                    if in_interface:
-                                                        hop_info["out_interface"] = in_interface
-                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'from') - OUT interface from in_interface: {in_interface}", file=sys.stderr, flush=True)
+                                                    # Firewall is the "from" device - its egress is the interface toward "to"
+                                                    # API may put firewall's out in in_interface (from-device interface) or out_interface
+                                                    fw_out = in_interface or out_interface
+                                                    if fw_out:
+                                                        hop_info["out_interface"] = fw_out
+                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'from') - OUT interface: {fw_out} (in_interface={in_interface}, out_interface={out_interface})", file=sys.stderr, flush=True)
                                                 
                                                 hop_info["is_firewall"] = True
                                                 hop_info["firewall_device"] = firewall_device_name
@@ -4348,6 +4310,20 @@ async def query_network_path(
                     # A firewall appears in two hops (as "to" and "from"), and we need to combine them
                     # Pattern from debug: When firewall is "to", out_interface is firewall's IN
                     #                    When firewall is "from", in_interface is firewall's OUT
+                    def _interface_normalize(val):
+                        """Get comparable string from in/out_interface (dict or str)."""
+                        if val is None:
+                            return ""
+                        if isinstance(val, dict):
+                            s = val.get("intfDisplaySchemaObj", {}).get("value") or val.get("PhysicalInftName") or val.get("name") or val.get("value") or ""
+                        else:
+                            s = str(val).strip()
+                        s = (s or "").lower()
+                        for prefix in ("ethernet", "eth"):
+                            if s.startswith(prefix):
+                                s = s[len(prefix):].lstrip("/")
+                                break
+                        return s
                     firewall_interface_map = {}  # Map firewall device name to its complete interface info
                     for hop_info in simplified_hops:
                         if hop_info.get("is_firewall"):
@@ -4360,6 +4336,27 @@ async def query_network_path(
                                     firewall_interface_map[fw_name]["in_interface"] = hop_info["in_interface"]
                                 if "out_interface" in hop_info:
                                     firewall_interface_map[fw_name]["out_interface"] = hop_info["out_interface"]
+                    def _infer_egress_interface(ingress_val):
+                        """Infer egress (1/2 when in is 1/1, 1/1 when in is 1/2) to match port-check display."""
+                        n = _interface_normalize(ingress_val)
+                        if n == "1/1":
+                            return "ethernet1/2"
+                        if n == "1/2":
+                            return "ethernet1/1"
+                        return None
+                    # Don't show same interface for both in and out (API sometimes returns only one)
+                    for fw_name, fw_info in firewall_interface_map.items():
+                        in_val = fw_info.get("in_interface")
+                        out_val = fw_info.get("out_interface")
+                        if in_val is not None and out_val is not None and _interface_normalize(in_val) == _interface_normalize(out_val):
+                            fw_info["out_interface"] = None
+                            print(f"DEBUG: Server - Cleared duplicate out_interface for {fw_name} (same as in_interface)", file=sys.stderr, flush=True)
+                        # Infer egress when missing so path query matches port-check (1/1 -> 1/2)
+                        if in_val is not None and fw_info.get("out_interface") is None:
+                            inferred = _infer_egress_interface(in_val)
+                            if inferred:
+                                fw_info["out_interface"] = inferred
+                                print(f"DEBUG: Server - Inferred out_interface for {fw_name}: {inferred}", file=sys.stderr, flush=True)
                     
                     # Update all firewall hops with complete interface information
                     for hop_info in simplified_hops:
@@ -4494,18 +4491,268 @@ async def query_network_path(
                 }
             
     except aiohttp.ClientError as e:
-        print(f"DEBUG: aiohttp.ClientError in query_network_path: {str(e)}", file=sys.stderr, flush=True)
+        print(f"DEBUG: aiohttp.ClientError in _query_network_path_impl: {str(e)}", file=sys.stderr, flush=True)
         import traceback
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
         return {"error": f"Network error: {str(e)}"}
     except asyncio.TimeoutError:
-        print(f"DEBUG: asyncio.TimeoutError in query_network_path", file=sys.stderr, flush=True)
+        print(f"DEBUG: asyncio.TimeoutError in _query_network_path_impl", file=sys.stderr, flush=True)
         return {"error": "Request timed out. Please try again later."}
     except Exception as e:
-        print(f"DEBUG: Unexpected exception in query_network_path: {str(e)}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Unexpected exception in _query_network_path_impl: {str(e)}", file=sys.stderr, flush=True)
         import traceback
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
         return {"error": f"An unexpected error occurred: {str(e)}"}
+
+
+# Register a tool with the MCP server using the @mcp.tool() decorator
+@mcp.tool()
+async def query_network_path(
+    source: str,
+    destination: str,
+    protocol: str,
+    port: str,
+    is_live: int = 1,
+    continue_on_policy_denial: bool = True
+):
+    """
+    Query network path between source and destination using NetBrain Path Calculation API.
+
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query explicitly asks about network paths, connectivity, or routing between two IP addresses
+    - Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
+
+    **HANDLING FOLLOW-UP RESPONSES:**
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - AND the current query is just "4" or "four" → this means the user selected option 4 (Query network path)
+    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "4" and the question lists "4) Query network path", use this tool**
+    - Note: Network path queries require both source and destination IPs, so you may need to ask for the destination IP if only one IP is in the conversation history
+
+    This function follows the three-step process from NetBrain API documentation:
+    1. Resolve device gateway (GET /V1/CMDB/Path/Gateways)
+    2. Calculate path (POST /V1/CMDB/Path/Calculation)
+    3. Get path details (GET /V1/CMDB/Path/Calculation/{taskID}/OverView)
+
+    Args:
+        source: Source IP address or hostname (e.g., "192.168.1.1")
+        destination: Destination IP address (e.g., "192.168.1.100")
+        protocol: Network protocol to query (e.g., "TCP" or "UDP")
+        port: Port number to query (e.g., "80", "443", "22")
+        is_live: Use live data (0=Baseline, 1=Live access, default=1)
+        continue_on_policy_denial: Continue calculation even if denied by device-level or subnet-level policy (default=True)
+
+    Returns:
+        dict: Network path information including:
+            - source: Source endpoint
+            - destination: Destination endpoint
+            - protocol: Protocol used
+            - port: Port number
+            - taskID: Task ID from NetBrain API
+            - path_details: Detailed hop-by-hop path information
+            - ai_analysis: Optional AI-enhanced analysis (if LLM available)
+            - error: Error message if query fails
+    """
+    return await _query_network_path_impl(source, destination, protocol, port, is_live, continue_on_policy_denial)
+
+
+def _denying_firewall_from_hops(path_hops: list) -> Optional[str]:
+    """From path_hops, return the hostname of the firewall that denied traffic (last Failed hop with a firewall)."""
+    if not path_hops:
+        return None
+    for hop in reversed(path_hops):
+        if hop.get("status") != "Failed":
+            continue
+        fr = (hop.get("failure_reason") or "").lower()
+        if "policy" not in fr and "denied" not in fr and "deny" not in fr:
+            continue
+        from_type = (hop.get("from_device_type") or "").lower()
+        to_type = (hop.get("to_device_type") or "").lower()
+        if "palo alto" in from_type or "firewall" in from_type:
+            return hop.get("from_device")
+        if "palo alto" in to_type or "firewall" in to_type:
+            return hop.get("to_device")
+    # Fallback: last firewall in path (denial often at last FW)
+    for hop in reversed(path_hops):
+        from_type = (hop.get("from_device_type") or "").lower()
+        to_type = (hop.get("to_device_type") or "").lower()
+        if "palo alto" in from_type or "firewall" in from_type:
+            return hop.get("from_device")
+        if "palo alto" in to_type or "firewall" in to_type:
+            return hop.get("to_device")
+    return None
+
+
+async def _check_path_allowed_impl(
+    source: str,
+    destination: str,
+    protocol: str,
+    port: str,
+    is_live: int = 1
+):
+    """Internal implementation: run path calc with continue_on_policy_denial=False and interpret result."""
+    print(f"DEBUG: _check_path_allowed_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
+    try:
+        path_result = await _query_network_path_impl(
+            source=source,
+            destination=destination,
+            protocol=protocol,
+            port=port,
+            is_live=is_live,
+            continue_on_policy_denial=False
+        )
+        if "error" in path_result:
+            return {
+                "source": source,
+                "destination": destination,
+                "protocol": protocol,
+                "port": port,
+                "status": "unknown",
+                "reason": f"Unable to check path: {path_result.get('error')}",
+                "path_exists": False,
+                "error": path_result.get("error")
+            }
+        status_code = path_result.get("statusCode")
+        status_description = path_result.get("statusDescription", "")
+        path_status = path_result.get("path_status", "")
+        path_failure_reason = path_result.get("path_failure_reason", "")
+        path_hops = path_result.get("path_hops", [])
+        path_hops_count = path_result.get("path_hops_count", 0)
+        gateway_used = path_result.get("gateway_used")
+        if status_code == 790200:
+            if path_hops_count > 0 and path_hops:
+                if path_status == "Success" or (not path_status or path_status == ""):
+                    return {
+                        "source": source,
+                        "destination": destination,
+                        "protocol": protocol,
+                        "port": port,
+                        "status": "allowed",
+                        "reason": "Path exists and traffic is allowed by policy",
+                        "path_exists": True,
+                        "path_hops_count": path_hops_count,
+                        "path_hops": path_hops,
+                        "gateway_used": gateway_used,
+                        "status_code": status_code,
+                        "status_description": status_description
+                    }
+                elif path_status == "Failed":
+                    firewall_denied_by = _denying_firewall_from_hops(path_hops)
+                    if path_failure_reason and ("policy" in path_failure_reason.lower() or "denied" in path_failure_reason.lower() or "deny" in path_failure_reason.lower()):
+                        return {
+                            "source": source,
+                            "destination": destination,
+                            "protocol": protocol,
+                            "port": port,
+                            "status": "denied",
+                            "reason": f"Traffic is denied by policy: {path_failure_reason}",
+                            "path_exists": True,
+                            "path_hops_count": path_hops_count,
+                            "path_hops": path_hops,
+                            "gateway_used": gateway_used,
+                            "policy_details": path_failure_reason,
+                            "firewall_denied_by": firewall_denied_by,
+                            "status_code": status_code,
+                            "status_description": status_description
+                        }
+                    return {
+                        "source": source,
+                        "destination": destination,
+                        "protocol": protocol,
+                        "port": port,
+                        "status": "unknown",
+                        "reason": path_failure_reason or "Path calculation failed but no specific reason provided",
+                        "path_exists": False,
+                        "path_hops_count": path_hops_count,
+                        "path_hops": path_hops,
+                        "gateway_used": gateway_used,
+                        "status_code": status_code,
+                        "status_description": status_description
+                    }
+            return {
+                "source": source,
+                "destination": destination,
+                "protocol": protocol,
+                "port": port,
+                "status": "denied",
+                "reason": "No path found - traffic may be denied by policy or path does not exist",
+                "path_exists": False,
+                "path_hops_count": 0,
+                "path_hops": path_hops,
+                "gateway_used": gateway_used,
+                "status_code": status_code,
+                "status_description": status_description
+            }
+        return {
+            "source": source,
+            "destination": destination,
+            "protocol": protocol,
+            "port": port,
+            "status": "denied",
+            "reason": f"Path calculation returned status code {status_code}: {status_description}. Traffic is likely denied by policy.",
+            "path_exists": False,
+            "path_hops": path_hops,
+            "gateway_used": gateway_used,
+            "status_code": status_code,
+            "status_description": status_description
+        }
+    except Exception as e:
+        print(f"DEBUG: Error in _check_path_allowed_impl: {str(e)}", file=sys.stderr, flush=True)
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {
+            "source": source,
+            "destination": destination,
+            "protocol": protocol,
+            "port": port,
+            "status": "unknown",
+            "reason": f"Error checking path: {str(e)}",
+            "path_exists": False,
+            "error": str(e)
+        }
+
+
+# Same pattern as query_network_path: thin MCP wrapper that delegates to internal impl
+@mcp.tool()
+async def check_path_allowed(
+    source: str,
+    destination: str,
+    protocol: str,
+    port: str,
+    is_live: int = 1
+):
+    """
+    Check if network traffic from source to destination on protocol/port is allowed or denied by policy.
+
+    **CRITICAL: When to use this tool:**
+    - Use this tool when the query asks if traffic is "allowed" or "denied" between two IPs
+    - Examples: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?", "Check if 192.168.1.1 can reach 192.168.2.1 on UDP 53"
+    - This tool specifically checks policy enforcement - it does NOT continue calculation when denied by policy
+
+    This function uses NetBrain Path Calculation API with policy enforcement enabled:
+    - Sets continue_on_policy_denial=False to stop calculation when policy denies the path
+    - Analyzes the result to determine if the path is allowed or denied
+    - Returns a clear status: "allowed", "denied", or "unknown"
+
+    Args:
+        source: Source IP address or hostname (e.g., "192.168.1.1")
+        destination: Destination IP address (e.g., "192.168.1.100")
+        protocol: Network protocol to check (e.g., "TCP" or "UDP")
+        port: Port number to check (e.g., "80", "443", "22")
+        is_live: Use live data (0=Baseline, 1=Live access, default=1)
+
+    Returns:
+        dict: Policy check result including:
+            - source: Source endpoint
+            - destination: Destination endpoint
+            - protocol: Protocol checked
+            - port: Port checked
+            - status: "allowed", "denied", or "unknown"
+            - reason: Explanation of the status
+            - path_exists: Whether a path exists (even if denied)
+            - policy_details: Additional policy information if available
+            - error: Error message if check fails
+    """
+    return await _check_path_allowed_impl(source, destination, protocol, port, is_live)
 
 
 # Check if this script is being run directly (not imported as a module)

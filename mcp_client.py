@@ -202,6 +202,37 @@ def extract_interface_name(interface_data):
     # If we can't extract it, return None
     return None
 
+
+def _normalize_interface_for_compare(name):
+    """
+    Normalize interface name for comparison so 'ethernet1/1' and '1/1' are treated as the same.
+    """
+    if not name or not isinstance(name, str):
+        return ""
+    s = name.strip().lower()
+    for prefix in ("ethernet", "eth"):
+        if s.startswith(prefix):
+            s = s[len(prefix):].lstrip("/")
+            break
+    return s or name.strip().lower()
+
+
+def infer_egress_interface(ingress_name):
+    """
+    Infer the common egress interface when API only returns ingress (e.g. 1/1 -> 1/2).
+    Matches port-check behavior: 1/1 is typically inside, 1/2 outside.
+    Returns the pair interface (ethernet1/1 <-> ethernet1/2) or None if not inferrable.
+    """
+    if not ingress_name or not isinstance(ingress_name, str):
+        return None
+    n = _normalize_interface_for_compare(ingress_name)
+    if n == "1/1":
+        return ingress_name.replace("1/2", "1/1").replace("1/1", "1/2")  # 1/1 -> 1/2, preserve ethernet
+    if n == "1/2":
+        return ingress_name.replace("1/1", "1/2").replace("1/2", "1/1")  # 1/2 -> 1/1
+    return None
+
+
 def get_device_icon_path(device_type: str) -> Optional[str]:
     """
     Get icon image file path for device type based on NetBrain UI conventions.
@@ -469,12 +500,18 @@ def create_path_graph(path_hops, source, destination):
                 
                 # Server logic: When firewall is "from", in_interface is actually the firewall's OUT interface
                 # When firewall is "to", out_interface is actually the firewall's IN interface
-                # So we need to map them correctly
+                # Match port-check: when we only have one interface, infer egress (1/1 <-> 1/2)
                 if is_firewall_from and in_intf_name and not out_intf_name:
-                    # Firewall is "from" device - in_interface is actually the OUT interface
-                    out_intf_name = in_intf_name
-                    in_intf_name = None  # Clear in since we used it for out
-                    print(f"DEBUG: Graph - Firewall {firewall_device} is 'from' device, using in_interface as out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                    # Firewall is "from" - infer egress so we don't show same as ingress
+                    out_intf_name = infer_egress_interface(in_intf_name) or in_intf_name
+                    if out_intf_name != in_intf_name:
+                        print(f"DEBUG: Graph - Firewall {firewall_device} is 'from' device, inferred out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                    else:
+                        print(f"DEBUG: Graph - Firewall {firewall_device} is 'from' device, using in_interface as out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                elif is_firewall_from and in_intf_name and out_intf_name and _normalize_interface_for_compare(in_intf_name) == _normalize_interface_for_compare(out_intf_name):
+                    # Same in/out from API - infer distinct egress (match port-check display)
+                    out_intf_name = infer_egress_interface(in_intf_name) or out_intf_name
+                    print(f"DEBUG: Graph - Firewall {firewall_device} inferred distinct out_interface: {out_intf_name}", file=sys.stderr, flush=True)
                 elif is_firewall_to and out_intf_name and not in_intf_name:
                     # Firewall is "to" device - out_interface is actually the IN interface
                     in_intf_name = out_intf_name
@@ -513,6 +550,15 @@ def create_path_graph(path_hops, source, destination):
                     device_groups[firewall_device] = device_group  # Track for all devices
                     print(f"DEBUG: Graph - Set device_group for {firewall_device} to {device_group}", file=sys.stderr, flush=True)
         
+        # Infer out_zone when we have out interface (e.g. inferred) but no out_zone - match port-check (inside <-> outside)
+        for _fw, ifaces in firewall_interfaces.items():
+            if ifaces.get('out') and not ifaces.get('out_zone') and ifaces.get('in_zone'):
+                in_zl = (ifaces['in_zone'] or "").strip().lower()
+                if in_zl == "inside":
+                    ifaces['out_zone'] = "outside"
+                elif in_zl == "outside":
+                    ifaces['out_zone'] = "inside"
+        
         # Add valid devices
         if from_dev and from_dev != 'Unknown':
             devices.add(from_dev)
@@ -536,8 +582,11 @@ def create_path_graph(path_hops, source, destination):
                 }))
             print(f"DEBUG: Added edge: {from_dev} -> {to_dev} (status: {status})", file=sys.stderr, flush=True)
         elif from_dev and (not to_dev or to_dev in [None, 'None', 'null', '']):
-            # Last hop - connect to destination if available
+            # Last hop - connect to destination if available (use gray for incomplete/failed hops)
             if destination:
+                edge_color = 'gray'
+                edge_style = 'dashed'
+                edge_width = 1.0
                 edges.append((from_dev, destination, {
                     'color': edge_color,
                     'style': edge_style,
@@ -1591,6 +1640,74 @@ def extract_hops_from_path_details(path_details):
         print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
         return None
 
+def display_path_allowed_result(result, container):
+    """
+    Display path allowed/denied check result in a user-friendly format.
+    Includes map visualization (same as path query) and firewall hostname when traffic is denied.
+    
+    Args:
+        result: Dictionary containing the check result from check_path_allowed tool
+        container: Streamlit container to display results in
+    """
+    if not result:
+        container.error("❌ No result received from path allowed check.")
+        return
+    
+    if "error" in result:
+        container.error(f"❌ Error: {result['error']}")
+        return
+    
+    # Extract key information
+    source = result.get("source", "Unknown")
+    destination = result.get("destination", "Unknown")
+    protocol = result.get("protocol", "Unknown")
+    port = result.get("port", "Unknown")
+    status = result.get("status", "unknown")
+    reason = result.get("reason", "No reason provided")
+    path_exists = result.get("path_exists", False)
+    path_hops = result.get("path_hops", [])
+    firewall_denied_by = result.get("firewall_denied_by")
+    
+    # Display main status
+    if status == "allowed":
+        container.success(f"✅ **Traffic is ALLOWED**")
+        container.info(f"**Path:** {source} → {destination} on {protocol}/{port}")
+        container.info(f"**Reason:** {reason}")
+        if path_exists:
+            path_hops_count = result.get("path_hops_count", 0)
+            if path_hops_count > 0:
+                container.info(f"**Path Hops:** {path_hops_count} hops found")
+    elif status == "denied":
+        container.error(f"❌ **Traffic is DENIED**")
+        container.info(f"**Path:** {source} → {destination} on {protocol}/{port}")
+        container.info(f"**Reason:** {reason}")
+        if firewall_denied_by:
+            container.warning(f"**Firewall that denied traffic:** {firewall_denied_by}")
+        policy_details = result.get("policy_details")
+        if policy_details:
+            container.warning(f"**Policy Details:** {policy_details}")
+    else:
+        container.warning(f"⚠️ **Status: UNKNOWN**")
+        container.info(f"**Path:** {source} → {destination} on {protocol}/{port}")
+        container.info(f"**Reason:** {reason}")
+    
+    # Map visualization (same as path query) when path_hops are available
+    if path_hops and len(path_hops) > 0:
+        try:
+            graph_fig = create_path_graph(path_hops, source, destination)
+            if graph_fig:
+                container.markdown("### Network Path Graph")
+                container.pyplot(graph_fig)
+                plt.close(graph_fig)
+        except Exception as e:
+            container.warning(f"Could not generate path graph: {str(e)}")
+    
+    # Show additional details if available (omit internal status code)
+    status_description = result.get("status_description")
+    if status_description and status_description != "Success.":
+        container.text(f"Status: {status_description}")
+
+
 def display_result_chat(result, container):
     """
     Display graph visualization and firewall information from network path query result.
@@ -1733,22 +1850,32 @@ def display_result_chat(result, container):
                     in_intf_name = extract_interface_name(in_interface)
                     out_intf_name = extract_interface_name(out_interface)
                     
-                    # Server logic: When firewall is "from", in_interface is actually the firewall's OUT interface
-                    # When firewall is "to", out_interface is actually the firewall's IN interface
-                    # Match the server's mapping logic (same as graph code)
+                    # Server logic: When firewall is "from", in_interface (or out_interface) is the firewall's OUT
+                    # When firewall is "to", out_interface is the firewall's IN
                     if from_dev == firewall_device:
-                        # Firewall is "from" device - in_interface is actually the OUT interface
+                        # Firewall is "from" - prefer API out_interface; if missing/same, infer egress (1/1 <-> 1/2) to match port-check
+                        if not out_intf_name:
+                            out_intf_name = extract_interface_name(hop.get("out_interface")) or infer_egress_interface(in_intf_name)
                         if in_intf_name and not out_intf_name:
-                            out_intf_name = in_intf_name
-                            in_intf_name = None  # Don't use in_interface for IN when firewall is "from"
-                            print(f"DEBUG: Table - Firewall {firewall_device} is 'from' device, mapping in_interface to out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                            out_intf_name = infer_egress_interface(in_intf_name) or in_intf_name
+                            if out_intf_name != in_intf_name:
+                                in_intf_name = in_intf_name  # keep in as ingress
+                            else:
+                                in_intf_name = None
+                        elif in_intf_name and out_intf_name and _normalize_interface_for_compare(in_intf_name) == _normalize_interface_for_compare(out_intf_name):
+                            out_intf_name = infer_egress_interface(in_intf_name) or out_intf_name  # infer distinct egress
+                        if out_intf_name:
+                            print(f"DEBUG: Table - Firewall {firewall_device} is 'from' device, out_interface: {out_intf_name}", file=sys.stderr, flush=True)
                     elif to_dev == firewall_device:
-                        # Firewall is "to" device - out_interface is actually the IN interface
+                        # Firewall is "to" device - out_interface from hop is the firewall's IN
                         if out_intf_name and not in_intf_name:
                             in_intf_name = out_intf_name
-                            out_intf_name = None  # Don't use out_interface for OUT when firewall is "to"
+                            out_intf_name = None
                             print(f"DEBUG: Table - Firewall {firewall_device} is 'to' device, mapping out_interface to in_interface: {in_intf_name}", file=sys.stderr, flush=True)
                     
+                    # Don't use same interface for both in and out - infer egress (1/1 <-> 1/2) to match port-check
+                    if in_intf_name and out_intf_name and _normalize_interface_for_compare(in_intf_name) == _normalize_interface_for_compare(out_intf_name):
+                        out_intf_name = infer_egress_interface(in_intf_name) or None
                     firewalls_found[firewall_device] = {
                         'in_interface': in_intf_name,
                         'out_interface': out_intf_name,
@@ -1773,11 +1900,14 @@ def display_result_chat(result, container):
                     from_dev = hop.get('from_device', '')
                     to_dev = hop.get('to_device', '')
                     if from_dev == firewall_device:
-                        # Firewall is "from" device - in_interface is actually the OUT interface
+                        # Firewall is "from" - infer egress when missing so table matches port-check
                         if in_intf_name and not out_intf_name:
-                            out_intf_name = in_intf_name
-                            in_intf_name = None  # Don't use in_interface for IN when firewall is "from"
-                            print(f"DEBUG: Table merge - Firewall {firewall_device} is 'from' device, mapping in_interface to out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                            out_intf_name = infer_egress_interface(in_intf_name) or in_intf_name
+                            if out_intf_name != in_intf_name:
+                                print(f"DEBUG: Table merge - Firewall {firewall_device} is 'from' device, inferred out_interface: {out_intf_name}", file=sys.stderr, flush=True)
+                            else:
+                                in_intf_name = None
+                                print(f"DEBUG: Table merge - Firewall {firewall_device} is 'from' device, mapping in_interface to out_interface: {out_intf_name}", file=sys.stderr, flush=True)
                     elif to_dev == firewall_device:
                         # Firewall is "to" device - out_interface is actually the IN interface
                         if out_intf_name and not in_intf_name:
@@ -1803,13 +1933,30 @@ def display_result_chat(result, container):
                             firewalls_found[firewall_device]['in_interface'] = in_intf_name
                             print(f"DEBUG: Table - Set in_interface for {firewall_device} to {in_intf_name}", file=sys.stderr, flush=True)
                     if out_intf_name:
-                        # Only update if we don't have a value yet
+                        # Only update if we don't have a value yet and it's not the same as in_interface
+                        existing_in = firewalls_found[firewall_device].get('in_interface')
                         if not firewalls_found[firewall_device]['out_interface']:
-                            firewalls_found[firewall_device]['out_interface'] = out_intf_name
-                            print(f"DEBUG: Table - Set out_interface for {firewall_device} to {out_intf_name}", file=sys.stderr, flush=True)
+                            if not existing_in or _normalize_interface_for_compare(existing_in) != _normalize_interface_for_compare(out_intf_name):
+                                firewalls_found[firewall_device]['out_interface'] = out_intf_name
+                                print(f"DEBUG: Table - Set out_interface for {firewall_device} to {out_intf_name}", file=sys.stderr, flush=True)
+                            else:
+                                # Infer egress when same as in so table matches port-check
+                                inferred_out = infer_egress_interface(existing_in)
+                                if inferred_out:
+                                    firewalls_found[firewall_device]['out_interface'] = inferred_out
+                                    print(f"DEBUG: Table - Set out_interface for {firewall_device} to inferred {inferred_out}", file=sys.stderr, flush=True)
+                                else:
+                                    print(f"DEBUG: Table - Skipping out_interface for {firewall_device} (same as in_interface: {out_intf_name})", file=sys.stderr, flush=True)
                     else:
-                        # Debug when out_interface extraction fails
-                        print(f"DEBUG: Table - Failed to extract out_interface for {firewall_device}. Raw value: {out_interface}", file=sys.stderr, flush=True)
+                        # When out_interface missing, try inferring from in_interface (match port-check)
+                        existing_in = firewalls_found[firewall_device].get('in_interface')
+                        if existing_in and not firewalls_found[firewall_device]['out_interface']:
+                            inferred_out = infer_egress_interface(existing_in)
+                            if inferred_out:
+                                firewalls_found[firewall_device]['out_interface'] = inferred_out
+                                print(f"DEBUG: Table - Set out_interface for {firewall_device} to inferred {inferred_out}", file=sys.stderr, flush=True)
+                        if not firewalls_found[firewall_device].get('out_interface'):
+                            print(f"DEBUG: Table - Failed to extract out_interface for {firewall_device}. Raw value: {out_interface}", file=sys.stderr, flush=True)
                     # Always update zones if available (they might come from different hops)
                     if in_zone:
                         firewalls_found[firewall_device]['in_zone'] = in_zone
@@ -1890,29 +2037,33 @@ def display_result_chat(result, container):
                 # Same logic for both source and destination - just use the stored values
                 source_intf = fw_info.get('in_interface')  # Already extracted
                 dest_intf = fw_info.get('out_interface')   # Already extracted
-                
-                # Get zones and device group
+                # Never show same interface for both source and destination - use inferred egress (match port-check)
+                if source_intf and dest_intf and _normalize_interface_for_compare(source_intf) == _normalize_interface_for_compare(dest_intf):
+                    dest_intf = infer_egress_interface(source_intf) or None
+                if source_intf and not dest_intf:
+                    dest_intf = infer_egress_interface(source_intf)
+                # Get zones: source zone = zone for source interface (e.g. 1/1 → inside), destination zone = zone for dest interface (e.g. 1/2 → outside)
                 in_zone = fw_info.get('in_zone')
                 out_zone = fw_info.get('out_zone')
                 device_group = fw_info.get('device_group', '')
-                
-                # Zone display: In zone → Out zone when both present
-                zone_display = '-'
-                if in_zone and out_zone:
-                    zone_display = f"{in_zone} → {out_zone}" if in_zone != out_zone else str(in_zone)
-                elif in_zone:
-                    zone_display = str(in_zone)
-                elif out_zone:
-                    zone_display = str(out_zone)
-                
+                source_zone_display = (in_zone or '-').strip() if in_zone else '-'
+                dest_zone_display = (out_zone or '-').strip() if out_zone else '-'
+                # When destination was inferred and out_zone missing, infer zone (inside <-> outside) to match port-check
+                if dest_intf and not out_zone and in_zone:
+                    in_zl = (in_zone or "").strip().lower()
+                    if in_zl == "inside":
+                        dest_zone_display = "outside"
+                    elif in_zl == "outside":
+                        dest_zone_display = "inside"
                 dg_display = (device_group or '-').strip() if device_group else '-'
                 
-                # Add row to table (includes Zone and Device Group)
+                # Add row to table (column order: Name, Source Interface, Source Zone, Destination Interface, Destination Zone, Device Group)
                 table_data.append({
                     'Name': fw_name,
                     'Source Interface': source_intf or '-',
+                    'Source Zone': source_zone_display,
                     'Destination Interface': dest_intf or '-',
-                    'Zone': zone_display,
+                    'Destination Zone': dest_zone_display,
                     'Device Group': dg_display
                 })
             
@@ -2489,6 +2640,97 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
                 container.markdown(ai_analysis)
     else:
         print(f"DEBUG: Client - No AI analysis in result. Result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+
+async def execute_path_allowed_check(source, destination, protocol, port, is_live):
+    """
+    Execute path allowed/denied check asynchronously.
+    
+    Args:
+        source: Source IP/hostname
+        destination: Destination IP/hostname
+        protocol: Protocol (TCP/UDP)
+        port: Port number
+        is_live: Use live data (True/False)
+        
+    Returns:
+        dict: Policy check result
+    """
+    import sys
+    print(f"DEBUG: Starting path allowed check: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
+    
+    try:
+        print(f"DEBUG: Connecting to MCP server...", file=sys.stderr, flush=True)
+        async for client_or_session in get_mcp_session():
+            print(f"DEBUG: Session initialized, calling check_path_allowed tool...", file=sys.stderr, flush=True)
+            
+            # Use defaults if protocol or port are None (server expects strings, not None)
+            protocol_str = protocol if protocol is not None else "TCP"
+            port_str = port if port is not None else "0"
+            
+            tool_arguments = {
+                "source": source,
+                "destination": destination,
+                "protocol": protocol_str,
+                "port": port_str,
+                "is_live": 1 if is_live else 0
+            }
+            print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            
+            # Try standard format first, then FastMCP format if needed
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
+                try:
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    # FastMCPClient not available or not importable
+                    pass
+            
+            try:
+                # Try standard MCP format first
+                result = await asyncio.wait_for(
+                    client_or_session.call_tool("check_path_allowed", arguments=tool_arguments),
+                    timeout=360.0  # 6 minute timeout for path checks
+                )
+                print(f"DEBUG: Standard format succeeded for check_path_allowed", file=sys.stderr, flush=True)
+            except TypeError as e:
+                if "unexpected keyword argument 'arguments'" in str(e) and is_fastmcp:
+                    # FastMCP client expects **kwargs instead of arguments=dict
+                    print(f"DEBUG: Standard format failed, trying FastMCP format (kwargs) for check_path_allowed", file=sys.stderr, flush=True)
+                    result = await asyncio.wait_for(
+                        client_or_session.call_tool("check_path_allowed", **tool_arguments),
+                        timeout=360.0
+                    )
+                else:
+                    raise
+            
+            # Process result based on client type
+            # Check if result has content attribute (standard MCP format)
+            if hasattr(result, 'content') and result.content:
+                if isinstance(result.content, list) and len(result.content) > 0:
+                    content_item = result.content[0]
+                    result_text = content_item.text if hasattr(content_item, 'text') else str(content_item)
+                else:
+                    result_text = str(result.content)
+            else:
+                result_text = str(result)
+            
+            print(f"DEBUG: Result text length: {len(result_text)}", file=sys.stderr, flush=True)
+            print(f"DEBUG: Result text (first 500 chars): {result_text[:500]}", file=sys.stderr, flush=True)
+            
+            try:
+                result_dict = json.loads(result_text)
+                return result_dict
+            except json.JSONDecodeError:
+                return {"result": result_text}
+    
+    except asyncio.TimeoutError:
+        return {"error": "Path allowed check timed out. Please try again."}
+    except Exception as e:
+        import traceback
+        print(f"DEBUG: Error in execute_path_allowed_check: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing path allowed check: {str(e)}"}
+
 
 async def execute_network_query(source, destination, protocol, port, is_live):
     """
@@ -3180,6 +3422,11 @@ def main():
         - *Find path from 10.0.0.1 to 10.0.1.1*
         - *Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443*
         - *Show me the network path from 10.10.3.253 to 172.24.32.225 UDP port 53*
+        
+        **Port / Path Allowed Check:**
+        - *Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?*
+        - *Check if path from 10.0.0.250 to 10.0.1.250 is allowed on TCP 443*
+        - *Is traffic from 192.168.1.1 to 192.168.2.1 on UDP port 53 denied?*
         """)
         
         if st.button("🗑️ Clear Chat History"):
@@ -3191,7 +3438,7 @@ def main():
         st.session_state.messages = [
             {
                 "role": "assistant",
-                "content": "Hello! I'm your Network Management Assistant. I can help you with:\n\n• **NetBox Queries**: Find device rack locations and rack details\n• **Panorama Queries**: Query address groups, find which groups contain an IP, or list IPs in a group\n• **Network Path Queries**: Find network paths between devices\n\nJust ask me a question! For example: *'What address group is 11.0.0.0/24 part of?'* or *'Where is leander-dc-border-leaf1 racked?'*"
+                "content": "Hello! I'm your Network Management Assistant. I can help you with:\n\n• **NetBox Queries**: Find device rack locations and rack details\n• **Panorama Queries**: Query address groups, find which groups contain an IP, or list IPs in a group\n• **Network Path Queries**: Find network paths between devices\n• **Port / Path Allowed Check**: Check if traffic between two IPs on a given protocol/port is allowed or denied by policy\n\nJust ask me a question! For example: *'What address group is 11.0.0.0/24 part of?'* or *'Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?'*"
             }
         ]
     
@@ -3532,6 +3779,22 @@ def main():
                             print(f"DEBUG: Tool selection failed, returning error result", file=sys.stderr, flush=True)
                             return tool_selection_result
                         
+                        # Check if tool_name is None and it's not a clarification request
+                        # This means the query cannot be processed by any available tool
+                        tool_name = tool_selection_result.get("tool_name")
+                        needs_clarification = tool_selection_result.get("needs_clarification", False)
+                        if tool_name is None and not needs_clarification:
+                            # Query cannot be processed - return appropriate message
+                            clarification_msg = tool_selection_result.get("clarification_question")
+                            if not clarification_msg:
+                                clarification_msg = "I'm sorry, but this system is not equipped to process that type of query. I can only help with:\n- Network path queries\n- Device rack location lookups\n- Rack details queries\n- Panorama address group queries\n\nCould you please rephrase your query to match one of these capabilities?"
+                            return {
+                                "success": False,
+                                "tool_name": None,
+                                "needs_clarification": False,
+                                "clarification_question": clarification_msg,
+                                "error": "Query cannot be processed by any available tool"
+                            }
                         # Check if clarification is needed
                         if tool_selection_result.get("needs_clarification", False):
                             clarification_question = tool_selection_result.get("clarification_question", "Could you please clarify what you're looking for?")
@@ -3555,6 +3818,16 @@ def main():
                         
                         if not selected_tool:
                             print(f"DEBUG: ERROR - LLM did not return a tool_name", file=sys.stderr, flush=True)
+                            # Check if there's a clarification message explaining why it can't be processed
+                            clarification_msg = tool_selection_result.get("clarification_question")
+                            if clarification_msg:
+                                return {
+                                    "success": False,
+                                    "tool_name": None,
+                                    "needs_clarification": False,
+                                    "clarification_question": clarification_msg,
+                                    "error": "Query cannot be processed by any available tool"
+                                }
                             return {"success": False, "error": "LLM did not select a tool. Please ensure tool descriptions are clear."}
                         
                         return {
@@ -3606,122 +3879,216 @@ def main():
         
         # No pre-checks - rely entirely on LLM + tool descriptions
         
-        # Execute tool discovery
-        try:
+        # Show "In progress" for the entire flow (discovery + tool execution) so the user knows the app is working
+        with st.spinner("⏳ **In progress** — processing your query..."):
             try:
-                asyncio.get_running_loop()
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        lambda: asyncio.run(discover_and_execute_tool())
-                    )
-                    tool_selection = future.result(timeout=30)
-            except RuntimeError:
-                tool_selection = asyncio.run(discover_and_execute_tool())
-            
-            print(f"DEBUG: Tool selection result: success={tool_selection.get('success')}, needs_clarification={tool_selection.get('needs_clarification')}, tool_name={tool_selection.get('tool_name')}, error={tool_selection.get('error')}", file=sys.stderr, flush=True)
-            
-            # Check if LLM requested clarification
-            if tool_selection.get("needs_clarification", False):
-                clarification_question = tool_selection.get("clarification_question", "Could you please clarify what you're looking for?")
-                with st.chat_message("assistant"):
-                    st.info(clarification_question)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": clarification_question
-                })
-                return
-            
-            if tool_selection.get("success") and tool_selection.get("tool_name"):
-                selected_tool = tool_selection["tool_name"]
+                try:
+                    asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            lambda: asyncio.run(discover_and_execute_tool())
+                        )
+                        tool_selection = future.result(timeout=30)
+                except RuntimeError:
+                    tool_selection = asyncio.run(discover_and_execute_tool())
                 
-                # Safeguard: If tool_name is "needs_clarification", treat it as an error
-                if selected_tool == "needs_clarification" or selected_tool is None:
-                    error_msg = "Invalid tool selection. Please rephrase your query."
+                print(f"DEBUG: Tool selection result: success={tool_selection.get('success')}, needs_clarification={tool_selection.get('needs_clarification')}, tool_name={tool_selection.get('tool_name')}, error={tool_selection.get('error')}", file=sys.stderr, flush=True)
+                
+                # Check if query cannot be processed (no tool available and not a clarification request)
+                tool_name = tool_selection.get("tool_name")
+                needs_clarification = tool_selection.get("needs_clarification", False)
+                if tool_name is None and not needs_clarification:
+                    # Query cannot be processed by any available tool
+                    clarification_msg = tool_selection.get("clarification_question")
+                    if not clarification_msg:
+                        clarification_msg = "I'm sorry, but this system is not equipped to process that type of query. I can only help with:\n- Network path queries (e.g., 'Find path from 10.0.0.1 to 10.0.1.1')\n- Device rack location lookups (e.g., 'Where is leander-dc-leaf6 racked?')\n- Rack details queries (e.g., 'Show rack details for A4')\n- Panorama address group queries (e.g., 'What address group is 11.0.0.0/24 part of?')\n\nCould you please rephrase your query to match one of these capabilities?"
                     with st.chat_message("assistant"):
-                        st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        st.warning(clarification_msg)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": clarification_msg
+                    })
                     return
                 
-                tool_params = tool_selection.get("parameters", {})
-                format_type = tool_selection.get("format")
-                intent = tool_selection.get("intent")
+                # Check if LLM requested clarification
+                if tool_selection.get("needs_clarification", False):
+                    clarification_question = tool_selection.get("clarification_question", "Could you please clarify what you're looking for?")
+                    with st.chat_message("assistant"):
+                        st.info(clarification_question)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": clarification_question
+                    })
+                    return
                 
-                print(f"DEBUG: Executing tool: {selected_tool} with params: {tool_params}", file=sys.stderr, flush=True)
-                
-                # Execute the selected tool - trust LLM's parameter extraction
-                if selected_tool == "get_device_rack_location":
-                    device_name = tool_params.get("device_name", "").strip()
-                    if not device_name:
-                        # No fallback - LLM should have asked for clarification if device name was unclear
-                        error_msg = "Device name not found in query. Please specify a device name."
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                if tool_selection.get("success") and tool_selection.get("tool_name"):
+                    selected_tool = tool_selection["tool_name"]
+                    
+                    # Safeguard: If tool_name is "needs_clarification" or None, check for clarification message
+                    if selected_tool == "needs_clarification" or selected_tool is None:
+                        # Check if there's a clarification message explaining why it can't be processed
+                        clarification_msg = tool_selection.get("clarification_question")
+                        if clarification_msg:
+                            with st.chat_message("assistant"):
+                                st.warning(clarification_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": clarification_msg})
+                        else:
+                            error_msg = "I'm sorry, but this system is not equipped to process that type of query. I can only help with network path queries, device rack location lookups, rack details, and Panorama address group queries."
+                            with st.chat_message("assistant"):
+                                st.warning(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
                         return
                     
-                    # Check if this is a yes/no question (e.g., "is Arista the manufacturer for...")
-                    prompt_lower = prompt.lower()
-                    is_yes_no_question = False
-                    expected_value = None
-                    question_field = None
+                    tool_params = tool_selection.get("parameters", {})
+                    format_type = tool_selection.get("format")
+                    intent = tool_selection.get("intent")
+                
+                    print(f"DEBUG: Executing tool: {selected_tool} with params: {tool_params}", file=sys.stderr, flush=True)
+                
+                    # Execute the selected tool - trust LLM's parameter extraction
+                    if selected_tool == "get_device_rack_location":
+                        device_name = tool_params.get("device_name", "").strip()
+                        if not device_name:
+                            # No fallback - LLM should have asked for clarification if device name was unclear
+                            error_msg = "Device name not found in query. Please specify a device name."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
                     
-                    # Pattern: "is X the manufacturer for device"
-                    import re
-                    manufacturer_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+manufacturer\s+for', prompt_lower)
-                    if manufacturer_match:
-                        is_yes_no_question = True
-                        expected_value = manufacturer_match.group(1).strip()
-                        question_field = "manufacturer"
-                        intent = "manufacturer_only"  # We need manufacturer to compare
-                        print(f"DEBUG: Detected yes/no manufacturer question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                        # Check if this is a yes/no question (e.g., "is Arista the manufacturer for...")
+                        prompt_lower = prompt.lower()
+                        is_yes_no_question = False
+                        expected_value = None
+                        question_field = None
                     
-                    # Pattern: "is X the status for device"
-                    status_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+status\s+for', prompt_lower)
-                    if status_match:
-                        is_yes_no_question = True
-                        expected_value = status_match.group(1).strip()
-                        question_field = "status"
-                        intent = "status_only"
-                        print(f"DEBUG: Detected yes/no status question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                        # Pattern: "is X the manufacturer for device"
+                        import re
+                        manufacturer_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+manufacturer\s+for', prompt_lower)
+                        if manufacturer_match:
+                            is_yes_no_question = True
+                            expected_value = manufacturer_match.group(1).strip()
+                            question_field = "manufacturer"
+                            intent = "manufacturer_only"  # We need manufacturer to compare
+                            print(f"DEBUG: Detected yes/no manufacturer question. Expected: {expected_value}", file=sys.stderr, flush=True)
                     
-                    # Pattern: "is X the device type for device"
-                    device_type_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+device\s+type\s+for', prompt_lower)
-                    if device_type_match:
-                        is_yes_no_question = True
-                        expected_value = device_type_match.group(1).strip()
-                        question_field = "device_type"
-                        intent = "device_type_only"
-                        print(f"DEBUG: Detected yes/no device type question. Expected: {expected_value}", file=sys.stderr, flush=True)
+                        # Pattern: "is X the status for device"
+                        status_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+status\s+for', prompt_lower)
+                        if status_match:
+                            is_yes_no_question = True
+                            expected_value = status_match.group(1).strip()
+                            question_field = "status"
+                            intent = "status_only"
+                            print(f"DEBUG: Detected yes/no status question. Expected: {expected_value}", file=sys.stderr, flush=True)
                     
-                    # Default to table format
-                    if not format_type:
-                        format_type = "table"
+                        # Pattern: "is X the device type for device"
+                        device_type_match = re.search(r'is\s+([^?\s]+(?:\s+[^?\s]+)*?)\s+the\s+device\s+type\s+for', prompt_lower)
+                        if device_type_match:
+                            is_yes_no_question = True
+                            expected_value = device_type_match.group(1).strip()
+                            question_field = "device_type"
+                            intent = "device_type_only"
+                            print(f"DEBUG: Detected yes/no device type question. Expected: {expected_value}", file=sys.stderr, flush=True)
                     
-                    # Use LLM-provided intent, or default to device_details if not provided
-                    if not intent:
-                        intent = "device_details"
-                        print(f"DEBUG: No intent from LLM, defaulting to device_details", file=sys.stderr, flush=True)
-                    else:
-                        print(f"DEBUG: Using LLM-provided intent: {intent}", file=sys.stderr, flush=True)
+                        # Default to table format
+                        if not format_type:
+                            format_type = "table"
                     
-                    # Store yes/no question info for later comparison
-                    if is_yes_no_question:
-                        st.session_state["yes_no_question"] = {
-                            "expected_value": expected_value,
-                            "question_field": question_field
-                        }
+                        # Use LLM-provided intent, or default to device_details if not provided
+                        if not intent:
+                            intent = "device_details"
+                            print(f"DEBUG: No intent from LLM, defaulting to device_details", file=sys.stderr, flush=True)
+                        else:
+                            print(f"DEBUG: Using LLM-provided intent: {intent}", file=sys.stderr, flush=True)
                     
-                    # Ensure format is "table" for specific field intents
-                    if intent in ("site_only", "status_only", "device_type_only", "manufacturer_only", "rack_location_only"):
-                        format_type = "table"
-                        print(f"DEBUG: Format set to 'table' for intent: {intent}", file=sys.stderr, flush=True)
+                        # Store yes/no question info for later comparison
+                        if is_yes_no_question:
+                            st.session_state["yes_no_question"] = {
+                                "expected_value": expected_value,
+                                "question_field": question_field
+                            }
                     
-                    if device_name:
-                        status_msg = f"🔎 Looking up device details for **{device_name}**..."
+                        # Ensure format is "table" for specific field intents
+                        if intent in ("site_only", "status_only", "device_type_only", "manufacturer_only", "rack_location_only"):
+                            format_type = "table"
+                            print(f"DEBUG: Format set to 'table' for intent: {intent}", file=sys.stderr, flush=True)
+                    
+                        if device_name:
+                            status_msg = f"🔎 Looking up device details for **{device_name}**..."
+                            with st.chat_message("assistant"):
+                                st.info(status_msg)
+
+                            try:
+                                max_timeout = 60
+                                try:
+                                    asyncio.get_running_loop()
+                                    import concurrent.futures
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(
+                                            lambda: asyncio.run(
+                                                asyncio.wait_for(
+                                                    execute_rack_location_query(device_name, format_type, conversation_history, intent),
+                                                    timeout=max_timeout
+                                                )
+                                            )
+                                        )
+                                        result = future.result(timeout=max_timeout + 5)
+                                except RuntimeError:
+                                    result = asyncio.run(
+                                        asyncio.wait_for(
+                                            execute_rack_location_query(device_name, format_type, conversation_history, intent),
+                                            timeout=max_timeout
+                                        )
+                                    )
+
+                                with st.chat_message("assistant"):
+                                    print(f"DEBUG: About to display result with intent: {intent}, format: {format_type}", file=sys.stderr, flush=True)
+                                    print(f"DEBUG: Result keys before display: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+                                    print(f"DEBUG: Result intent field: {result.get('intent') if isinstance(result, dict) else 'N/A'}", file=sys.stderr, flush=True)
+                                    display_rack_location_result(result, st.container(), format_type, intent=intent)
+
+                                # Store result with format_type and intent for proper re-rendering
+                                result_with_format = result.copy() if isinstance(result, dict) else result
+                                if isinstance(result_with_format, dict):
+                                    result_with_format["format_output"] = format_type
+                                    # Always store intent (even if None or device_details) so re-rendering works correctly
+                                    result_with_format["intent_output"] = intent if intent else "device_details"
+                                    # Store yes/no question state if present (for proper re-rendering)
+                                    yes_no_question = st.session_state.get("yes_no_question")
+                                    if yes_no_question:
+                                        result_with_format["yes_no_question"] = yes_no_question
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": result_with_format
+                                })
+                                # Clear yes/no question state after storing (it's now in the message)
+                                st.session_state.pop("yes_no_question", None)
+                                return  # Exit after successful lookup
+                            except asyncio.TimeoutError:
+                                error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                                with st.chat_message("assistant"):
+                                    st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                return
+                            except Exception as e:
+                                error_msg = f"An error occurred: {str(e)}"
+                                with st.chat_message("assistant"):
+                                    st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                return
+                
+                    elif selected_tool == "list_racks":
+                        # Use LLM-extracted values
+                        site_name = tool_params.get("site_name")
+                        format_type = tool_params.get("format") or format_type or "table"
+                    
+                        status_msg = f"🔎 Looking up all racks"
+                        if site_name:
+                            status_msg = f"🔎 Looking up racks at **{site_name}**"
                         with st.chat_message("assistant"):
                             st.info(status_msg)
-
+                    
                         try:
                             max_timeout = 60
                             try:
@@ -3731,7 +4098,7 @@ def main():
                                     future = executor.submit(
                                         lambda: asyncio.run(
                                             asyncio.wait_for(
-                                                execute_rack_location_query(device_name, format_type, conversation_history, intent),
+                                                execute_racks_list_query(site_name, format_type, conversation_history),
                                                 timeout=max_timeout
                                             )
                                         )
@@ -3740,36 +4107,25 @@ def main():
                             except RuntimeError:
                                 result = asyncio.run(
                                     asyncio.wait_for(
-                                        execute_rack_location_query(device_name, format_type, conversation_history, intent),
+                                        execute_racks_list_query(site_name, format_type, conversation_history),
                                         timeout=max_timeout
                                     )
                                 )
-
+                        
                             with st.chat_message("assistant"):
-                                print(f"DEBUG: About to display result with intent: {intent}, format: {format_type}", file=sys.stderr, flush=True)
-                                print(f"DEBUG: Result keys before display: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
-                                print(f"DEBUG: Result intent field: {result.get('intent') if isinstance(result, dict) else 'N/A'}", file=sys.stderr, flush=True)
-                                display_rack_location_result(result, st.container(), format_type, intent=intent)
-
-                            # Store result with format_type and intent for proper re-rendering
+                                display_racks_list_result(result, st.container(), format_type)
+                        
+                            # Store result with format_type for proper re-rendering
                             result_with_format = result.copy() if isinstance(result, dict) else result
                             if isinstance(result_with_format, dict):
                                 result_with_format["format_output"] = format_type
-                                # Always store intent (even if None or device_details) so re-rendering works correctly
-                                result_with_format["intent_output"] = intent if intent else "device_details"
-                                # Store yes/no question state if present (for proper re-rendering)
-                                yes_no_question = st.session_state.get("yes_no_question")
-                                if yes_no_question:
-                                    result_with_format["yes_no_question"] = yes_no_question
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "content": result_with_format
                             })
-                            # Clear yes/no question state after storing (it's now in the message)
-                            st.session_state.pop("yes_no_question", None)
                             return  # Exit after successful lookup
                         except asyncio.TimeoutError:
-                            error_msg = "⏱️ Rack location lookup timed out. Please try again."
+                            error_msg = "⏱️ Racks list lookup timed out. Please try again."
                             with st.chat_message("assistant"):
                                 st.error(error_msg)
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
@@ -3781,146 +4137,101 @@ def main():
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
                             return
                 
-                elif selected_tool == "list_racks":
-                    # Use LLM-extracted values
-                    site_name = tool_params.get("site_name")
-                    format_type = tool_params.get("format") or format_type or "table"
+                    elif selected_tool == "get_rack_details":
+                        # Use LLM-extracted values - no regex needed
+                        rack_name = tool_params.get("rack_name")
+                        site_name = tool_params.get("site_name")
                     
-                    status_msg = f"🔎 Looking up all racks"
-                    if site_name:
-                        status_msg = f"🔎 Looking up racks at **{site_name}**"
-                    with st.chat_message("assistant"):
-                        st.info(status_msg)
+                        # Default to table format if no format specified
+                        if not format_type:
+                            format_type = "table"
                     
-                    try:
-                        max_timeout = 60
-                        try:
-                            asyncio.get_running_loop()
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(
-                                    lambda: asyncio.run(
+                        if rack_name:
+                            site_info = f" in **{site_name}**" if site_name else ""
+                            status_msg = f"🔎 Looking up rack details for **{rack_name}**{site_info}..."
+                            with st.chat_message("assistant"):
+                                st.info(status_msg)
+                        
+                            # Clear any stored rack query since we're proceeding
+                            if "last_rack_query" in st.session_state:
+                                st.session_state["last_rack_query"] = None
+
+                            try:
+                                max_timeout = 60
+                                try:
+                                    asyncio.get_running_loop()
+                                    import concurrent.futures
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(
+                                            lambda: asyncio.run(
+                                                asyncio.wait_for(
+                                                    execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
+                                                    timeout=max_timeout
+                                                )
+                                            )
+                                        )
+                                        result = future.result(timeout=max_timeout + 5)
+                                except RuntimeError:
+                                    result = asyncio.run(
                                         asyncio.wait_for(
-                                            execute_racks_list_query(site_name, format_type, conversation_history),
+                                            execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
                                             timeout=max_timeout
                                         )
                                     )
-                                )
-                                result = future.result(timeout=max_timeout + 5)
-                        except RuntimeError:
-                            result = asyncio.run(
-                                asyncio.wait_for(
-                                    execute_racks_list_query(site_name, format_type, conversation_history),
-                                    timeout=max_timeout
-                                )
-                            )
-                        
-                        with st.chat_message("assistant"):
-                            display_racks_list_result(result, st.container(), format_type)
-                        
-                        # Store result with format_type for proper re-rendering
-                        result_with_format = result.copy() if isinstance(result, dict) else result
-                        if isinstance(result_with_format, dict):
-                            result_with_format["format_output"] = format_type
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": result_with_format
-                        })
-                        return  # Exit after successful lookup
-                    except asyncio.TimeoutError:
-                        error_msg = "⏱️ Racks list lookup timed out. Please try again."
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                    except Exception as e:
-                        error_msg = f"An error occurred: {str(e)}"
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                
-                elif selected_tool == "get_rack_details":
-                    # Use LLM-extracted values - no regex needed
-                    rack_name = tool_params.get("rack_name")
-                    site_name = tool_params.get("site_name")
-                    
-                    # Default to table format if no format specified
-                    if not format_type:
-                        format_type = "table"
-                    
-                    if rack_name:
-                        site_info = f" in **{site_name}**" if site_name else ""
-                        status_msg = f"🔎 Looking up rack details for **{rack_name}**{site_info}..."
-                        with st.chat_message("assistant"):
-                            st.info(status_msg)
-                        
-                        # Clear any stored rack query since we're proceeding
-                        if "last_rack_query" in st.session_state:
-                            st.session_state["last_rack_query"] = None
 
-                        try:
-                            max_timeout = 60
-                            try:
-                                asyncio.get_running_loop()
-                                import concurrent.futures
-                                with concurrent.futures.ThreadPoolExecutor() as executor:
-                                    future = executor.submit(
-                                        lambda: asyncio.run(
-                                            asyncio.wait_for(
-                                                execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
-                                                timeout=max_timeout
-                                            )
-                                        )
-                                    )
-                                    result = future.result(timeout=max_timeout + 5)
-                            except RuntimeError:
-                                result = asyncio.run(
-                                    asyncio.wait_for(
-                                        execute_rack_details_query(rack_name, format_type, conversation_history, site_name=site_name),
-                                        timeout=max_timeout
-                                    )
-                                )
+                                # Check if server returned an error or requires site clarification
+                                if isinstance(result, dict) and "error" in result:
+                                    error_msg = result.get("error", "")
+                                    if "device name" in error_msg.lower() and "dash" in error_msg.lower():
+                                        # Server correctly identified this as a device name - show error and let tool discovery handle it
+                                        print(f"DEBUG: Server detected device name in rack query, error: {error_msg}", file=sys.stderr, flush=True)
+                                        with st.chat_message("assistant"):
+                                            st.error(f"❌ {error_msg}")
+                                            if "suggestion" in result:
+                                                st.info(result["suggestion"])
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": result
+                                        })
+                                        # Don't return - let it fall through to tool discovery which should use get_device_rack_location
+                                    elif result.get("requires_site"):
+                                        # Multiple racks with same name at different sites - ask for site clarification
+                                        sites = result.get("sites", [])
+                                        sites_list = ", ".join([f"'{s}'" for s in sites]) if sites else "different sites"
+                                        clarifying_text = f"I found rack **{rack_name}** at multiple sites ({sites_list}). Please specify which site (e.g., 'Round Rock DC', 'Leander DC', etc.)."
+                                    
+                                        # Store the rack query for follow-up
+                                        st.session_state["last_rack_query"] = {
+                                            "rack_name": rack_name,
+                                            "format_type": format_type or "table"
+                                        }
+                                        print(f"DEBUG: Set last_rack_query to rack_name={rack_name} (multiple sites found)", file=sys.stderr, flush=True)
+                                    
+                                        with st.chat_message("assistant"):
+                                            st.info(clarifying_text)
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": clarifying_text
+                                        })
+                                        return  # Exit to wait for user's site response
+                                    else:
+                                        # Other error (e.g., "Rack not found") - display it
+                                        with st.chat_message("assistant"):
+                                            display_rack_details_result(result, st.container(), format_type)
+                                        result_with_format = result.copy() if isinstance(result, dict) else result
+                                        if isinstance(result_with_format, dict):
+                                            result_with_format["format_output"] = format_type
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": result_with_format
+                                        })
+                                        return
+                            
+                                # Success - display result
+                                with st.chat_message("assistant"):
+                                    display_rack_details_result(result, st.container(), format_type)
 
-                            # Check if server returned an error or requires site clarification
-                            if isinstance(result, dict) and "error" in result:
-                                error_msg = result.get("error", "")
-                                if "device name" in error_msg.lower() and "dash" in error_msg.lower():
-                                    # Server correctly identified this as a device name - show error and let tool discovery handle it
-                                    print(f"DEBUG: Server detected device name in rack query, error: {error_msg}", file=sys.stderr, flush=True)
-                                    with st.chat_message("assistant"):
-                                        st.error(f"❌ {error_msg}")
-                                        if "suggestion" in result:
-                                            st.info(result["suggestion"])
-                                    st.session_state.messages.append({
-                                        "role": "assistant",
-                                        "content": result
-                                    })
-                                    # Don't return - let it fall through to tool discovery which should use get_device_rack_location
-                                elif result.get("requires_site"):
-                                    # Multiple racks with same name at different sites - ask for site clarification
-                                    sites = result.get("sites", [])
-                                    sites_list = ", ".join([f"'{s}'" for s in sites]) if sites else "different sites"
-                                    clarifying_text = f"I found rack **{rack_name}** at multiple sites ({sites_list}). Please specify which site (e.g., 'Round Rock DC', 'Leander DC', etc.)."
-                                    
-                                    # Store the rack query for follow-up
-                                    st.session_state["last_rack_query"] = {
-                                        "rack_name": rack_name,
-                                        "format_type": format_type or "table"
-                                    }
-                                    print(f"DEBUG: Set last_rack_query to rack_name={rack_name} (multiple sites found)", file=sys.stderr, flush=True)
-                                    
-                                    with st.chat_message("assistant"):
-                                        st.info(clarifying_text)
-                                    st.session_state.messages.append({
-                                        "role": "assistant",
-                                        "content": clarifying_text
-                                    })
-                                    return  # Exit to wait for user's site response
-                                else:
-                                    # Other error (e.g., "Rack not found") - display it
-                                    with st.chat_message("assistant"):
-                                        display_rack_details_result(result, st.container(), format_type)
+                                    # Store result with format_type for proper re-rendering
                                     result_with_format = result.copy() if isinstance(result, dict) else result
                                     if isinstance(result_with_format, dict):
                                         result_with_format["format_output"] = format_type
@@ -3928,50 +4239,152 @@ def main():
                                         "role": "assistant",
                                         "content": result_with_format
                                     })
-                                    return
-                            
-                            # Success - display result
+                                    return  # Exit after successful lookup
+                            except asyncio.TimeoutError:
+                                error_msg = "⏱️ Rack details lookup timed out. Please try again."
+                                with st.chat_message("assistant"):
+                                    st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                return
+                            except Exception as e:
+                                error_msg = f"An error occurred: {str(e)}"
+                                with st.chat_message("assistant"):
+                                    st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                return
+                
+                    elif selected_tool == "check_path_allowed":
+                        source = tool_params.get("source", "").strip()
+                        destination = tool_params.get("destination", "").strip()
+                        protocol = tool_params.get("protocol", "TCP").strip()
+                        port = tool_params.get("port", "0").strip()
+                        is_live = True  # Default to live data
+                    
+                        if not source or not destination:
+                            error_msg = "Source and destination IP addresses are required for path allowed check."
                             with st.chat_message("assistant"):
-                                display_rack_details_result(result, st.container(), format_type)
-
-                                # Store result with format_type for proper re-rendering
-                                result_with_format = result.copy() if isinstance(result, dict) else result
-                                if isinstance(result_with_format, dict):
-                                    result_with_format["format_output"] = format_type
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                    
+                        # Execute path allowed check
+                        with st.chat_message("assistant"):
+                            with st.spinner(f"Checking if traffic from {source} to {destination} on {protocol}/{port} is allowed..."):
+                                try:
+                                    try:
+                                        asyncio.get_running_loop()
+                                        import concurrent.futures
+                                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                                            future = executor.submit(
+                                                lambda: asyncio.run(execute_path_allowed_check(source, destination, protocol, port, is_live))
+                                            )
+                                            result = future.result(timeout=380)  # 380 seconds timeout
+                                    except RuntimeError:
+                                        result = asyncio.run(execute_path_allowed_check(source, destination, protocol, port, is_live))
+                                
+                                    # Display result
+                                    display_path_allowed_result(result, st.container())
+                                
+                                    # Store result in conversation history
+                                    st.session_state.messages.append({
+                                        "role": "assistant",
+                                        "content": result
+                                    })
+                                except asyncio.TimeoutError:
+                                    error_msg = "⏱️ Path allowed check timed out. Please try again."
+                                    st.error(error_msg)
+                                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                except Exception as e:
+                                    error_msg = f"An error occurred: {str(e)}"
+                                    st.error(error_msg)
+                                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                        return
+                
+                    elif selected_tool == "query_network_path":
+                        # Handle network path query
+                        source = tool_params.get("source")
+                        destination = tool_params.get("destination")
+                        protocol = tool_params.get("protocol", "TCP")
+                        port = tool_params.get("port", "0")
+                    
+                        if source and destination:
+                            # Execute network path query
+                            default_live = st.session_state.get('default_live_data', True)
+                            is_live = tool_params.get("is_live", 1 if default_live else 0)
+                        
+                            try:
+                                # Network path queries can take a long time (server polls for task completion)
+                                # Set timeout to 380 seconds to allow for server processing (tool call timeout is 360s)
+                                max_timeout = 380
+                                try:
+                                    asyncio.get_running_loop()
+                                    import concurrent.futures
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(
+                                            lambda: asyncio.run(
+                                                asyncio.wait_for(
+                                                    execute_network_query(source, destination, protocol, port, is_live),
+                                                    timeout=max_timeout
+                                                )
+                                            )
+                                        )
+                                        result = future.result(timeout=max_timeout + 10)  # Add buffer for thread overhead
+                                except RuntimeError:
+                                    result = asyncio.run(
+                                        asyncio.wait_for(
+                                            execute_network_query(source, destination, protocol, port, is_live),
+                                            timeout=max_timeout
+                                        )
+                                    )
+                            
+                                # Unwrap result if it's wrapped in {"result": ...}
+                                if isinstance(result, dict) and "result" in result and len(result) == 1:
+                                    # Check if the inner result is a string that might be JSON
+                                    inner_result = result["result"]
+                                    if isinstance(inner_result, str):
+                                        try:
+                                            import json
+                                            unwrapped = json.loads(inner_result)
+                                            print(f"DEBUG: Unwrapped result from string, keys: {list(unwrapped.keys()) if isinstance(unwrapped, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                                            result = unwrapped
+                                        except (json.JSONDecodeError, TypeError):
+                                            # If it's not JSON, keep the wrapped version
+                                            pass
+                            
+                                with st.chat_message("assistant"):
+                                    display_result_chat(result, st.container())
+                            
                                 st.session_state.messages.append({
                                     "role": "assistant",
-                                    "content": result_with_format
+                                    "content": result
                                 })
-                                return  # Exit after successful lookup
-                        except asyncio.TimeoutError:
-                            error_msg = "⏱️ Rack details lookup timed out. Please try again."
-                            with st.chat_message("assistant"):
-                                st.error(error_msg)
-                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                            return
-                        except Exception as e:
-                            error_msg = f"An error occurred: {str(e)}"
-                            with st.chat_message("assistant"):
-                                st.error(error_msg)
-                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                            return
+                                return
+                            except Exception as e:
+                                error_msg = f"An error occurred: {str(e)}"
+                                with st.chat_message("assistant"):
+                                    st.error(error_msg)
+                                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                                return
                 
-                elif selected_tool == "query_network_path":
-                    # Handle network path query
-                    source = tool_params.get("source")
-                    destination = tool_params.get("destination")
-                    protocol = tool_params.get("protocol", "TCP")
-                    port = tool_params.get("port", "0")
+                    elif selected_tool == "query_panorama_ip_object_group":
+                        # Handle Panorama IP object group query
+                        ip_address = tool_params.get("ip_address", "").strip()
+                        device_group = tool_params.get("device_group")
+                        vsys = tool_params.get("vsys", "vsys1")
                     
-                    if source and destination:
-                        # Execute network path query
-                        default_live = st.session_state.get('default_live_data', True)
-                        is_live = tool_params.get("is_live", 1 if default_live else 0)
-                        
+                        if not ip_address:
+                            error_msg = "IP address not found in query. Please specify an IP address (e.g., 'what address group 10.0.0.254 belongs to')."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                    
+                        status_msg = f"🔎 Querying Panorama for address groups containing **{ip_address}**..."
+                        with st.chat_message("assistant"):
+                            st.info(status_msg)
+                    
                         try:
-                            # Network path queries can take a long time (server polls for task completion)
-                            # Set timeout to 380 seconds to allow for server processing (tool call timeout is 360s)
-                            max_timeout = 380
+                            max_timeout = 60
                             try:
                                 asyncio.get_running_loop()
                                 import concurrent.futures
@@ -3979,41 +4392,53 @@ def main():
                                     future = executor.submit(
                                         lambda: asyncio.run(
                                             asyncio.wait_for(
-                                                execute_network_query(source, destination, protocol, port, is_live),
+                                                execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
                                                 timeout=max_timeout
                                             )
                                         )
                                     )
-                                    result = future.result(timeout=max_timeout + 10)  # Add buffer for thread overhead
+                                    result = future.result(timeout=max_timeout + 5)
                             except RuntimeError:
                                 result = asyncio.run(
                                     asyncio.wait_for(
-                                        execute_network_query(source, destination, protocol, port, is_live),
+                                        execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
                                         timeout=max_timeout
                                     )
                                 )
-                            
-                            # Unwrap result if it's wrapped in {"result": ...}
-                            if isinstance(result, dict) and "result" in result and len(result) == 1:
-                                # Check if the inner result is a string that might be JSON
-                                inner_result = result["result"]
-                                if isinstance(inner_result, str):
-                                    try:
-                                        import json
-                                        unwrapped = json.loads(inner_result)
-                                        print(f"DEBUG: Unwrapped result from string, keys: {list(unwrapped.keys()) if isinstance(unwrapped, dict) else 'not a dict'}", file=sys.stderr, flush=True)
-                                        result = unwrapped
-                                    except (json.JSONDecodeError, TypeError):
-                                        # If it's not JSON, keep the wrapped version
-                                        pass
-                            
+                            except Exception as async_error:
+                                print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
+                                import traceback
+                                print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                                result = {"error": f"Error executing query: {str(async_error)}"}
+                        
+                            # Display result - show LLM summary in table format
                             with st.chat_message("assistant"):
-                                display_result_chat(result, st.container())
-                            
+                                if isinstance(result, dict) and "error" in result:
+                                    st.error(f"❌ {result['error']}")
+                                elif isinstance(result, dict) and "ai_analysis" in result:
+                                    # Display LLM summary (should be in table format)
+                                    ai_analysis = result["ai_analysis"]
+                                    if isinstance(ai_analysis, dict):
+                                        summary = ai_analysis.get("summary")
+                                        if summary:
+                                            st.markdown(summary)
+                                    elif isinstance(ai_analysis, str):
+                                        st.markdown(ai_analysis)
+                                else:
+                                    # Fallback if no LLM analysis
+                                    st.info("Query completed. No results found or analysis unavailable.")
+                        
+                            # Store result for persistence
                             st.session_state.messages.append({
                                 "role": "assistant",
                                 "content": result
                             })
+                            return
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Panorama query timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
                             return
                         except Exception as e:
                             error_msg = f"An error occurred: {str(e)}"
@@ -4021,193 +4446,112 @@ def main():
                                 st.error(error_msg)
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
                             return
-                
-                elif selected_tool == "query_panorama_ip_object_group":
-                    # Handle Panorama IP object group query
-                    ip_address = tool_params.get("ip_address", "").strip()
-                    device_group = tool_params.get("device_group")
-                    vsys = tool_params.get("vsys", "vsys1")
+                    elif selected_tool == "query_panorama_address_group_members":
+                        # Handle Panorama address group members query
+                        address_group_name = tool_params.get("address_group_name", "").strip()
+                        device_group = tool_params.get("device_group")
+                        vsys = tool_params.get("vsys", "vsys1")
                     
-                    if not ip_address:
-                        error_msg = "IP address not found in query. Please specify an IP address (e.g., 'what address group 10.0.0.254 belongs to')."
+                        if not address_group_name:
+                            error_msg = "Address group name not found in query. Please specify an address group name (e.g., 'what other IPs are in the address group leander_web')."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                    
+                        status_msg = f"🔎 Querying Panorama for members of address group **{address_group_name}**..."
                         with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
+                            st.info(status_msg)
                     
-                    status_msg = f"🔎 Querying Panorama for address groups containing **{ip_address}**..."
-                    with st.chat_message("assistant"):
-                        st.info(status_msg)
-                    
-                    try:
-                        max_timeout = 60
                         try:
-                            asyncio.get_running_loop()
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(
-                                    lambda: asyncio.run(
-                                        asyncio.wait_for(
-                                            execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
-                                            timeout=max_timeout
+                            max_timeout = 60
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
+                                                timeout=max_timeout
+                                            )
                                         )
                                     )
-                                )
-                                result = future.result(timeout=max_timeout + 5)
-                        except RuntimeError:
-                            result = asyncio.run(
-                                asyncio.wait_for(
-                                    execute_panorama_ip_object_group_query(ip_address, device_group, vsys),
-                                    timeout=max_timeout
-                                )
-                            )
-                        except Exception as async_error:
-                            print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
-                            import traceback
-                            print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                            result = {"error": f"Error executing query: {str(async_error)}"}
-                        
-                        # Display result - show LLM summary in table format
-                        with st.chat_message("assistant"):
-                            if isinstance(result, dict) and "error" in result:
-                                st.error(f"❌ {result['error']}")
-                            elif isinstance(result, dict) and "ai_analysis" in result:
-                                # Display LLM summary (should be in table format)
-                                ai_analysis = result["ai_analysis"]
-                                if isinstance(ai_analysis, dict):
-                                    summary = ai_analysis.get("summary")
-                                    if summary:
-                                        st.markdown(summary)
-                                elif isinstance(ai_analysis, str):
-                                    st.markdown(ai_analysis)
-                            else:
-                                # Fallback if no LLM analysis
-                                st.info("Query completed. No results found or analysis unavailable.")
-                        
-                        # Store result for persistence
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": result
-                        })
-                        return
-                    except asyncio.TimeoutError:
-                        error_msg = "⏱️ Panorama query timed out. Please try again."
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                    except Exception as e:
-                        error_msg = f"An error occurred: {str(e)}"
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                elif selected_tool == "query_panorama_address_group_members":
-                    # Handle Panorama address group members query
-                    address_group_name = tool_params.get("address_group_name", "").strip()
-                    device_group = tool_params.get("device_group")
-                    vsys = tool_params.get("vsys", "vsys1")
-                    
-                    if not address_group_name:
-                        error_msg = "Address group name not found in query. Please specify an address group name (e.g., 'what other IPs are in the address group leander_web')."
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                    
-                    status_msg = f"🔎 Querying Panorama for members of address group **{address_group_name}**..."
-                    with st.chat_message("assistant"):
-                        st.info(status_msg)
-                    
-                    try:
-                        max_timeout = 60
-                        try:
-                            asyncio.get_running_loop()
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(
-                                    lambda: asyncio.run(
-                                        asyncio.wait_for(
-                                            execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
-                                            timeout=max_timeout
-                                        )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
+                                        timeout=max_timeout
                                     )
                                 )
-                                result = future.result(timeout=max_timeout + 5)
-                        except RuntimeError:
-                            result = asyncio.run(
-                                asyncio.wait_for(
-                                    execute_panorama_address_group_members_query(address_group_name, device_group, vsys),
-                                    timeout=max_timeout
-                                )
-                            )
-                        except Exception as async_error:
-                            print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
-                            import traceback
-                            print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-                            result = {"error": f"Error executing query: {str(async_error)}"}
+                            except Exception as async_error:
+                                print(f"DEBUG: Async execution error: {str(async_error)}", file=sys.stderr, flush=True)
+                                import traceback
+                                print(f"DEBUG: Async error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                                result = {"error": f"Error executing query: {str(async_error)}"}
                         
-                        # Display result - show LLM summary in table format
-                        with st.chat_message("assistant"):
-                            if isinstance(result, dict) and "error" in result:
-                                st.error(f"❌ {result['error']}")
-                            elif isinstance(result, dict) and "ai_analysis" in result:
-                                # Display LLM summary (should be in table format)
-                                ai_analysis = result["ai_analysis"]
-                                if isinstance(ai_analysis, dict):
-                                    summary = ai_analysis.get("summary")
-                                    if summary:
-                                        st.markdown(summary)
-                                elif isinstance(ai_analysis, str):
-                                    st.markdown(ai_analysis)
-                            else:
-                                # Fallback if no LLM analysis
-                                st.info("Query completed. No results found or analysis unavailable.")
+                            # Display result - show LLM summary in table format
+                            with st.chat_message("assistant"):
+                                if isinstance(result, dict) and "error" in result:
+                                    st.error(f"❌ {result['error']}")
+                                elif isinstance(result, dict) and "ai_analysis" in result:
+                                    # Display LLM summary (should be in table format)
+                                    ai_analysis = result["ai_analysis"]
+                                    if isinstance(ai_analysis, dict):
+                                        summary = ai_analysis.get("summary")
+                                        if summary:
+                                            st.markdown(summary)
+                                    elif isinstance(ai_analysis, str):
+                                        st.markdown(ai_analysis)
+                                else:
+                                    # Fallback if no LLM analysis
+                                    st.info("Query completed. No results found or analysis unavailable.")
                         
-                        # Store result for persistence
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": result
-                        })
-                        return
-                    except asyncio.TimeoutError:
-                        error_msg = "⏱️ Panorama query timed out. Please try again."
-                        with st.chat_message("assistant"):
-                            st.error(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                        return
-                    except Exception as e:
-                        error_msg = f"An error occurred: {str(e)}"
+                            # Store result for persistence
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": result
+                            })
+                            return
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Panorama query timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                    else:
+                        # Tool was selected but not handled - this shouldn't happen
+                        print(f"DEBUG: WARNING - Tool '{selected_tool}' was selected but not handled!", file=sys.stderr, flush=True)
+                        error_msg = f"Tool '{selected_tool}' is not yet implemented or handled."
                         with st.chat_message("assistant"):
                             st.error(error_msg)
                         st.session_state.messages.append({"role": "assistant", "content": error_msg})
                         return
                 else:
-                    # Tool was selected but not handled - this shouldn't happen
-                    print(f"DEBUG: WARNING - Tool '{selected_tool}' was selected but not handled!", file=sys.stderr, flush=True)
-                    error_msg = f"Tool '{selected_tool}' is not yet implemented or handled."
+                    # Tool selection failed or no tool selected - show error, no fallback
+                    error_msg = tool_selection.get('error', 'Failed to select a tool. Please rephrase your query.')
+                    print(f"DEBUG: Tool selection failed. success={tool_selection.get('success')}, tool_name={tool_selection.get('tool_name')}, error={error_msg}", file=sys.stderr, flush=True)
                     with st.chat_message("assistant"):
-                        st.error(error_msg)
+                        st.error(f"❌ {error_msg}")
                     st.session_state.messages.append({"role": "assistant", "content": error_msg})
                     return
-            else:
-                # Tool selection failed or no tool selected - show error, no fallback
-                error_msg = tool_selection.get('error', 'Failed to select a tool. Please rephrase your query.')
-                print(f"DEBUG: Tool selection failed. success={tool_selection.get('success')}, tool_name={tool_selection.get('tool_name')}, error={error_msg}", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"DEBUG: Tool discovery execution failed: {str(e)}", file=sys.stderr, flush=True)
+                import traceback
+                print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                # Show error, no fallback
+                error_msg = f"Error processing query: {str(e)}"
                 with st.chat_message("assistant"):
                     st.error(f"❌ {error_msg}")
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
                 return
-        except Exception as e:
-            print(f"DEBUG: Tool discovery execution failed: {str(e)}", file=sys.stderr, flush=True)
-            import traceback
-            print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
-            # Show error, no fallback
-            error_msg = f"Error processing query: {str(e)}"
-            with st.chat_message("assistant"):
-                st.error(f"❌ {error_msg}")
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            return
             # Store pending query for confirmation
             query_id = len(st.session_state.messages)
             pending_key = f"pending_query_{query_id}"

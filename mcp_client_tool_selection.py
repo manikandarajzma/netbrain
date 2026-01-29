@@ -227,6 +227,22 @@ Step-by-step analysis:
 Correct response:
 {"tool_name": "query_network_path", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
 
+**EXAMPLE - Check if path is allowed/denied (policy check):**
+Current query: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?"
+Step-by-step analysis:
+1. Query asks if traffic is "allowed" or "denied"
+2. Extract source IP: "10.0.0.1"
+3. Extract destination IP: "10.0.1.1"
+4. Extract protocol: "TCP"
+5. Extract port: "80"
+6. Decision: Use check_path_allowed with source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="80"
+Correct response:
+{"tool_name": "check_path_allowed", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
+
+**CRITICAL DISTINCTION:**
+- Query asks "is [traffic] allowed" or "is [traffic] denied" → use check_path_allowed (stops on policy denial)
+- Query asks "find path" or "show path" → use query_network_path (continues even if denied)
+
 **CRITICAL: For network path queries, use tool name "query_network_path" (NOT "query_panorama_network_path"). The correct tool name is "query_network_path".**
 
 **ABSOLUTE RULE FOR ADDRESS GROUP QUERIES:**
@@ -315,6 +331,17 @@ Return ONLY this JSON structure:
 1. All string values MUST be in double quotes. Extract the EXACT value from the CURRENT USER QUERY, not from examples.
 2. The tool_name MUST be one of the exact tool names listed above. Do NOT invent tool names like "query_panorama_object_groups" - use "query_panorama_ip_object_group" exactly.
 3. If you are unsure which tool to use, return needs_clarification: true with a clarification question.
+4. **If the query requests an action that NO available tool can perform (e.g., "create an address object", "delete a device", "modify configuration"), return tool_name: null, needs_clarification: false, and set clarification_question to explain that this system cannot perform that action.**
+
+**EXAMPLE - Query that cannot be processed:**
+Current query: "create an address object named ravi_k with 12.0.0.0/24 in it"
+Correct response:
+{{"tool_name": null, "needs_clarification": false, "clarification_question": "I'm sorry, but this system is not equipped to create or modify network configuration objects like address objects. I can only query existing information such as network paths, device locations, rack details, and Panorama address group memberships. Would you like to query information about an existing address object instead?", "parameters": {{"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}}}
+
+**EXAMPLE - Query that cannot be processed (modification):**
+Current query: "delete device roundrock-sw-1"
+Correct response:
+{{"tool_name": null, "needs_clarification": false, "clarification_question": "I'm sorry, but this system is not equipped to delete or modify network devices. I can only query existing information such as network paths, device locations, rack details, and Panorama address group memberships. Would you like to look up information about this device instead?", "parameters": {{"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}}}
 """
     return prompt_text
 
