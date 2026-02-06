@@ -119,6 +119,19 @@ Correct response:
 """
     else:
         examples = """
+**🚨 FIRST PRIORITY CHECK - NETWORK PATH QUERIES (NetBrain):**
+
+**BEFORE ANYTHING ELSE, check if query is about network paths:**
+- "find path from X to Y" → query_network_path (NetBrain)
+- "path from X to Y" → query_network_path (NetBrain)
+- "network path from X to Y" → query_network_path (NetBrain)
+- "show path from X to Y" → query_network_path (NetBrain)
+- "trace path from X to Y" → query_network_path (NetBrain)
+- "is traffic from X to Y allowed" → check_path_allowed (NetBrain)
+- "is traffic from X to Y denied" → check_path_allowed (NetBrain)
+
+**If query contains "path from [IP] to [IP]" or "find path" → ALWAYS use query_network_path, NOT rack queries!**
+
 **⚠️ DECISION TREE FOR ADDRESS GROUP QUERIES - READ THIS FIRST:**
 
 Step 1: Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
@@ -126,6 +139,9 @@ Step 1: Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0
   NO → Check if it contains an address group name (has underscores like "leander_web")
 
 Step 2: What does the query ask?
+  - "find path from [IP] to [IP]" → query_network_path (NetBrain) - HIGHEST PRIORITY
+  - "path from [IP] to [IP]" → query_network_path (NetBrain) - HIGHEST PRIORITY
+  - "is traffic ... allowed/denied" → check_path_allowed (NetBrain) - HIGHEST PRIORITY
   - "what address group is [IP] part of" → You have IP, want groups → use query_panorama_ip_object_group
   - "which group contains [IP]" → You have IP, want groups → use query_panorama_ip_object_group
   - "what object group is [IP] in" → You have IP, want groups → use query_panorama_ip_object_group
@@ -159,6 +175,12 @@ Correct response:
 - Device names have DASHES (-), NOT dots (.)
 - "leander-dc-leaf6" has dashes → it's a device name → use get_device_rack_location
 - "11.0.0.1" has dots → it's an IP address → do NOT use get_device_rack_location
+
+**WRONG EXAMPLE (DO NOT DO THIS):**
+Current query: "Where is leander-dc-border-leaf1 racked?"
+WRONG response: {"tool_name": "get_rack_details", ...} ← This is WRONG! "leander-dc-border-leaf1" contains dashes, so it's a DEVICE NAME, not a rack name. Use get_device_rack_location instead.
+
+**ABSOLUTE RULE: If the query contains a name with DASHES (like "leander-dc-border-leaf1", "roundrock-dc-fw1") → it's a DEVICE NAME → use get_device_rack_location, NOT get_rack_details!**
 
 **NOTE: Extract the EXACT device name from the query. If query says "leander-dc-leaf6", use "leander-dc-leaf6", NOT "leander-dc-border-leaf1" or any other device name.**
 
@@ -240,10 +262,61 @@ Correct response:
 {"tool_name": "check_path_allowed", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
 
 **CRITICAL DISTINCTION:**
-- Query asks "is [traffic] allowed" or "is [traffic] denied" → use check_path_allowed (stops on policy denial)
-- Query asks "find path" or "show path" → use query_network_path (continues even if denied)
+- Query asks "is [traffic] allowed" or "is [traffic] denied" or "check if allowed" → use check_path_allowed (NetBrain - stops on policy denial)
+- Query asks "find path" or "show path" or "path from X to Y" → use query_network_path (NetBrain - continues even if denied)
+- Query asks "list denies" or "show deny events" or "get deny logs" → use get_splunk_recent_denies (Splunk - views historical logs)
+
+**⚠️ DO NOT CONFUSE:**
+- "Find path from X to Y" → query_network_path (NetBrain network path)
+- "Is traffic from X to Y allowed?" → check_path_allowed (NetBrain policy check)
+- "List denies for X" → get_splunk_recent_denies (Splunk historical logs)
+
+**WRONG EXAMPLE (DO NOT DO THIS):**
+Current query: "Find path from 10.0.0.1 to 10.0.1.1"
+WRONG response: {"tool_name": "get_rack_details", ...} ← This is WRONG! This is a network path query, use query_network_path.
+
+**ABSOLUTE RULE: If query contains "find path", "path from", "network path", or "show path" → ALWAYS use query_network_path (NetBrain), NOT any other tool!**
 
 **CRITICAL: For network path queries, use tool name "query_network_path" (NOT "query_panorama_network_path"). The correct tool name is "query_network_path".**
+
+**⚠️ CRITICAL: SPLUNK vs NETBRAIN - READ THIS FIRST:**
+
+**Splunk (get_splunk_recent_denies)** is for VIEWING HISTORICAL LOGS of deny events:
+- "list all the denies for 10.0.0.250" → Splunk (viewing past deny logs)
+- "get recent deny events for 192.168.1.1" → Splunk (viewing past deny logs)
+- "show deny events for IP 10.0.1.100" → Splunk (viewing past deny logs)
+
+**NetBrain (check_path_allowed)** is for CHECKING IF TRAFFIC IS CURRENTLY ALLOWED/DENIED:
+- "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?" → NetBrain check_path_allowed
+- "Is traffic from X to Y denied?" → NetBrain check_path_allowed
+- "Check if path from X to Y is allowed" → NetBrain check_path_allowed
+- "Can traffic from X reach Y on port Z?" → NetBrain check_path_allowed
+
+**KEY DIFFERENCE:**
+- Query asks about VIEWING/LISTING PAST deny events/logs → use Splunk (get_splunk_recent_denies)
+- Query asks IF TRAFFIC IS ALLOWED/DENIED (policy check) → use NetBrain (check_path_allowed)
+
+**WRONG EXAMPLE (DO NOT DO THIS):**
+Current query: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?"
+WRONG response: {"tool_name": "get_splunk_recent_denies", ...} ← This is WRONG! This query asks if traffic is allowed, not to view past deny logs. Use check_path_allowed instead.
+
+**EXAMPLE - Splunk recent denies for an IP:**
+Current query: "list all the denies for 192.168.1.1"
+Step-by-step analysis:
+1. Query asks to "list" or "get" or "show" deny events/logs for an IP
+2. This is asking for HISTORICAL LOGS, not a policy check
+3. Extract IP address from query: "192.168.1.1"
+4. Decision: Use get_splunk_recent_denies with ip_address="192.168.1.1"
+Correct response:
+{"tool_name": "get_splunk_recent_denies", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "192.168.1.1", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": null, "destination": null, "protocol": null, "port": null, "format": "table"}}
+
+**EXAMPLE - Splunk recent denies (variations):**
+- "list denies for 10.0.0.5" → get_splunk_recent_denies with ip_address="10.0.0.5"
+- "show deny events for IP 172.16.1.100" → get_splunk_recent_denies with ip_address="172.16.1.100"
+- "get recent deny logs for 10.0.0.250" → get_splunk_recent_denies with ip_address="10.0.0.250"
+- If the query says "list denies for an IP" but does NOT include a specific IP, set needs_clarification: true and ask "Please provide the IP address to look up recent deny events for."
+
+**ABSOLUTE RULE: If query contains "is traffic ... allowed" or "is traffic ... denied" or "check if ... allowed" → use check_path_allowed (NetBrain), NOT get_splunk_recent_denies (Splunk)**
 
 **ABSOLUTE RULE FOR ADDRESS GROUP QUERIES:**
 - If query contains an IP address (has dots like "11.0.0.0/24", "11.0.0.1") AND asks "what address group is [IP] part of" or "which group contains [IP]" → use query_panorama_ip_object_group with ip_address parameter
@@ -251,22 +324,33 @@ Correct response:
 - DO NOT confuse these two - the direction of the query (IP→Groups vs Group→IPs) determines which tool to use
 
 **TOOL SELECTION RULES (APPLY IN THIS ORDER):**
-1. **FIRST: Check query direction for address group queries:**
-   - Query asks "what address group is [IP] part of" or "which group contains [IP]" → IP is INPUT, groups are OUTPUT → use query_panorama_ip_object_group with ip_address
-   - Query asks "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → Group name is INPUT, IPs are OUTPUT → use query_panorama_address_group_members with address_group_name
-   - **DO NOT confuse these - the query structure tells you the direction**
 
-2. **Rack queries:**
-   - Query mentions "rack", "rack details", "rack information", "rack utilization" AND contains short identifier (1-3 chars, letter + number, no dashes/dots) like "A4", "A1" → use get_rack_details
-   - Short identifiers (1-3 chars, letter + number, no dashes/dots) like "A4", "A1" → use get_rack_details
+1. **HIGHEST PRIORITY - Network path queries (NetBrain):**
+   - Query contains "find path", "path from", "network path", "show path", "trace path" → use query_network_path
+   - Query contains "is traffic ... allowed" or "is traffic ... denied" or "check if ... allowed" → use check_path_allowed
+   - **These ALWAYS take priority over rack queries, even if query has IPs!**
 
-3. **Device queries:**
-   - Contains dashes (-) like "leander-dc-border-leaf1" → DEVICE NAME → use get_device_rack_location
+2. **Splunk deny logs:**
+   - Query asks to "list denies", "show deny events", "get deny logs", "recent denies" → use get_splunk_recent_denies
+   - **NOT for "is traffic allowed" questions - those use check_path_allowed**
 
-4. **Standalone IP (no context):**
+3. **Address group queries (Panorama):**
+   - Query asks "what address group is [IP] part of" or "which group contains [IP]" → use query_panorama_ip_object_group
+   - Query asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members
+
+4. **Device queries (NetBox) - CHECK BEFORE RACK QUERIES:**
+   - If query contains a name with DASHES (-) like "leander-dc-border-leaf1", "roundrock-dc-fw1" → it's a DEVICE NAME → use get_device_rack_location
+   - "Where is X racked?" where X has dashes → get_device_rack_location
+   - **IMPORTANT: Check for dashes BEFORE checking for rack queries!**
+
+5. **Rack queries (NetBox):**
+   - Query mentions "rack", "rack details" AND contains short identifier (1-3 chars, NO dashes) like "A4", "A1" → use get_rack_details
+   - **ONLY if the identifier has NO dashes! If it has dashes, it's a device name → use get_device_rack_location**
+
+6. **Standalone IP (no context):**
    - Contains dots (.) like "11.0.0.1" with no other context → ask clarification
 
-5. **CRITICAL: Extract the EXACT value from the CURRENT USER QUERY. Do NOT use values from examples.**
+7. **CRITICAL: Extract the EXACT value from the CURRENT USER QUERY. Do NOT use values from examples.**
 """
     
     # No pattern matching - rely entirely on LLM to extract values from the prompt
@@ -281,11 +365,23 @@ Correct response:
 
 **⚠️ MANDATORY FIRST STEP - ANALYZE QUERY STRUCTURE:**
 Before selecting any tool, analyze the CURRENT USER QUERY structure:
+
+**STEP 0 (HIGHEST PRIORITY): Is this a NETWORK PATH query?**
+- Does query contain "find path", "path from", "network path", "show path"? → YES → use query_network_path (NetBrain)
+- Does query ask "is traffic ... allowed" or "is traffic ... denied"? → YES → use check_path_allowed (NetBrain)
+- **If YES to either, STOP HERE and use the NetBrain tool. Do NOT check other rules.**
+
+**STEP 1: Does the query contain a name with DASHES (device name)?**
+- Does query contain something like "leander-dc-border-leaf1", "roundrock-dc-fw1" (has DASHES)? → YES → it's a DEVICE NAME → use get_device_rack_location (NetBox)
+- "Where is leander-dc-border-leaf1 racked?" → get_device_rack_location (NOT get_rack_details!)
+- **IMPORTANT: Names with DASHES are DEVICE names, NOT rack names!**
+
+**STEP 2: If not a path query or device query, continue:**
 1. Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
 2. Does the query contain an address group name (has underscores like "leander_web")?
 3. What is the query asking for?
-   - If query has IP and asks "what address group is [IP] part of" → IP is INPUT, groups are OUTPUT → use query_panorama_ip_object_group
-   - If query has group name and asks "what IPs are in address group [NAME]" → Group is INPUT, IPs are OUTPUT → use query_panorama_address_group_members
+   - If query has IP and asks "what address group is [IP] part of" → use query_panorama_ip_object_group
+   - If query has group name and asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members
    - **DO NOT confuse these two directions**
 
 Available tools:

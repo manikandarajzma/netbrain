@@ -2071,7 +2071,7 @@ def display_result_chat(result, container):
             if table_data:
                 import pandas as pd
                 df = pd.DataFrame(table_data)
-                container.dataframe(df, use_container_width=True, hide_index=True)
+                container.dataframe(df, width="stretch", hide_index=True)
         else:
             print(f"DEBUG: No firewalls found in path", file=sys.stderr, flush=True)
     else:
@@ -2219,7 +2219,7 @@ def display_rack_details_result(result, container, format_type=None):
         
         df = pd.DataFrame(table_data)
         container.success(f"📍 {rack} - Rack Details")
-        container.dataframe(df, use_container_width=True, hide_index=True)
+        container.dataframe(df, width="stretch", hide_index=True)
         
         # Display devices in rack if available
         if devices and len(devices) > 0:
@@ -2234,7 +2234,7 @@ def display_rack_details_result(result, container, format_type=None):
                     "Status": device.get("status", "N/A")
                 })
             devices_df = pd.DataFrame(devices_data)
-            container.dataframe(devices_df, use_container_width=True, hide_index=True)
+            container.dataframe(devices_df, width="stretch", hide_index=True)
         
     elif format_type == "json":
         container.json(result)
@@ -2338,7 +2338,7 @@ def display_racks_list_result(result, container, format_type=None):
             if site_filter:
                 title = f"📍 Racks at {site_filter}"
             container.success(f"{title} ({total_count} total)")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
         else:
             container.info(f"No racks found{' at ' + site_filter if site_filter else ''}.")
     elif format_type == "json":
@@ -2374,7 +2374,7 @@ def display_racks_list_result(result, container, format_type=None):
             if site_filter:
                 title = f"📍 Racks at {site_filter}"
             container.success(f"{title} ({total_count} total)")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             
             # Show AI analysis if available
             ai_analysis = result.get("ai_analysis")
@@ -2496,7 +2496,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
             
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Rack Location")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             return  # CRITICAL: Return early to prevent showing other fields
         elif intent == "device_type_only":
             # Check if this is a yes/no question (check result first for re-rendering, then parameter, then session_state)
@@ -2520,7 +2520,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
                 print(f"DEBUG: WARNING - No device_type in result! Result keys: {list(result.keys())}", file=sys.stderr, flush=True)
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Device Type")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             print(f"DEBUG: Returning early from device_type_only handler", file=sys.stderr, flush=True)
             return  # CRITICAL: Return early to prevent showing other fields
         elif intent == "status_only":
@@ -2540,7 +2540,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
                 table_data.append({"Field": "Status", "Value": status})
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Status")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             return  # CRITICAL: Return early to prevent showing other fields
         elif intent == "manufacturer_only":
             # Check if this is a yes/no question (check result first for re-rendering, then parameter, then session_state)
@@ -2560,7 +2560,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
                 table_data.append({"Field": "Manufacturer", "Value": manufacturer})
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Manufacturer")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             return  # CRITICAL: Return early to prevent showing other fields
         elif intent == "site_only":
             # Only show site
@@ -2568,7 +2568,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
                 table_data.append({"Field": "Site", "Value": site})
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Site")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
             return  # CRITICAL: Return early to prevent showing other fields
         elif intent == "device_details" or intent is None:
             print(f"DEBUG: device_details or None intent - showing all fields. Intent was: {repr(intent)}", file=sys.stderr, flush=True)
@@ -2604,7 +2604,7 @@ def display_rack_location_result(result, container, format_type=None, intent=Non
             
             df = pd.DataFrame(table_data)
             container.success(f"📍 {device} - Device Details")
-            container.dataframe(df, use_container_width=True, hide_index=True)
+            container.dataframe(df, width="stretch", hide_index=True)
     else:
         # Only show location info if AI analysis is not present
         if "ai_analysis" not in result or not result.get("ai_analysis"):
@@ -3278,6 +3278,69 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
         return {"error": f"Error executing query: {str(e)}"}
 
 
+async def execute_splunk_recent_denies_query(ip_address, limit=100, earliest_time="-24h"):
+    """
+    Execute Splunk recent denies query via MCP server.
+
+    Args:
+        ip_address: IP address to search for in deny events
+        limit: Max number of events (default 100)
+        earliest_time: Splunk time range (default "-24h")
+
+    Returns:
+        dict: ip_address, events (list), count, and optional error
+    """
+    import sys
+    print(f"DEBUG: Starting Splunk recent denies query for IP: {ip_address}", file=sys.stderr, flush=True)
+    try:
+        async for client_or_session in get_mcp_session():
+            tool_arguments = {"ip_address": ip_address, "limit": limit, "earliest_time": earliest_time}
+            is_fastmcp = False
+            if FASTMCP_CLIENT_AVAILABLE:
+                try:
+                    is_fastmcp = isinstance(client_or_session, FastMCPClient)
+                except (NameError, TypeError):
+                    module_name = type(client_or_session).__module__
+                    is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
+            try:
+                tool_result = await asyncio.wait_for(
+                    client_or_session.call_tool("get_splunk_recent_denies", arguments=tool_arguments),
+                    timeout=90.0
+                )
+            except TypeError as e:
+                if "unexpected keyword argument 'arguments'" in str(e) and is_fastmcp:
+                    tool_result_list = await asyncio.wait_for(
+                        client_or_session.call_tool("get_splunk_recent_denies", **tool_arguments),
+                        timeout=90.0
+                    )
+                    if tool_result_list and len(tool_result_list) > 0:
+                        class FastMCPToolResult:
+                            def __init__(self, results):
+                                self.content = []
+                                for r in results:
+                                    text = r.text if hasattr(r, 'text') else str(r)
+                                    self.content.append(type('Content', (), {'text': text})())
+                        tool_result = FastMCPToolResult(tool_result_list)
+                    else:
+                        tool_result = None
+                else:
+                    raise
+            if tool_result and tool_result.content:
+                result_text = tool_result.content[0].text
+                try:
+                    return json.loads(result_text)
+                except json.JSONDecodeError:
+                    return {"result": result_text}
+            return None
+    except asyncio.TimeoutError:
+        return {"error": "Splunk query timed out"}
+    except Exception as e:
+        import traceback
+        print(f"DEBUG: Error executing Splunk query: {str(e)}", file=sys.stderr, flush=True)
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        return {"error": f"Error executing query: {str(e)}"}
+
+
 async def execute_rack_location_query(device_name, format_type=None, conversation_history=None, intent=None):
     """
     Execute rack location lookup via MCP server.
@@ -3407,26 +3470,27 @@ def main():
         st.markdown("---")
         st.markdown("### 💡 Example Queries")
         st.markdown("""
-        **NetBox Queries:**
-        - *Where is leander-dc-border-leaf1 racked?*
-        - *Show me rack details for A4*
-        - *What is the rack location of leander-dc-leaf6?*
+        **Splunk:**
+        - *List all the denies for 10.0.0.250*
+        - *Get recent deny events for 192.168.1.1*
+        - *Show deny events for IP 10.0.1.100*
         
-        **Panorama Address Group Queries:**
+        **Panorama:**
         - *What address group is 11.0.0.0/24 part of?*
         - *Which address group contains 11.0.0.1?*
         - *What IPs are in the address group leander_web?*
         - *List all IPs in address group web_servers*
         
-        **Network Path Queries:**
+        **NetBox:**
+        - *Where is leander-dc-border-leaf1 racked?*
+        - *Show me rack details for A4*
+        - *What is the rack location of leander-dc-leaf6?*
+        
+        **NetBrain:**
         - *Find path from 10.0.0.1 to 10.0.1.1*
         - *Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443*
-        - *Show me the network path from 10.10.3.253 to 172.24.32.225 UDP port 53*
-        
-        **Port / Path Allowed Check:**
         - *Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?*
         - *Check if path from 10.0.0.250 to 10.0.1.250 is allowed on TCP 443*
-        - *Is traffic from 192.168.1.1 to 192.168.2.1 on UDP port 53 denied?*
         """)
         
         if st.button("🗑️ Clear Chat History"):
@@ -3485,9 +3549,28 @@ def main():
                                     st.markdown(ai_analysis)
                             else:
                                 st.info("Query completed. No results found or analysis unavailable.")
+                        elif isinstance(message["content"], dict) and "status" in message["content"] and message["content"].get("status") in ("allowed", "denied", "unknown") and ("source" in message["content"] or "destination" in message["content"]):
+                            # Display check_path_allowed result (has status: allowed/denied/unknown)
+                            display_path_allowed_result(message["content"], st.container())
                         elif isinstance(message["content"], dict) and ("path_hops" in message["content"] or "simplified_hops" in message["content"] or "path_details" in message["content"]):
                             # Display network path result
                             display_result_chat(message["content"], st.container())
+                        elif isinstance(message["content"], dict) and "events" in message["content"] and "ip_address" in message["content"]:
+                            # Splunk recent denies result
+                            result = message["content"]
+                            if result.get("error"):
+                                st.error(f"❌ {result['error']}")
+                            else:
+                                events = result.get("events", [])
+                                count = result.get("count", len(events))
+                                ip_address = result.get("ip_address", "")
+                                st.success(f"Found **{count}** recent deny event(s) for **{ip_address}** from Splunk.")
+                                if events:
+                                    import pandas as pd
+                                    df = pd.DataFrame(events)
+                                    st.dataframe(df, width="stretch")
+                                else:
+                                    st.info("No deny events found for this IP in the time range.")
                         elif isinstance(message["content"], dict):
                             # Other dict results - try display_result_chat but it should handle unknown types gracefully
                             display_result_chat(message["content"], st.container())
@@ -3524,7 +3607,7 @@ def main():
                         use_live = st.button(
                             "🔴 Use Live Data",
                             key=f"live_btn_{query_id}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary" if suggested_live else "secondary",
                             help="Use real-time live access data (may take longer but more current)"
                         )
@@ -3533,7 +3616,7 @@ def main():
                         use_baseline = st.button(
                             "💾 Use Cached/Baseline Data",
                             key=f"baseline_btn_{query_id}",
-                            use_container_width=True,
+                            width="stretch",
                             type="primary" if not suggested_live else "secondary",
                             help="Use cached baseline data (faster but may be older)"
                         )
@@ -4526,6 +4609,70 @@ def main():
                                 st.error(error_msg)
                             st.session_state.messages.append({"role": "assistant", "content": error_msg})
                             return
+                    elif selected_tool == "get_splunk_recent_denies":
+                        ip_address = tool_params.get("ip_address", "").strip()
+                        limit = tool_params.get("limit", 100)
+                        earliest_time = tool_params.get("earliest_time", "-24h")
+                        if not ip_address:
+                            error_msg = "IP address not found in query. Please specify an IP (e.g., 'get recent denies for 192.168.1.1')."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                        status_msg = f"🔎 Querying Splunk for recent denies for **{ip_address}**..."
+                        with st.chat_message("assistant"):
+                            st.info(status_msg)
+                        try:
+                            max_timeout = 95
+                            try:
+                                asyncio.get_running_loop()
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor:
+                                    future = executor.submit(
+                                        lambda: asyncio.run(
+                                            asyncio.wait_for(
+                                                execute_splunk_recent_denies_query(ip_address, limit, earliest_time),
+                                                timeout=max_timeout
+                                            )
+                                        )
+                                    )
+                                    result = future.result(timeout=max_timeout + 5)
+                            except RuntimeError:
+                                result = asyncio.run(
+                                    asyncio.wait_for(
+                                        execute_splunk_recent_denies_query(ip_address, limit, earliest_time),
+                                        timeout=max_timeout
+                                    )
+                                )
+                            with st.chat_message("assistant"):
+                                if isinstance(result, dict) and result.get("error"):
+                                    st.error(f"❌ {result['error']}")
+                                elif isinstance(result, dict):
+                                    events = result.get("events", [])
+                                    count = result.get("count", len(events))
+                                    st.success(f"Found **{count}** recent deny event(s) for **{ip_address}** from Splunk.")
+                                    if events:
+                                        import pandas as pd
+                                        df = pd.DataFrame(events)
+                                        st.dataframe(df, width="stretch")
+                                    else:
+                                        st.info("No deny events found for this IP in the time range.")
+                                else:
+                                    st.info("Query completed. No results returned.")
+                            st.session_state.messages.append({"role": "assistant", "content": result})
+                            return
+                        except asyncio.TimeoutError:
+                            error_msg = "⏱️ Splunk query timed out. Please try again."
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
+                        except Exception as e:
+                            error_msg = f"An error occurred: {str(e)}"
+                            with st.chat_message("assistant"):
+                                st.error(error_msg)
+                            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                            return
                     else:
                         # Tool was selected but not handled - this shouldn't happen
                         print(f"DEBUG: WARNING - Tool '{selected_tool}' was selected but not handled!", file=sys.stderr, flush=True)
@@ -4600,7 +4747,7 @@ def main():
                     use_live = st.button(
                         "🔴 Use Live Data",
                         key=f"live_btn_{query_id}",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary" if suggested_live else "secondary",
                         help="Use real-time live access data (may take longer but more current)"
                     )
@@ -4609,7 +4756,7 @@ def main():
                     use_baseline = st.button(
                         "💾 Use Cached/Baseline Data",
                         key=f"baseline_btn_{query_id}",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary" if not suggested_live else "secondary",
                         help="Use cached baseline data (faster but may be older)"
                     )
