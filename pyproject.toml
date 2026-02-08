@@ -16,8 +16,10 @@ dependencies = [
     "langchain-community>=0.0.20",
     "langchain-ollama>=0.1.0",
     
-    # Web framework
-    "streamlit>=1.28.0",
+    # Web framework (FastAPI only; Streamlit UI removed)
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "jinja2>=3.1.0",
     
     # HTTP clients
     "aiohttp>=3.9.0",

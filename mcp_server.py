@@ -84,7 +84,7 @@ def _get_llm():
         try:
             print("DEBUG: Initializing LLM (ChatOllama)...", file=sys.stderr, flush=True)
             llm = ChatOllama(
-                model="llama3.1:8b",  # Ollama model identifier (use 'model' not 'model_name')
+                model="qwen2.5:14b",  # Better reasoning than llama3.1:8b (use 'model' not 'model_name')
                 temperature=0.0,  # Sampling temperature (0.0 = deterministic, 1.0 = very random)
                 base_url="http://localhost:11434",  # Explicit Ollama URL
             )
@@ -118,11 +118,11 @@ def _get_llm():
 NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 
 # NetBox API configuration
-# NETBOX_URL: Base URL for NetBox (hardcoded)
-# NETBOX_TOKEN: API token for NetBox authentication (hardcoded)
+# NETBOX_URL: Base URL for NetBox (env NETBOX_URL or default)
+# NETBOX_TOKEN: API token for NetBox authentication (env NETBOX_TOKEN or hardcoded fallback)
 # NETBOX_VERIFY_SSL: Set to "false" to disable SSL verification (default true)
-NETBOX_URL = "http://192.168.15.109:8080".rstrip("/")
-NETBOX_TOKEN = "f652dc1564700a3a90aabfa903a8a61db6ea007f"
+NETBOX_URL = os.getenv("NETBOX_URL", "http://192.168.15.109:8080").rstrip("/")
+NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "f652dc1564700a3a90aabfa903a8a61db6ea007f")
 NETBOX_VERIFY_SSL = os.getenv("NETBOX_VERIFY_SSL", "true").lower() in ["1", "true", "yes"]
 
 
@@ -529,6 +529,20 @@ def _netbox_ssl_context() -> Optional[ssl.SSLContext]:
     return ssl_context
 
 
+def _device_manufacturer(device: Dict[str, Any]) -> Any:
+    """Extract manufacturer from a NetBox device (device_type.manufacturer or device.manufacturer)."""
+    dt = device.get("device_type")
+    if isinstance(dt, dict):
+        mfr = dt.get("manufacturer")
+        if isinstance(mfr, dict):
+            return mfr.get("display") or mfr.get("name")
+        return mfr
+    mfr = device.get("manufacturer")
+    if isinstance(mfr, dict):
+        return mfr.get("display") or mfr.get("name")
+    return mfr
+
+
 async def _fetch_elevation_image_base64(elevation_url: str) -> Optional[str]:
     """
     Fetch NetBox elevation SVG from API and return as base64-encoded image.
@@ -592,15 +606,15 @@ async def get_rack_details(
     rack_name: str,
     site_name: Optional[str] = None,
     format: Optional[str] = None,
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[str] = None  # JSON string instead of List[Dict]
 ) -> Dict[str, Any]:
     """
-    Get rack details from NetBox including rack information and devices in the rack.
+    Use ONLY for rack name lookup (e.g. "A4", "A1"). Input: rack_name (short, no dots). NOT for "path allowed" or "traffic allowed" with two IPs—use check_path_allowed. Rack names have no dots; IPs have dots.
+
+    Use this tool when the user asks about a specific rack by SHORT name (A4, A1, B2). Do not use for device names with dashes (get_device_rack_location).
     
-    **CRITICAL: When to use this tool:**
-    - Use this tool ONLY when the query contains a RACK NAME (a SHORT identifier like "A1", "A4", "B2")
-    - Rack names are SHORT (1-3 characters, typically letter + number, NO dashes, NO dots)
-    - Examples of rack names: "A1", "A4", "B2", "Rack A4"
+    When to use this tool:
+    - Query contains a RACK NAME: short identifier like "A1", "A4", "B2", "Rack A4"
     - **CRITICAL: If query mentions "space utilization", "utilization", "rack details", "rack" with a SHORT name (like "A4") → this is ALWAYS a rack query → use this tool**
     - **ABSOLUTE RULE #1: If the query is JUST a short identifier like "A4", "A1", "B2" (1-3 characters, letter + number, no dashes, no dots) → this is ALWAYS a rack name → use this tool IMMEDIATELY. DO NOT return tool_name as null.**
     - **ABSOLUTE RULE #2: DO NOT ask for clarification when the query is clearly a rack name like "A4" - just use this tool directly with rack_name="A4"**
@@ -643,6 +657,14 @@ async def get_rack_details(
     - Query: "rack A4 utilization" → rack_name="A4", site_name=None, format="table"
     - Query: "A4 space usage" → rack_name="A4", site_name=None, format="table"
     
+    **Query variations (all → get_rack_details with rack_name=short id; use site_name if location given):**
+    - "rack A4" / "rack A1" / "A4" / "A1" / "show rack A4" / "show me rack A1"
+    - "rack details for A4" / "rack details of A1" / "details for rack A4" / "info on rack A1"
+    - "A4 in Leander" / "A4 at Leander DC" / "rack A1 in Round Rock" / "A1 at Round Rock DC"
+    - "space utilization of A4" / "A4 utilization" / "A4 space usage" / "rack A4 utilization"
+    - "which devices are in rack A4?" / "devices in A4" / "what's in rack A4"
+    - Any phrase with a SHORT rack id (A1, A4, B2, no dashes) → use this tool. Names with DASHES are devices → use get_device_rack_location instead.
+    
     The tool can return data in different formats:
     - table: Returns data formatted as a table (recommended)
     - json: Returns data in JSON format
@@ -658,9 +680,23 @@ async def get_rack_details(
     Returns:
         dict: Rack details including rack name, site, location, units, devices in rack, and AI-generated summary
     """
+    # Parse conversation_history if it's a JSON string
+    if isinstance(conversation_history, str):
+        try:
+            conversation_history = json.loads(conversation_history) if conversation_history else None
+        except json.JSONDecodeError:
+            conversation_history = None
+
     rack_name = (rack_name or "").strip()
     if not rack_name:
         return {"error": "Rack name cannot be empty"}
+    
+    # CRITICAL: Reject IP addresses (contain dots) - path/traffic allowed queries must use check_path_allowed
+    if "." in rack_name:
+        return {
+            "error": f"'{rack_name}' looks like an IP address (contains dots), not a rack name. Rack names are short (e.g. A4, A1).",
+            "suggestion": "For queries like 'is path allowed from 10.0.0.1 to 10.0.1.1?' or 'is traffic allowed?' use the check_path_allowed tool with source and destination IPs."
+        }
     
     # CRITICAL: Reject device names (names with dashes) - they should use get_device_rack_location instead
     if "-" in rack_name:
@@ -756,9 +792,14 @@ async def get_rack_details(
     
     async with aiohttp.ClientSession() as session:
         try:
-            # Try exact name match first
-            params = {"name": rack_name_clean}
-            async with session.get(url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
+            # Use search (q=) first so we get ALL racks matching this name across sites; paginate to avoid assuming one DC
+            all_results = []
+            params = {"q": rack_name_clean, "limit": 250}
+            if site_id:
+                params["site_id"] = site_id
+            next_url = url
+            first_params = params
+            async with session.get(url, headers=headers, params=first_params, ssl=ssl_context, timeout=15) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     return {
@@ -766,27 +807,34 @@ async def get_rack_details(
                         "details": error_text[:500]
                     }
                 data = await response.json()
+                results_page = data.get("results", []) if isinstance(data, dict) else []
+                all_results.extend(results_page)
+                next_url = data.get("next") if isinstance(data, dict) else None
+                print(f"DEBUG get_rack_details: API response keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}, count={data.get('count') if isinstance(data, dict) else 'n/a'}, results_this_page={len(results_page)}, next={bool(next_url)}", file=sys.stderr, flush=True)
+                if results_page:
+                    r0 = results_page[0]
+                    site_raw = r0.get("site")
+                    print(f"DEBUG get_rack_details: first result name={r0.get('name')}, site type={type(site_raw).__name__}, site value={site_raw}", file=sys.stderr, flush=True)
+            while next_url:
+                async with session.get(next_url, headers=headers, ssl=ssl_context, timeout=15) as response:
+                    if response.status != 200:
+                        break
+                    data = await response.json()
+                    all_results.extend(data.get("results", []) if isinstance(data, dict) else [])
+                    next_url = data.get("next") if isinstance(data, dict) else None
+            results = all_results
+            print(f"DEBUG get_rack_details: total results after pagination={len(results)}", file=sys.stderr, flush=True)
+            if not results:
+                # Fallback: exact name filter in case search (q) returned nothing
+                params_exact = {"name": rack_name_clean, "limit": 250}
+                if site_id:
+                    params_exact["site_id"] = site_id
+                async with session.get(url, headers=headers, params=params_exact, ssl=ssl_context, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = data.get("results", []) if isinstance(data, dict) else []
         except Exception as e:
             return {"error": f"NetBox rack lookup error: {str(e)}"}
-        
-        results = data.get("results", []) if isinstance(data, dict) else []
-        if not results:
-            # Fallback to generic search, with site filter if provided
-            try:
-                params = {"q": rack_name_clean}
-                if site_id:
-                    params["site_id"] = site_id
-                async with session.get(url, headers=headers, params=params, ssl=ssl_context, timeout=15) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {
-                            "error": f"NetBox rack search failed: HTTP {response.status}",
-                            "details": error_text[:500]
-                        }
-                    data = await response.json()
-                    results = data.get("results", []) if isinstance(data, dict) else []
-            except Exception as e:
-                return {"error": f"NetBox rack search error: {str(e)}"}
         
         if not results:
             return {
@@ -803,6 +851,7 @@ async def get_rack_details(
         # If no exact matches, use first result
         if not matching_racks:
             matching_racks = [results[0]] if results else []
+        print(f"DEBUG get_rack_details: matching_racks count={len(matching_racks)}, site_id={site_id}", file=sys.stderr, flush=True)
         
         # If site filtering was requested, find rack in that site
         rack = None
@@ -816,17 +865,58 @@ async def get_rack_details(
         
         # If no site filter or no match with site filter, check for multiple sites
         if not rack:
-            # Get unique sites from matching racks
+            # Get unique sites from matching racks (resolve site name if API returned only ID)
             sites = {}
             for candidate in matching_racks:
                 site = candidate.get("site") or {}
                 site_id_val = site.get("id") if isinstance(site, dict) else site
                 site_name_val = site.get("name") or site.get("display") if isinstance(site, dict) else site
-                if site_id_val and site_id_val not in sites:
-                    sites[site_id_val] = site_name_val
+                if site_id_val is None:
+                    continue
+                if site_id_val not in sites:
+                    if site_name_val and str(site_name_val).strip() and not str(site_name_val).isdigit():
+                        sites[site_id_val] = str(site_name_val).strip()
+                    else:
+                        # Resolve site name by ID so we can show "Leander DC" not "Site ID 1"
+                        try:
+                            site_url = f"{NETBOX_URL}/api/dcim/sites/{site_id_val}/"
+                            async with session.get(site_url, headers=headers, ssl=ssl_context, timeout=5) as site_resp:
+                                if site_resp.status == 200:
+                                    site_data = await site_resp.json()
+                                    sites[site_id_val] = (site_data.get("name") or site_data.get("display") or f"Site ID {site_id_val}").strip()
+                                else:
+                                    sites[site_id_val] = f"Site ID {site_id_val}"
+                        except Exception:
+                            sites[site_id_val] = f"Site ID {site_id_val}"
+            print(f"DEBUG get_rack_details: unique sites={sites}, len(sites)={len(sites)}", file=sys.stderr, flush=True)
             
-            # If multiple sites and no site filter provided, return ambiguity
-            if len(sites) > 1 and not site_id:
+            # If user provided site_name but we couldn't resolve site_id (e.g. "Leander" vs "Leander DC"),
+            # match against the site names we already have from the matching racks
+            if site_name and not site_id and sites:
+                site_name_clean_lower = site_name.strip().lower()
+                site_name_no_suffix = site_name_clean_lower.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                matched_site_id = None
+                for sid, sname in sites.items():
+                    sname_lower = str(sname).lower()
+                    sname_no_suffix = sname_lower.replace(" dc", "").replace(" data center", "").replace(" datacenter", "")
+                    if (site_name_clean_lower == sname_lower or
+                        site_name_clean_lower in sname_lower or sname_lower in site_name_clean_lower or
+                        site_name_no_suffix == sname_no_suffix or
+                        site_name_no_suffix in sname_no_suffix or sname_no_suffix in site_name_no_suffix):
+                        matched_site_id = sid
+                        break
+                if matched_site_id is not None:
+                    site_id = matched_site_id
+                    for candidate in matching_racks:
+                        rack_site = candidate.get("site")
+                        rid = rack_site.get("id") if isinstance(rack_site, dict) else rack_site
+                        if rid == site_id:
+                            rack = candidate
+                            break
+                    print(f"DEBUG get_rack_details: matched user site_name to site id {site_id}, rack={rack.get('name') if rack else None}", file=sys.stderr, flush=True)
+            
+            # If multiple sites and no site filter provided (and we didn't just resolve above), ask which site
+            if not rack and len(sites) > 1 and not site_id:
                 return {
                     "rack": rack_name_clean,
                     "error": f"Multiple racks named '{rack_name_clean}' found at different sites",
@@ -834,8 +924,9 @@ async def get_rack_details(
                     "requires_site": True
                 }
             
-            # Use first matching rack
-            rack = matching_racks[0]
+            # Use first matching rack if still not set
+            if not rack:
+                rack = matching_racks[0]
         
         # Get site information
         site = rack.get("site") or {}
@@ -908,6 +999,10 @@ async def get_rack_details(
                     "face": device.get("face", {}).get("value") if isinstance(device.get("face"), dict) else device.get("face"),
                     "device_type": device.get("device_type", {}).get("display") if isinstance(device.get("device_type"), dict) else device.get("device_type"),
                     "status": device.get("status", {}).get("value") if isinstance(device.get("status"), dict) else device.get("status"),
+                    "manufacturer": _device_manufacturer(device),
+                    "device_role": device.get("device_role", {}).get("display") if isinstance(device.get("device_role"), dict) else device.get("device_role"),
+                    "serial": device.get("serial"),
+                    "primary_ip": device.get("primary_ip", {}).get("address") if isinstance(device.get("primary_ip"), dict) else device.get("primary_ip"),
                 }
                 for device in devices_in_rack
             ]
@@ -1032,7 +1127,7 @@ Format your response as a JSON object with this field:
 async def list_racks(
     site_name: Optional[str] = None,
     format: Optional[str] = None,
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[str] = None  # JSON string instead of List[Dict]
 ) -> Dict[str, Any]:
     """
     List all racks from NetBox, optionally filtered by site.
@@ -1048,7 +1143,21 @@ async def list_racks(
     - Query: "show all racks" → site_name=None, format="table"
     - Query: "racks in Leander DC" → site_name="Leander DC", format="table"
     - Query: "racks at Round Rock" → site_name="Round Rock", format="table"
+    - Query: "what racks are in Leander" → site_name="Leander", format="table"
+    - Query: "how many racks are in round rock" → site_name="round rock", format="table"
+    - Query: "which racks are at Round Rock" → site_name="Round Rock", format="table"
     - Query: "all racks in Round Rock DC" → site_name="Round Rock DC", format="table"
+    
+    **Query variations (all → list_racks; set site_name when a location is mentioned):**
+    - "list all racks" / "show all racks" / "all racks" / "list racks" / "show racks"
+    - "what racks are in Leander" / "what racks are in leander" / "which racks are in Round Rock"
+    - "how many racks are in round rock" / "how many racks in Leander DC"
+    - "racks at Leander" / "racks in Leander DC" / "racks at Round Rock" / "racks in Round Rock DC"
+    - "list racks at Leander" / "list racks in Round Rock" / "show racks at Leander DC"
+    - "give me all racks at Leander" / "show me racks in Round Rock" / "get racks at Leander DC"
+    - "count of racks in round rock" / "number of racks at Leander"
+    - "which racks are at Round Rock?" / "what racks are at Leander DC?"
+    - Do NOT use for a single rack name (e.g. "A4", "A1") → use get_rack_details instead.
     
     The tool can return data in different formats:
     - table: Returns data formatted as a table (recommended)
@@ -1064,6 +1173,13 @@ async def list_racks(
     Returns:
         dict: List of racks with their details (name, site, status, space utilization, device count, etc.)
     """
+    # Parse conversation_history if it's a JSON string
+    if isinstance(conversation_history, str):
+        try:
+            conversation_history = json.loads(conversation_history) if conversation_history else None
+        except json.JSONDecodeError:
+            conversation_history = None
+
     if not NETBOX_TOKEN:
         return {"error": "NETBOX_TOKEN is not set. Configure NetBox API token."}
     
@@ -1328,15 +1444,14 @@ Format your response as a JSON object with this field:
 
 @mcp.tool()
 async def get_device_rack_location(
-    device_name: str, 
+    device_name: str,
     intent: Optional[str] = None,
     format: Optional[str] = None,
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    expected_rack: Optional[str] = None,  # For yes/no questions like "is device X in rack Y?"
+    conversation_history: Optional[str] = None  # JSON string instead of List[Dict]
 ) -> Dict[str, Any]:
     """
-    Get device information from NetBox including rack location, device details, or specific fields.
-    
-    ⚠️ **STOP - READ THIS FIRST BEFORE SELECTING THIS TOOL:**
+    Use ONLY for NetBox device lookup by device name (e.g. leander-dc-leaf1). Input: device_name (names have dashes). NOT for "path allowed" or "traffic allowed" between two IPs—use check_path_allowed. Queries with dots (IPs) are not device names.
     
     **QUICK CHECK: Does the user query contain a DOT (.)?**
     - YES (e.g., "11.0.0.1", "192.168.1.1") → This is an IP address → DO NOT use this tool → Ask for clarification instead
@@ -1412,6 +1527,19 @@ async def get_device_rack_location(
     - Query: "manufacturer of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="manufacturer_only", format="table"
     - Query: "status of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="status_only", format="table"
 
+    **Query variations (all → get_device_rack_location with device_name=the name with dashes; this is NetBox device lookup, NOT Panorama):**
+    - "is leander-dc-border-leaf1 in A1?" / "is leander-dc-border-leaf1 racked in A1?" / "is device X in rack Y?" → device_name="leander-dc-border-leaf1" (look up device; result shows which rack it is in—compare to A1)
+    - "on netbox where is leander-dc-border-leaf1?" / "in netbox where is leander-dc-border-leaf1?"
+    - "where is leander-dc-border-leaf1?" / "where is leander-dc-border-leaf1 racked?"
+    - "which rack is leander-dc-border-leaf1 in?" / "what rack is leander-dc-border-leaf1 in?"
+    - "rack location of leander-dc-border-leaf1" / "rack location for leander-dc-border-leaf1"
+    - "find leander-dc-border-leaf1 in netbox" / "look up leander-dc-border-leaf1 in netbox"
+    - "netbox where is leander-dc-border-leaf1" / "netbox find device leander-dc-border-leaf1"
+    - "locate leander-dc-border-leaf1" / "locate device leander-dc-border-leaf1"
+    - "which site is leander-dc-border-leaf1 in?" / "what site is leander-dc-border-leaf1 in?" → intent="site_only"
+    - "device type of leander-dc-border-leaf1" → intent="device_type_only"
+    - Any phrase with a name containing DASHES (e.g. roundrock-dc-leaf1, leander-dc-border-leaf1) asking where/location/rack/site → use this tool. Do NOT use Panorama tools for device names with dashes.
+
     Args:
         device_name: The FULL device name to look up (e.g., "roundrock-dc-border-leaf1" - must include all parts with dashes).
                      **CRITICAL: This parameter accepts ONLY device names (strings with DASHES like "leander-dc-leaf6"), NOT IP addresses (strings with DOTS like "11.0.0.1").**
@@ -1423,6 +1551,13 @@ async def get_device_rack_location(
     Returns:
         dict: Device information based on intent - all details, or specific field(s) as requested
     """
+    # Parse conversation_history if it's a JSON string
+    if isinstance(conversation_history, str):
+        try:
+            conversation_history = json.loads(conversation_history) if conversation_history else None
+        except json.JSONDecodeError:
+            conversation_history = None
+
     device_name = (device_name or "").strip()
     if not device_name:
         return {"error": "Device name cannot be empty"}
@@ -2025,6 +2160,22 @@ Format your response as a JSON object with this field:
                 "_debug_llm_check": result.get("_debug_llm_check", {})
             }
         
+        # Add yes/no answer if expected_rack is provided (for questions like "is device X in rack Y?")
+        print(f"DEBUG: expected_rack parameter = {repr(expected_rack)}", file=sys.stderr, flush=True)
+        if expected_rack:
+            print(f"DEBUG: Generating yes/no answer for expected_rack={expected_rack}", file=sys.stderr, flush=True)
+            actual_rack = cleaned_result.get("rack")
+            device_name_str = cleaned_result.get("device", device_name)
+
+            # Normalize rack names for comparison (remove spaces, case-insensitive)
+            expected_normalized = str(expected_rack).strip().upper() if expected_rack else ""
+            actual_normalized = str(actual_rack).strip().upper() if actual_rack else ""
+
+            if actual_normalized == expected_normalized:
+                cleaned_result["yes_no_answer"] = f"✅ **Yes**, {device_name_str} is in rack {actual_rack}."
+            else:
+                cleaned_result["yes_no_answer"] = f"❌ **No**, {device_name_str} is NOT in rack {expected_rack}. It is in rack {actual_rack}."
+
         return cleaned_result
 
 
@@ -2208,11 +2359,9 @@ async def query_panorama_ip_object_group(
     vsys: str = "vsys1"
 ) -> Dict[str, Any]:
     """
-    Query Panorama to find which object group(s) an IP address belongs to.
+    query_panorama_ip_object_group: Use ONLY when user has ONE IP and asks which address group contains it (e.g. "what group is 10.0.0.1 in"). NEVER use for "path allowed", "traffic allowed", or "check if traffic from X to Y" — use check_path_allowed for those. Input: ip_address (one only). Output: list of groups.
     
-    ⚠️ **STOP - READ THIS FIRST BEFORE SELECTING THIS TOOL:**
-    
-    **🚨 CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_address_group_members:**
+    **CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_address_group_members:**
     - **This tool (query_panorama_ip_object_group):** Query has an IP address → finds which groups contain that IP
       - Example: "what address group is 11.0.0.0/24 part of" → INPUT: IP "11.0.0.0/24", OUTPUT: groups
       - Example: "which group contains 11.0.0.1" → INPUT: IP "11.0.0.1", OUTPUT: groups
@@ -2275,6 +2424,13 @@ async def query_panorama_ip_object_group(
       * Ask what the user wants to DO with the IP (query Panorama, look up device, look up rack)
       * DO NOT ask for "site" when the intent is about Panorama/object groups - Panorama doesn't use sites
     - This is for Panorama address/object group queries for IP addresses
+    
+    **Query variations (all → query_panorama_ip_object_group; input is an IP/CIDR with dots; do NOT use for device names with dashes → use get_device_rack_location):**
+    - "what address group is 11.0.0.0/24 part of?" / "which group contains 11.0.0.1?"
+    - "what object group is 10.0.0.254 in?" / "find address group for 192.168.1.100"
+    - "which address group has 11.0.0.1?" / "what group does 10.0.0.1 belong to?"
+    - "panorama what group is 11.0.0.1 in?" / "in panorama which group contains 11.0.0.1?"
+    - If query has a name with DASHES (e.g. leander-dc-border-leaf1) or says "netbox" / "where is" for a device → use get_device_rack_location, NOT this tool.
     
     This tool searches Panorama for address objects and address groups containing the specified IP address.
     It checks both shared objects and device-group specific objects.
@@ -2993,6 +3149,15 @@ async def query_panorama_ip_object_group(
                 if result["policies"]:
                     result["message"] += f" and {len(result['policies'])} policy/policies using these groups"
                 print(f"DEBUG: Success! Found {len(matching_address_objects)} address objects, {len(result['address_groups'])} address groups, and {len(result['policies'])} policies", file=sys.stderr, flush=True)
+                # Add top-level "members" so the UI shows "Address group members (IPs)" first (same shape as query_panorama_address_group_members)
+                seen = set()
+                result["members"] = []
+                for ag in result.get("address_groups", []):
+                    for m in ag.get("members") or []:
+                        key = (m.get("name"), m.get("value"))
+                        if key not in seen:
+                            seen.add(key)
+                            result["members"].append(m)
         
         # Send result to LLM for analysis and table format summary
         llm = _get_llm()
@@ -3001,30 +3166,15 @@ async def query_panorama_ip_object_group(
             try:
                 from langchain_core.prompts import ChatPromptTemplate
                 
-                system_prompt = """You are a network security assistant. Analyze the Panorama address object and address group query results and provide a concise summary in TABLE FORMAT.
+                system_prompt = """You are a network security assistant. The UI will display the data in proper tables. Your job is to write a SHORT narrative summary only (2-4 sentences).
 
-Provide a summary that includes:
-- The queried IP address or CIDR
-- Address objects found (name, type, value, device group if applicable)
-- Address groups found (name, device group if applicable)
-- **For each address group, list ALL IP addresses/values that are members of that group**
-- **For each address group, list ALL policies (security and NAT) that use that address group**
-  - Include policy name, type (security/NAT), action (for security policies), source, destination, services
-- Location where objects were found (shared or device group)
+Do NOT use markdown tables, pipe characters, or column layouts. Do NOT output "Table 1", "Table 2", or "--- | ---".
 
-Format your response as markdown tables:
+Write a brief summary that:
+- STARTS with the direct answer: which address group(s) the IP is in (e.g. "The IP 11.0.0.1 is in address group leander_web.").
+- Then mention address object name(s) and how many policies use them, and location (e.g. device-group) if relevant.
 
-**Table 1: Object group details**
-Columns: IP Address, Address Object, Address Group, All IPs in Group, Location
-
-**Table 2: Policy details**
-Columns: Address Group/Object, Policy Name, Policy Type, Rulebase (Pre/Post), Action/NAT Type, Source, Destination, Services, Location
-
-**IMPORTANT: When displaying address groups, show all the IP addresses/CIDR blocks that are members of each group, not just the queried IP.**
-**IMPORTANT: When displaying policies, clearly show which address groups AND address objects each policy uses, along with the policy details (action, source, destination, services).**
-**IMPORTANT: Policies can use address objects directly (like "test_destination") OR address groups (like "leander_web") - show both in the policy table.**
-
-Keep the summary concise and informative. Focus on the key findings."""
+Example: "The IP 11.0.0.1 is in address group leander_web. It is in address object test_destination. Three security policies (test, ai-test, ai-test1) use these in device-group leander." Keep it under 2-4 sentences."""
                 
                 analysis_prompt_template = ChatPromptTemplate.from_messages([
                     ("system", system_prompt),
@@ -3090,11 +3240,11 @@ async def query_panorama_address_group_members(
     vsys: str = "vsys1"
 ) -> Dict[str, Any]:
     """
-    Query Panorama to get all IP addresses and address objects in a specific address group.
+    Query Panorama to list all IPs/address objects in a specific address group (input: group name; output: list of members).
+
+    Do NOT use for: "check if traffic from X to Y is allowed", "is path allowed", "is traffic allowed" — use check_path_allowed instead. This tool only lists members of a named address group; it does not check if traffic is allowed between two IPs.
     
-    ⚠️ **STOP - READ THIS FIRST BEFORE SELECTING THIS TOOL:**
-    
-    **🚨 CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_ip_object_group:**
+    **CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_ip_object_group:**
     - **This tool (query_panorama_address_group_members):** Query has a group name → lists IPs in that group
       - Example: "what IPs are in address group leander_web" → INPUT: group "leander_web", OUTPUT: IPs
       - Example: "list IPs in group leander_web" → INPUT: group "leander_web", OUTPUT: IPs
@@ -3140,6 +3290,13 @@ async def query_panorama_address_group_members(
     - Query: "what other IPs are in the address group leander_web" → address_group_name="leander_web", device_group=None
     - Query: "list all IPs in address group web_servers" → address_group_name="web_servers", device_group=None
     - Query: "what addresses are in the group leander_web" → address_group_name="leander_web", device_group=None
+    
+    **Query variations (all → query_panorama_address_group_members; input is a GROUP NAME, output is list of IPs):**
+    - "what IPs are in address group leander_web?" / "list IPs in group leander_web"
+    - "what addresses are in the group web_servers?" / "list members of address group dmz_hosts"
+    - "show me IPs in group leander_web" / "members of address group web_servers"
+    - "panorama list IPs in group X" / "what's in address group leander_web?"
+    - Do NOT use for "which group contains [IP]" → use query_panorama_ip_object_group instead.
     """
     import xml.etree.ElementTree as ET
     import urllib.parse
@@ -4118,8 +4275,23 @@ async def _query_network_path_impl(
                                         if not isinstance(to_dev, dict):
                                             to_dev = {}
                                         
-                                        from_dev_name = from_dev.get("devName", "Unknown")
-                                        to_dev_name = to_dev.get("devName") if to_dev.get("devName") else None
+                                        def _device_display_name(dev: dict) -> Optional[str]:
+                                            """NetBrain has no unknown devices; use first available name field."""
+                                            if not dev:
+                                                return None
+                                            name = (
+                                                dev.get("devName") or dev.get("displayName") or dev.get("name")
+                                                or dev.get("hostName") or dev.get("hostname") or dev.get("deviceName")
+                                            )
+                                            if name and str(name).strip():
+                                                return str(name).strip()
+                                            ip = dev.get("ip") or dev.get("ipAddress") or dev.get("IP")
+                                            if ip:
+                                                return str(ip).strip()
+                                            return None
+                                        
+                                        from_dev_name = _device_display_name(from_dev) or "Unknown"
+                                        to_dev_name = _device_display_name(to_dev)
                                         
                                         # Check if device is a firewall by examining device type and name
                                         from_dev_type = str(from_dev.get("devType", "")).lower() if isinstance(from_dev, dict) else ""
@@ -4393,18 +4565,46 @@ async def _query_network_path_impl(
                 
                 # If we found hops, use simplified format
                 if simplified_hops:
-                    # Clean hops to ensure all values are JSON-serializable
+                    # Clean hops: JSON-serializable values; in_interface/out_interface as display name only (Ethernet1/1 style)
+                    def _interface_display_name(val):
+                        if val is None:
+                            return None
+                        if isinstance(val, str):
+                            return val.strip() or None
+                        if isinstance(val, dict):
+                            return (
+                                val.get("intfDisplaySchemaObj", {}).get("value")
+                                or val.get("PhysicalInftName")
+                                or val.get("name")
+                                or val.get("value")
+                            ) or None
+                        return str(val) if val else None
+                    def _normalize_interface_caps(s):
+                        """Display firewall interfaces as Ethernet1/1, Ethernet1/2."""
+                        if not s or not isinstance(s, str):
+                            return s
+                        s = s.strip()
+                        if not s:
+                            return None
+                        low = s.lower()
+                        if low.startswith("ethernet"):
+                            return "Ethernet" + s[8:]
+                        if low.startswith("eth"):
+                            return "Ethernet" + s[3:]
+                        return s[0].upper() + s[1:] if len(s) > 0 else s
                     cleaned_hops = []
                     for hop in simplified_hops:
                         cleaned_hop = {}
                         for k, v in hop.items():
-                            # Convert all values to basic JSON types
-                            if v is None:
+                            if k in ("in_interface", "out_interface"):
+                                raw = _interface_display_name(v)
+                                cleaned_hop[k] = _normalize_interface_caps(raw) if raw else None
+                            elif v is None:
                                 cleaned_hop[k] = None
                             elif isinstance(v, (str, int, float, bool)):
                                 cleaned_hop[k] = v
                             else:
-                                cleaned_hop[k] = str(v)  # Convert anything else to string
+                                cleaned_hop[k] = str(v)
                         cleaned_hops.append(cleaned_hop)
                     result["path_hops"] = cleaned_hops
                     result["path_status"] = path_status_overall
@@ -4413,8 +4613,9 @@ async def _query_network_path_impl(
                         result["path_failure_reason"] = path_failure_reason or ""
                 else:
                     # Fallback: Don't store full path_data (it might be too large)
-                    # Instead, just note that path details are available via taskID
-                    result["note"] = f"Path details available via taskID '{task_id}'. Could not extract hops from Step 3 response."
+                    # Set message so the chat UI shows a friendly summary instead of raw tables
+                    result["message"] = f"Path from {source_trimmed} to {destination_trimmed} was calculated. Hop-by-hop details could not be extracted from the API response; you can view the full path in the NetBrain UI."
+                    result["note"] = f"Path details available via taskID '{task_id}'."
                     print(f"DEBUG: Could not extract hops from Step 3, not storing full path_data to avoid large response", file=sys.stderr, flush=True)
             else:
                 # If Step 3 didn't return data, try to extract from Step 2 response (calc_data)
@@ -4422,25 +4623,51 @@ async def _query_network_path_impl(
                 print(f"DEBUG: Step 3 returned no data, checking Step 2 response for path details", file=sys.stderr, flush=True)
                 simplified_hops, path_status_overall, path_failure_reason = await extract_path_hops(calc_data, "Step 2 response")
                 
-                # Query Panorama for security zones for firewall interfaces
-                # Temporarily disabled to avoid MCP serialization issues
-                # if simplified_hops:
-                #     await _add_panorama_zones_to_hops(simplified_hops)
-                #     await _add_panorama_device_groups_to_hops(simplified_hops)
+                # Query Panorama for security zones and device groups for firewall hops
+                if simplified_hops:
+                    await _add_panorama_zones_to_hops(simplified_hops)
+                    await _add_panorama_device_groups_to_hops(simplified_hops)
                 
                 if simplified_hops:
-                    # Clean hops to ensure all values are JSON-serializable
+                    # Clean hops: in_interface/out_interface as display name only (Ethernet1/1 style)
+                    def _interface_display_name(val):
+                        if val is None:
+                            return None
+                        if isinstance(val, str):
+                            return val.strip() or None
+                        if isinstance(val, dict):
+                            return (
+                                val.get("intfDisplaySchemaObj", {}).get("value")
+                                or val.get("PhysicalInftName")
+                                or val.get("name")
+                                or val.get("value")
+                            ) or None
+                        return str(val) if val else None
+                    def _normalize_interface_caps(s):
+                        if not s or not isinstance(s, str):
+                            return s
+                        s = s.strip()
+                        if not s:
+                            return None
+                        low = s.lower()
+                        if low.startswith("ethernet"):
+                            return "Ethernet" + s[8:]
+                        if low.startswith("eth"):
+                            return "Ethernet" + s[3:]
+                        return s[0].upper() + s[1:] if len(s) > 0 else s
                     cleaned_hops = []
                     for hop in simplified_hops:
                         cleaned_hop = {}
                         for k, v in hop.items():
-                            # Convert all values to basic JSON types
-                            if v is None:
+                            if k in ("in_interface", "out_interface"):
+                                raw = _interface_display_name(v)
+                                cleaned_hop[k] = _normalize_interface_caps(raw) if raw else None
+                            elif v is None:
                                 cleaned_hop[k] = None
                             elif isinstance(v, (str, int, float, bool)):
                                 cleaned_hop[k] = v
                             else:
-                                cleaned_hop[k] = str(v)  # Convert anything else to string
+                                cleaned_hop[k] = str(v)
                         cleaned_hops.append(cleaned_hop)
                     result["path_hops"] = cleaned_hops
                     result["path_status"] = path_status_overall
@@ -4449,8 +4676,9 @@ async def _query_network_path_impl(
                         result["path_failure_reason"] = path_failure_reason or ""
                     print(f"DEBUG: Successfully extracted {len(simplified_hops)} hops from Step 2 response", file=sys.stderr, flush=True)
                 else:
-                    # Add note about using taskID to query path details separately
-                    result["note"] = f"Path calculation succeeded. Use taskID '{task_id}' to query detailed path information separately if needed."
+                    # Path calculated but hop details could not be extracted - set message for chat UI
+                    result["message"] = f"Path from {source_trimmed} to {destination_trimmed} was calculated. Hop-by-hop details could not be extracted; view the full path in the NetBrain UI."
+                    result["note"] = f"Path details available via taskID '{task_id}'."
                     if step3_error:
                         result["step3_info"] = f"Path details endpoint returned: {step3_error}. This is optional - path calculation was successful."
                     # Also include calc_data for debugging
@@ -4516,11 +4744,21 @@ async def query_network_path(
     continue_on_policy_denial: bool = True
 ):
     """
-    Query network path between source and destination using NetBrain Path Calculation API.
+    Get the network path (hop-by-hop) between source and destination using NetBrain.
 
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query explicitly asks about network paths, connectivity, or routing between two IP addresses
-    - Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
+    Use this tool when the user wants to see the path or route between two IPs (which devices/hops traffic takes).
+    Typical phrases: "find path from X to Y", "show path from X to Y", "network path between X and Y", "trace path".
+    Input: source (IP), destination (IP); optionally protocol and port.
+    Do NOT use for: "is path allowed" or "is traffic allowed" (use check_path_allowed). Do NOT use for rack or device lookups (use get_rack_details or get_device_rack_location).
+
+    Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
+
+    **Query variations (all → query_network_path; need source and destination IPs; do NOT use for "is path allowed" → use check_path_allowed):**
+    - "find path from 10.0.0.1 to 10.0.1.1" / "show path from 10.0.0.1 to 10.0.1.1"
+    - "network path between 10.0.0.1 and 10.0.1.1" / "path from 10.0.0.1 to 10.0.1.1"
+    - "trace path 10.0.0.1 to 10.0.1.1" / "get path from 10.0.0.1 to 10.0.1.1"
+    - "how does traffic get from 10.0.0.1 to 10.0.1.1?" / "route from 10.0.0.1 to 10.0.1.1"
+    - "show me the path/hops from 10.0.0.1 to 10.0.1.1" / "path hops from X to Y"
 
     **HANDLING FOLLOW-UP RESPONSES:**
     - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
@@ -4721,12 +4959,20 @@ async def check_path_allowed(
     is_live: int = 1
 ):
     """
-    Check if network traffic from source to destination on protocol/port is allowed or denied by policy.
+    check_path_allowed: Use ONLY for "is path allowed", "traffic allowed", or "check if traffic from A to B is allowed" — two IPs in the query; set source=first IP, destination=second IP; never use Panorama or rack tools for these.
 
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query asks if traffic is "allowed" or "denied" between two IPs
-    - Examples: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?", "Check if 192.168.1.1 can reach 192.168.2.1 on UDP 53"
-    - This tool specifically checks policy enforcement - it does NOT continue calculation when denied by policy
+    Check if traffic from source IP to destination IP is allowed or denied by policy (NetBrain). Parameters: source, destination, protocol (e.g. TCP), port (e.g. 443). Do not use for: which group contains an IP (query_panorama_ip_object_group), list IPs in a group (query_panorama_address_group_members), rack (get_rack_details), device (get_device_rack_location), path hops (query_network_path).
+
+    Examples:
+    - "Is path allowed from 10.0.0.1 to 10.0.1.1?" → source="10.0.0.1", destination="10.0.1.1"
+    - "Check if traffic from 10.0.0.1 to 10.0.1.1 on TCP 443 is allowed" → source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="443"
+
+    **Query variations (all → check_path_allowed; need TWO IPs; do NOT use for device/rack lookups):**
+    - "is path allowed from 10.0.0.1 to 10.0.1.1?" / "is traffic allowed from 10.0.0.1 to 10.0.1.1?"
+    - "check if traffic from X to Y is allowed" / "can traffic from X reach Y?"
+    - "path allowed 10.0.0.1 to 10.0.1.1" / "traffic allowed 10.0.0.1 10.0.1.1"
+    - "does path exist from 10.0.0.1 to 10.0.1.1?" / "is connectivity allowed from X to Y?"
+    - "check path allowed from 10.0.0.1 to 10.0.1.1 on TCP 443"
 
     This function uses NetBrain Path Calculation API with policy enforcement enabled:
     - Sets continue_on_policy_denial=False to stop calculation when policy denies the path
@@ -4757,7 +5003,7 @@ async def check_path_allowed(
 
 # Splunk configuration (for get_splunk_recent_denies)
 # Use port 8089 for REST API (auth, search); port 8000 is web UI only and does not serve /services/*
-SPLUNK_HOST = "192.168.15.105"
+SPLUNK_HOST = "192.168.15.110"
 SPLUNK_PORT = "8089"
 SPLUNK_USER = "mani"
 SPLUNK_PASSWORD = "SriN@r@008"
@@ -4989,6 +5235,12 @@ async def get_splunk_recent_denies(
 
     Use this tool when the user asks for "recent denies for an IP", "list of denies for [IP]",
     "deny events for IP", "Splunk denies for [IP]", or similar. Extract the IP address from the query.
+    
+    **Query variations (all → get_splunk_recent_denies; need one IP address):**
+    - "recent denies for 10.0.0.1" / "list denies for 10.0.0.1" / "deny events for 10.0.0.1"
+    - "Splunk denies for 192.168.1.1" / "show me denies for 10.0.0.250"
+    - "what denials for 10.0.0.5?" / "firewall denies for 10.0.0.1"
+    - "list all denies for IP 10.0.0.1" / "recent deny events 10.0.0.1"
 
     Args:
         ip_address: IP address to search for in deny events (e.g. "192.168.1.1", "10.0.0.5")

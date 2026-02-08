@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login – NetBrain Network Query</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #1e1e2e; color: #cdd6f4; }
+        .card { background: #313244; padding: 2rem; border-radius: 12px; width: 100%; max-width: 360px; }
+        h1 { margin-top: 0; font-size: 1.25rem; }
+        label { display: block; margin-bottom: 0.25rem; font-size: 0.9rem; }
+        input { width: 100%; padding: 0.6rem; margin-bottom: 1rem; border: 1px solid #45475a; border-radius: 6px; background: #1e1e2e; color: #cdd6f4; }
+        button { width: 100%; padding: 0.75rem; background: #89b4fa; color: #1e1e2e; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+        button:hover { background: #b4befe; }
+        .error { color: #f38ba8; font-size: 0.9rem; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>NetBrain Network Query</h1>
+        {% if error_invalid %}
+        <p class="error">Invalid username or password.</p>
+        {% endif %}
+        <form method="post" action="/login">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" required autocomplete="username">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required autocomplete="current-password">
+            <button type="submit">Sign in</button>
+        </form>
+    </div>
+</body>
+</html>

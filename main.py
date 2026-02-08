@@ -5,7 +5,8 @@ This is a simple placeholder module that can be used as the project's
 main entry point. Currently, it just prints a greeting message.
 
 The actual functionality is implemented in:
-- mcp_client.py: Streamlit web interface for network queries
+- app_fastapi.py: FastAPI web app and chat UI for network queries
+- mcp_client.py: MCP client library (used by chat service)
 - mcp_server.py: MCP server that handles network path queries
 - netbrainauth.py: OAuth2 authentication module
 """
@@ -17,10 +18,10 @@ def main():
     Main function that prints a greeting message.
     
     This is a placeholder function. The actual application logic
-    is in mcp_client.py (Streamlit interface) and mcp_server.py (MCP server).
+    is in app_fastapi.py (FastAPI chat UI) and mcp_server.py (MCP server).
     
     To run the actual application:
-    - For client: streamlit run mcp_client.py
+    - For client: uv run python -m netbrain.app_fastapi
     - For server: python mcp_server.py
     """
     # Print a greeting message to the console

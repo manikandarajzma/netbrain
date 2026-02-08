@@ -8,6 +8,7 @@ This module handles LLM-based tool selection with:
 - No complex JSON parsing hacks
 """
 
+import asyncio
 import json
 import re
 import sys
@@ -25,9 +26,13 @@ except ImportError:
 
 class ToolParameters(BaseModel):
     """Tool parameters schema."""
-    ip_address: Optional[str] = Field(None, description="IP address if applicable")
+    ip_address: Optional[str] = Field(
+        None,
+        description="IP or CIDR from the user query (REQUIRED when tool is query_panorama_ip_object_group or get_splunk_recent_denies; e.g. '11.0.0.0/24', '10.0.0.1')",
+    )
     device_name: Optional[str] = Field(None, description="Device name if applicable")
     rack_name: Optional[str] = Field(None, description="Rack name if applicable")
+    expected_rack: Optional[str] = Field(None, description="Expected rack name when user asks 'is device X in rack Y?' (e.g., 'A1', 'B4')")
     address_group_name: Optional[str] = Field(None, description="Address group name if applicable (e.g., 'leander_web', 'web_servers')")
     device_group: Optional[str] = Field(None, description="Device group if applicable")
     site_name: Optional[str] = Field(None, description="Site name if applicable")
@@ -36,11 +41,13 @@ class ToolParameters(BaseModel):
     destination: Optional[str] = Field(None, description="Destination IP address for network path queries")
     protocol: Optional[str] = Field(None, description="Protocol for network path queries (e.g., 'TCP', 'UDP')")
     port: Optional[str] = Field(None, description="Port number for network path queries")
+    limit: Optional[int] = Field(None, description="Maximum number of results to return (extract from 'latest N', 'recent N', 'last N events', etc.; e.g., 'latest 10' → 10, 'recent 5 events' → 5)")
     format: str = Field("table", description="Output format")
 
 
 class ToolSelection(BaseModel):
     """Structured output schema for LLM tool selection."""
+    entity_analysis: Optional[str] = Field(None, description="Analysis of what entity type is in the query (e.g., 'has dashes → device name')")
     tool_name: Optional[str] = Field(None, description="Name of the tool to use, or null if clarification is needed")
     needs_clarification: bool = Field(False, description="Whether clarification is needed")
     clarification_question: Optional[str] = Field(None, description="Clarification question to ask, or null")
@@ -71,19 +78,8 @@ def build_tool_selection_prompt(
     conversation_history: Optional[List[Dict[str, str]]] = None
 ) -> str:
     """
-    Build a clean, focused prompt for tool selection.
-    
-    Args:
-        prompt: Current user query
-        tools_description: Formatted tool descriptions
-        conversation_history: Previous conversation messages
-    
-    Returns:
-        Formatted prompt string
+    Build prompt for tool selection using only tool descriptions (no rules or examples).
     """
-    is_followup = prompt.strip() in ["1", "2", "3", "4", "one", "two", "three", "four"]
-    
-    # Build conversation context
     conversation_context = ""
     if conversation_history and len(conversation_history) > 0:
         conv_lines = []
@@ -91,362 +87,116 @@ def build_tool_selection_prompt(
             role = msg.get('role', 'unknown').title()
             content = str(msg.get('content', ''))
             conv_lines.append(f"{i}. {role}: {content}")
-        conversation_context = f"\n\nPrevious conversation (most recent first):\n" + "\n".join(conv_lines)
-        
-        # For follow-ups, instruct LLM to extract from conversation history
-        if is_followup:
-            conversation_context += "\n\n**IMPORTANT: For follow-up responses (like '1', '2', '3', '4'), extract the relevant value (IP address, device name, rack name, or address group name) from the conversation history above. Look at the user's message immediately before the clarification question.**"
-        else:
-            # For new queries, explicitly tell LLM to ignore old context
-            conversation_context += "\n\n**CRITICAL: This is a NEW query, NOT a follow-up. Extract values ONLY from the CURRENT USER QUERY above. DO NOT use values from previous conversation history. Each new query should be processed independently.**"
-    
-    # Build examples based on query type
-    if is_followup:
-        examples = """
-**EXAMPLE - Follow-up response:**
-Previous conversation:
-1. User: 11.0.0.1
-2. Assistant: What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path
-Current query: "1"
-Correct response:
-{"tool_name": "query_panorama_ip_object_group", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "11.0.0.1", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+        conversation_context = "\n\nPrevious conversation (most recent first):\n" + "\n".join(conv_lines)
 
-**MAPPING FOR FOLLOW-UP RESPONSES:**
-- "1" or "one" → query_panorama_ip_object_group
-- "2" or "two" → get_device_rack_location
-- "3" or "three" → get_rack_details
-- "4" or "four" → query_network_path (NOT query_panorama_network_path - the correct tool name is "query_network_path")
-"""
-    else:
-        examples = """
-**🚨 FIRST PRIORITY CHECK - NETWORK PATH QUERIES (NetBrain):**
+    prompt_text = f"""You are a tool selection expert for network infrastructure queries. Your job is to select the MOST APPROPRIATE tool based on the user's query.
 
-**BEFORE ANYTHING ELSE, check if query is about network paths:**
-- "find path from X to Y" → query_network_path (NetBrain)
-- "path from X to Y" → query_network_path (NetBrain)
-- "network path from X to Y" → query_network_path (NetBrain)
-- "show path from X to Y" → query_network_path (NetBrain)
-- "trace path from X to Y" → query_network_path (NetBrain)
-- "is traffic from X to Y allowed" → check_path_allowed (NetBrain)
-- "is traffic from X to Y denied" → check_path_allowed (NetBrain)
+DECISION RULES (apply in order):
 
-**If query contains "path from [IP] to [IP]" or "find path" → ALWAYS use query_network_path, NOT rack queries!**
+1. IDENTIFY THE ENTITY TYPE IN THE QUERY:
+   - Contains DOTS (.)? → It's an IP address (e.g., "11.0.0.1", "192.168.1.1")
+   - Contains DASHES (-) and is long (15+ chars)? → It's a DEVICE NAME (e.g., "leander-dc-border-leaf1", "roundrock-dc-leaf1")
+   - Short alphanumeric (1-4 chars, no dots/dashes)? → It's a RACK NAME (e.g., "A4", "B12")
+   - Multiple words without dots/dashes? → Might be a SITE NAME (e.g., "Leander", "Round Rock DC")
 
-**⚠️ DECISION TREE FOR ADDRESS GROUP QUERIES - READ THIS FIRST:**
+2. MATCH ENTITY TYPE TO TOOL:
+   - DEVICE NAME (has dashes) + "where/rack/location" → get_device_rack_location
+   - DEVICE NAME + "is in rack X?" (yes/no question) → get_device_rack_location, extract expected_rack from the question
+   - "LIST" + "racks" (plural) + site → list_racks (shows ALL racks at a site)
+   - RACK NAME (short, no dashes) + "rack/details/utilization" → get_rack_details (even if multiple sites mentioned)
+   - RACK NAME + multiple sites (e.g., "rack A4 in leander round rock") → get_rack_details with rack_name="A4", site_name=null (server will ask which site)
+   - IP ADDRESS + "address group/panorama/object" → query_panorama_ip_object_group
+   - TWO IP ADDRESSES + "path/traffic/allowed" → check_path_allowed or query_network_path
 
-Step 1: Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
-  YES → Go to Step 2
-  NO → Check if it contains an address group name (has underscores like "leander_web")
+CRITICAL DISTINCTION:
+   - "List racks at Leander" → list_racks (PLURAL - shows ALL racks)
+   - "Rack A4" or "Rack A4 at Leander" → get_rack_details (SINGULAR - shows ONE rack)
 
-Step 2: What does the query ask?
-  - "find path from [IP] to [IP]" → query_network_path (NetBrain) - HIGHEST PRIORITY
-  - "path from [IP] to [IP]" → query_network_path (NetBrain) - HIGHEST PRIORITY
-  - "is traffic ... allowed/denied" → check_path_allowed (NetBrain) - HIGHEST PRIORITY
-  - "what address group is [IP] part of" → You have IP, want groups → use query_panorama_ip_object_group
-  - "which group contains [IP]" → You have IP, want groups → use query_panorama_ip_object_group
-  - "what object group is [IP] in" → You have IP, want groups → use query_panorama_ip_object_group
+3. NEVER ASK FOR CLARIFICATION IF:
+   - The query clearly matches a pattern above
+   - You can extract all required parameters
+   - The entity type is unambiguous (e.g., has dashes = device name, has dots = IP)
 
-Step 3: Does the query contain an address group name (has underscores like "leander_web")?
-  YES → What does the query ask?
-    - "what IPs are in address group [NAME]" → You have group name, want IPs → use query_panorama_address_group_members
-    - "list IPs in group [NAME]" → You have group name, want IPs → use query_panorama_address_group_members
+4. ONLY ASK FOR CLARIFICATION IF:
+   - The query is genuinely ambiguous
+   - Required parameters are missing AND cannot be inferred
 
-**CRITICAL: The query structure tells you the direction:**
-- IP → Groups = query_panorama_ip_object_group
-- Group → IPs = query_panorama_address_group_members
+EXAMPLES:
+- "where is leander-dc-border-leaf1 racked?" → DEVICE NAME (has dashes) → get_device_rack_location, device_name="leander-dc-border-leaf1", expected_rack=null
+- "leander-dc-border-leaf1 is in A1?" → DEVICE NAME (has dashes) + yes/no question → get_device_rack_location, device_name="leander-dc-border-leaf1", expected_rack="A1" (extract the rack name "A1" from the question)
+- "is roundrock-dc-leaf1 in rack B4?" → DEVICE NAME + yes/no question → get_device_rack_location, device_name="roundrock-dc-leaf1", expected_rack="B4" (extract the rack name "B4" from the question)
+- "rack A4" → SINGULAR "rack" + specific name → get_rack_details, rack_name="A4", site_name=null
+- "rack A4 in leander round rock" → SINGULAR "rack" + specific name + multiple sites → get_rack_details, rack_name="A4", site_name=null (server will ask which site)
+- "rack A4 in Leander" → SINGULAR "rack" + specific name + single site → get_rack_details, rack_name="A4", site_name="Leander"
+- "list racks at Leander" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Leander" (shows ALL racks at Leander)
+- "what racks are in Leander" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Leander" (shows ALL racks)
+- "show all racks at Round Rock" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Round Rock"
+- "list all racks" → PLURAL "racks" + NO site → list_racks, site_name=null (shows ALL racks everywhere)
+- "what address group is 11.0.0.1 part of?" → IP ADDRESS (has dots) → query_panorama_ip_object_group, ip_address="11.0.0.1"
+- "latest 10 events for 10.0.0.250" → IP ADDRESS + "latest N" → get_splunk_recent_denies, ip_address="10.0.0.250", limit=10
+- "recent 5 deny events for 192.168.1.1" → IP ADDRESS + "recent N" → get_splunk_recent_denies, ip_address="192.168.1.1", limit=5
+- "last 20 denies for 10.0.0.1" → IP ADDRESS + "last N" → get_splunk_recent_denies, ip_address="10.0.0.1", limit=20
+- "denies for 10.0.0.250" → IP ADDRESS + no number → get_splunk_recent_denies, ip_address="10.0.0.250", limit=null (uses default)
 
-**EXAMPLE - Standalone IP address (needs clarification):**
-Current query: "11.0.0.1"
-Correct response:
-{"tool_name": null, "needs_clarification": true, "clarification_question": "What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path", "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
+CRITICAL for yes/no questions like "is X in rack Y?":
+- Extract the rack name (e.g., "A1", "B4") into expected_rack parameter
+- Do NOT put "is in rack X?" in the intent field
+- Example: "leander-dc-border-leaf1 is in A1" → expected_rack="A1" (NOT intent="is in A1")
 
-**EXAMPLE - Device name (direct tool selection):**
-Current query: "where is leander-dc-border-leaf1 racked"
-Correct response:
-{"tool_name": "get_device_rack_location", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": "leander-dc-border-leaf1", "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": "rack_location_only", "format": "table"}}
+CRITICAL for queries with numeric limits (latest/recent/last N):
+- Extract the number from "latest N", "recent N", "last N events", etc. into limit parameter
+- Examples: "latest 10" → limit=10, "recent 5 events" → limit=5, "last 20 denies" → limit=20
+- If no number specified, leave limit=null to use the default
 
-**EXAMPLE - Device rack location query (variations):**
-Current query: "What is the rack location of leander-dc-leaf6"
-Correct response:
-{"tool_name": "get_device_rack_location", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": "leander-dc-leaf6", "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": "rack_location_only", "format": "table"}}
-
-**CRITICAL RULE FOR DEVICE QUERIES:**
-- If query contains a device name (has DASHES like "leander-dc-leaf6", "roundrock-dc-border-leaf1") AND asks about "rack location", "where is", "racked", or similar → use get_device_rack_location
-- Device names have DASHES (-), NOT dots (.)
-- "leander-dc-leaf6" has dashes → it's a device name → use get_device_rack_location
-- "11.0.0.1" has dots → it's an IP address → do NOT use get_device_rack_location
-
-**WRONG EXAMPLE (DO NOT DO THIS):**
-Current query: "Where is leander-dc-border-leaf1 racked?"
-WRONG response: {"tool_name": "get_rack_details", ...} ← This is WRONG! "leander-dc-border-leaf1" contains dashes, so it's a DEVICE NAME, not a rack name. Use get_device_rack_location instead.
-
-**ABSOLUTE RULE: If the query contains a name with DASHES (like "leander-dc-border-leaf1", "roundrock-dc-fw1") → it's a DEVICE NAME → use get_device_rack_location, NOT get_rack_details!**
-
-**NOTE: Extract the EXACT device name from the query. If query says "leander-dc-leaf6", use "leander-dc-leaf6", NOT "leander-dc-border-leaf1" or any other device name.**
-
-**EXAMPLE - Rack name (direct tool selection, NO clarification needed):**
-Current query: "A4"
-Correct response:
-{"tool_name": "get_rack_details", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": "A4", "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
-
-**EXAMPLE - Rack details query (direct tool selection, NO clarification needed):**
-Current query: "rack details of A4"
-Correct response:
-{"tool_name": "get_rack_details", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": "A4", "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
-
-**ABSOLUTE RULE: If the query contains a short identifier (1-3 characters, letter + number, no dashes, no dots) like "A4", "A1", "B2" AND the query mentions "rack", "rack details", "rack information", or similar rack-related terms, you MUST use get_rack_details with the rack name extracted from the query. Do NOT return tool_name as null.**
-**ABSOLUTE RULE: If the query is just a short identifier (1-3 characters, letter + number, no dashes, no dots) like "A4", "A1", "B2" with no other context, you MUST use get_rack_details. Do NOT return tool_name as null.**
-
-**⚠️ CRITICAL DISTINCTION - READ THIS FIRST FOR ADDRESS GROUP QUERIES:**
-
-**DIRECTION MATTERS:**
-- Query structure: "what address group is [IP] part of" or "which group contains [IP]" → You have an IP, want to find groups → use query_panorama_ip_object_group
-- Query structure: "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → You have a group name, want to list IPs → use query_panorama_address_group_members
-
-**EXAMPLE - Find which address group an IP belongs to (IP → Groups):**
-Current query: "what address group is 11.0.0.0/24 part of"
-Step-by-step analysis:
-1. Query contains IP address: "11.0.0.0/24" (has dots)
-2. Query structure: "what address group is [IP] part of"
-3. Direction: IP is INPUT, groups are OUTPUT
-4. Decision: Use query_panorama_ip_object_group with ip_address="11.0.0.0/24"
-Correct response:
-{"tool_name": "query_panorama_ip_object_group", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "11.0.0.0/24", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}
-
-**WRONG EXAMPLE (DO NOT DO THIS):**
-Current query: "what address group is 11.0.0.0/24 part of"
-WRONG response: {"tool_name": "query_panorama_address_group_members", ...} ← This is WRONG because the query has an IP and asks which groups contain it, not which IPs are in a group
-
-**EXAMPLE - List IPs in an address group (Group → IPs):**
-Current query: "what other IPs are in the address group leander_web"
-Step-by-step analysis:
-1. Query contains address group name: "leander_web" (has underscore)
-2. Query structure: "what IPs are in address group [NAME]"
-3. Direction: Group name is INPUT, IPs are OUTPUT
-4. Decision: Use query_panorama_address_group_members with address_group_name="leander_web"
-Correct response:
-{"tool_name": "query_panorama_address_group_members", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": "leander_web", "device_group": null, "site_name": null, "intent": null, "format": "table"}}
-
-**EXAMPLE - Network path query (direct tool selection):**
-Current query: "Find path from 10.0.0.1 to 10.0.1.1"
-Step-by-step analysis:
-1. Query contains "path from [IP] to [IP]" or "find path" or "network path"
-2. Extract source IP: "10.0.0.1" (the IP after "from")
-3. Extract destination IP: "10.0.1.1" (the IP after "to")
-4. Decision: Use query_network_path with source="10.0.0.1" and destination="10.0.1.1"
-Correct response:
-{"tool_name": "query_network_path", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": null, "port": null, "format": "table"}}
-
-**EXAMPLE - Network path query with protocol and port:**
-Current query: "Find path from 10.0.0.1 to 10.0.1.1 using TCP port 80"
-Step-by-step analysis:
-1. Query contains "path from [IP] to [IP]"
-2. Extract source IP: "10.0.0.1"
-3. Extract destination IP: "10.0.1.1"
-4. Extract protocol: "TCP" (mentioned in query)
-5. Extract port: "80" (mentioned in query)
-6. Decision: Use query_network_path with source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="80"
-Correct response:
-{"tool_name": "query_network_path", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
-
-**EXAMPLE - Check if path is allowed/denied (policy check):**
-Current query: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?"
-Step-by-step analysis:
-1. Query asks if traffic is "allowed" or "denied"
-2. Extract source IP: "10.0.0.1"
-3. Extract destination IP: "10.0.1.1"
-4. Extract protocol: "TCP"
-5. Extract port: "80"
-6. Decision: Use check_path_allowed with source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="80"
-Correct response:
-{"tool_name": "check_path_allowed", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": "10.0.0.1", "destination": "10.0.1.1", "protocol": "TCP", "port": "80", "format": "table"}}
-
-**CRITICAL DISTINCTION:**
-- Query asks "is [traffic] allowed" or "is [traffic] denied" or "check if allowed" → use check_path_allowed (NetBrain - stops on policy denial)
-- Query asks "find path" or "show path" or "path from X to Y" → use query_network_path (NetBrain - continues even if denied)
-- Query asks "list denies" or "show deny events" or "get deny logs" → use get_splunk_recent_denies (Splunk - views historical logs)
-
-**⚠️ DO NOT CONFUSE:**
-- "Find path from X to Y" → query_network_path (NetBrain network path)
-- "Is traffic from X to Y allowed?" → check_path_allowed (NetBrain policy check)
-- "List denies for X" → get_splunk_recent_denies (Splunk historical logs)
-
-**WRONG EXAMPLE (DO NOT DO THIS):**
-Current query: "Find path from 10.0.0.1 to 10.0.1.1"
-WRONG response: {"tool_name": "get_rack_details", ...} ← This is WRONG! This is a network path query, use query_network_path.
-
-**ABSOLUTE RULE: If query contains "find path", "path from", "network path", or "show path" → ALWAYS use query_network_path (NetBrain), NOT any other tool!**
-
-**CRITICAL: For network path queries, use tool name "query_network_path" (NOT "query_panorama_network_path"). The correct tool name is "query_network_path".**
-
-**⚠️ CRITICAL: SPLUNK vs NETBRAIN - READ THIS FIRST:**
-
-**Splunk (get_splunk_recent_denies)** is for VIEWING HISTORICAL LOGS of deny events:
-- "list all the denies for 10.0.0.250" → Splunk (viewing past deny logs)
-- "get recent deny events for 192.168.1.1" → Splunk (viewing past deny logs)
-- "show deny events for IP 10.0.1.100" → Splunk (viewing past deny logs)
-
-**NetBrain (check_path_allowed)** is for CHECKING IF TRAFFIC IS CURRENTLY ALLOWED/DENIED:
-- "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?" → NetBrain check_path_allowed
-- "Is traffic from X to Y denied?" → NetBrain check_path_allowed
-- "Check if path from X to Y is allowed" → NetBrain check_path_allowed
-- "Can traffic from X reach Y on port Z?" → NetBrain check_path_allowed
-
-**KEY DIFFERENCE:**
-- Query asks about VIEWING/LISTING PAST deny events/logs → use Splunk (get_splunk_recent_denies)
-- Query asks IF TRAFFIC IS ALLOWED/DENIED (policy check) → use NetBrain (check_path_allowed)
-
-**WRONG EXAMPLE (DO NOT DO THIS):**
-Current query: "Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?"
-WRONG response: {"tool_name": "get_splunk_recent_denies", ...} ← This is WRONG! This query asks if traffic is allowed, not to view past deny logs. Use check_path_allowed instead.
-
-**EXAMPLE - Splunk recent denies for an IP:**
-Current query: "list all the denies for 192.168.1.1"
-Step-by-step analysis:
-1. Query asks to "list" or "get" or "show" deny events/logs for an IP
-2. This is asking for HISTORICAL LOGS, not a policy check
-3. Extract IP address from query: "192.168.1.1"
-4. Decision: Use get_splunk_recent_denies with ip_address="192.168.1.1"
-Correct response:
-{"tool_name": "get_splunk_recent_denies", "needs_clarification": false, "clarification_question": null, "parameters": {"ip_address": "192.168.1.1", "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "source": null, "destination": null, "protocol": null, "port": null, "format": "table"}}
-
-**EXAMPLE - Splunk recent denies (variations):**
-- "list denies for 10.0.0.5" → get_splunk_recent_denies with ip_address="10.0.0.5"
-- "show deny events for IP 172.16.1.100" → get_splunk_recent_denies with ip_address="172.16.1.100"
-- "get recent deny logs for 10.0.0.250" → get_splunk_recent_denies with ip_address="10.0.0.250"
-- If the query says "list denies for an IP" but does NOT include a specific IP, set needs_clarification: true and ask "Please provide the IP address to look up recent deny events for."
-
-**ABSOLUTE RULE: If query contains "is traffic ... allowed" or "is traffic ... denied" or "check if ... allowed" → use check_path_allowed (NetBrain), NOT get_splunk_recent_denies (Splunk)**
-
-**ABSOLUTE RULE FOR ADDRESS GROUP QUERIES:**
-- If query contains an IP address (has dots like "11.0.0.0/24", "11.0.0.1") AND asks "what address group is [IP] part of" or "which group contains [IP]" → use query_panorama_ip_object_group with ip_address parameter
-- If query contains an address group name (has underscores like "leander_web") AND asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members with address_group_name parameter
-- DO NOT confuse these two - the direction of the query (IP→Groups vs Group→IPs) determines which tool to use
-
-**TOOL SELECTION RULES (APPLY IN THIS ORDER):**
-
-1. **HIGHEST PRIORITY - Network path queries (NetBrain):**
-   - Query contains "find path", "path from", "network path", "show path", "trace path" → use query_network_path
-   - Query contains "is traffic ... allowed" or "is traffic ... denied" or "check if ... allowed" → use check_path_allowed
-   - **These ALWAYS take priority over rack queries, even if query has IPs!**
-
-2. **Splunk deny logs:**
-   - Query asks to "list denies", "show deny events", "get deny logs", "recent denies" → use get_splunk_recent_denies
-   - **NOT for "is traffic allowed" questions - those use check_path_allowed**
-
-3. **Address group queries (Panorama):**
-   - Query asks "what address group is [IP] part of" or "which group contains [IP]" → use query_panorama_ip_object_group
-   - Query asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members
-
-4. **Device queries (NetBox) - CHECK BEFORE RACK QUERIES:**
-   - If query contains a name with DASHES (-) like "leander-dc-border-leaf1", "roundrock-dc-fw1" → it's a DEVICE NAME → use get_device_rack_location
-   - "Where is X racked?" where X has dashes → get_device_rack_location
-   - **IMPORTANT: Check for dashes BEFORE checking for rack queries!**
-
-5. **Rack queries (NetBox):**
-   - Query mentions "rack", "rack details" AND contains short identifier (1-3 chars, NO dashes) like "A4", "A1" → use get_rack_details
-   - **ONLY if the identifier has NO dashes! If it has dashes, it's a device name → use get_device_rack_location**
-
-6. **Standalone IP (no context):**
-   - Contains dots (.) like "11.0.0.1" with no other context → ask clarification
-
-7. **CRITICAL: Extract the EXACT value from the CURRENT USER QUERY. Do NOT use values from examples.**
-"""
-    
-    # No pattern matching - rely entirely on LLM to extract values from the prompt
-    # The tool descriptions and examples should be sufficient for the LLM to understand
-    
-    # Extract exact tool names from tools_description for validation
-    import re
-    tool_names = re.findall(r'Tool Name: ([^\n]+)', tools_description)
-    available_tool_names = ', '.join(tool_names) if tool_names else 'See tool descriptions above'
-    
-    prompt_text = f"""You must respond with ONLY a valid JSON object. No explanations, no code, no markdown.
-
-**⚠️ MANDATORY FIRST STEP - ANALYZE QUERY STRUCTURE:**
-Before selecting any tool, analyze the CURRENT USER QUERY structure:
-
-**STEP 0 (HIGHEST PRIORITY): Is this a NETWORK PATH query?**
-- Does query contain "find path", "path from", "network path", "show path"? → YES → use query_network_path (NetBrain)
-- Does query ask "is traffic ... allowed" or "is traffic ... denied"? → YES → use check_path_allowed (NetBrain)
-- **If YES to either, STOP HERE and use the NetBrain tool. Do NOT check other rules.**
-
-**STEP 1: Does the query contain a name with DASHES (device name)?**
-- Does query contain something like "leander-dc-border-leaf1", "roundrock-dc-fw1" (has DASHES)? → YES → it's a DEVICE NAME → use get_device_rack_location (NetBox)
-- "Where is leander-dc-border-leaf1 racked?" → get_device_rack_location (NOT get_rack_details!)
-- **IMPORTANT: Names with DASHES are DEVICE names, NOT rack names!**
-
-**STEP 2: If not a path query or device query, continue:**
-1. Does the query contain an IP address (has dots like "11.0.0.0/24", "11.0.0.1")?
-2. Does the query contain an address group name (has underscores like "leander_web")?
-3. What is the query asking for?
-   - If query has IP and asks "what address group is [IP] part of" → use query_panorama_ip_object_group
-   - If query has group name and asks "what IPs are in address group [NAME]" → use query_panorama_address_group_members
-   - **DO NOT confuse these two directions**
-
-Available tools:
-{tools_description}
-
-**CRITICAL: Available tool names (use EXACTLY as shown): {available_tool_names}**
-**You MUST use one of these exact tool names. Do NOT invent or modify tool names.**
-
-{examples}
-
-**CURRENT USER QUERY: "{prompt}"**
+Current user query: "{prompt}"
 {conversation_context}
 
-**CRITICAL - PRIORITIZE CURRENT QUERY:**
-- **ALWAYS extract values from the CURRENT USER QUERY first. The current query is: "{prompt}"**
-- **ONLY use conversation history if the current query is a follow-up response (like "1", "2", "3", "4")**
-- **If the current query is a NEW question (not a follow-up), IGNORE previous conversation context and extract values ONLY from the current query**
-- **DO NOT extract values from old queries in conversation history when processing a new, unrelated query**
-- Use the tool descriptions to understand what each tool does and what parameters it needs. The examples are just for format reference.
+**AVAILABLE TOOLS (numbered list):**
+{tools_description}
 
-Return ONLY this JSON structure:
+**YOUR TASK:**
+1. Identify the entity type in the query (IP vs device name vs rack name vs site)
+2. Match it to the appropriate tool from the list above
+3. Extract parameters from the query
+   - For yes/no questions like "is X in rack Y?": extract the rack name (e.g., "A1") into expected_rack
+   - For queries with "latest N", "recent N", "last N": extract the number into limit
+   - Do NOT use the intent field for yes/no questions
+
+RESPOND WITH ONLY A VALID JSON OBJECT (no markdown, no explanation).
+Format: First think through the entity type, then respond.
+
 {{
-    "tool_name": "tool_name_here" or null,
+    "entity_analysis": "What entity is in the query? (e.g., 'leander-dc-border-leaf1' has dashes and is long → DEVICE NAME)",
+    "tool_name": "<exact tool name from the list above>" or null,
     "needs_clarification": true or false,
     "clarification_question": "question text" or null,
     "parameters": {{
-        "ip_address": "value_in_quotes" or null,
-        "device_name": "value_in_quotes" or null,
-        "rack_name": "value_in_quotes" or null,
-        "address_group_name": "value_in_quotes" or null,
-        "device_group": "value_in_quotes" or null,
-        "site_name": "value_in_quotes" or null,
-        "intent": "value_in_quotes" or null,
-        "source": "value_in_quotes" or null,
-        "destination": "value_in_quotes" or null,
-        "protocol": "value_in_quotes" or null,
-        "port": "value_in_quotes" or null,
+        "ip_address": null or "value",
+        "device_name": null or "value",
+        "rack_name": null or "value",
+        "expected_rack": null or "A1" or "B4" (ONLY the rack name when user asks 'is X in rack Y?', NOT a description),
+        "address_group_name": null or "value",
+        "device_group": null or "value",
+        "site_name": null or "value",
+        "intent": null (DO NOT use for yes/no questions),
+        "source": null or "value",
+        "destination": null or "value",
+        "protocol": null or "value",
+        "port": null or "value",
+        "limit": null or 10 or 20 (extract number from "latest N", "recent N", "last N events"),
         "format": "table"
     }}
 }}
-
-**CRITICAL RULES:**
-1. All string values MUST be in double quotes. Extract the EXACT value from the CURRENT USER QUERY, not from examples.
-2. The tool_name MUST be one of the exact tool names listed above. Do NOT invent tool names like "query_panorama_object_groups" - use "query_panorama_ip_object_group" exactly.
-3. If you are unsure which tool to use, return needs_clarification: true with a clarification question.
-4. **If the query requests an action that NO available tool can perform (e.g., "create an address object", "delete a device", "modify configuration"), return tool_name: null, needs_clarification: false, and set clarification_question to explain that this system cannot perform that action.**
-
-**EXAMPLE - Query that cannot be processed:**
-Current query: "create an address object named ravi_k with 12.0.0.0/24 in it"
-Correct response:
-{{"tool_name": null, "needs_clarification": false, "clarification_question": "I'm sorry, but this system is not equipped to create or modify network configuration objects like address objects. I can only query existing information such as network paths, device locations, rack details, and Panorama address group memberships. Would you like to query information about an existing address object instead?", "parameters": {{"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}}}
-
-**EXAMPLE - Query that cannot be processed (modification):**
-Current query: "delete device roundrock-sw-1"
-Correct response:
-{{"tool_name": null, "needs_clarification": false, "clarification_question": "I'm sorry, but this system is not equipped to delete or modify network devices. I can only query existing information such as network paths, device locations, rack details, and Panorama address group memberships. Would you like to look up information about this device instead?", "parameters": {{"ip_address": null, "device_name": null, "rack_name": null, "address_group_name": null, "device_group": null, "site_name": null, "intent": null, "format": "table"}}}}
 """
     return prompt_text
+
 
 
 async def select_tool_with_llm(
     prompt: str,
     tools_description: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    llm_model: str = "llama3.1:8b",
+    llm_model: str = "qwen2.5:14b",  # Better reasoning than llama3.1:8b
     llm_base_url: str = "http://localhost:11434"
 ) -> Dict[str, Any]:
     """
@@ -521,8 +271,10 @@ async def select_tool_with_llm(
                 
                 tool_name = result.get("tool_name")
                 needs_clarification = result.get("needs_clarification", False)
+                entity_analysis = result.get("entity_analysis", "")
+                print(f"DEBUG: LLM Analysis: {entity_analysis}", file=sys.stderr, flush=True)
                 print(f"DEBUG: Pydantic result - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {result.get('clarification_question')}", file=sys.stderr, flush=True)
-                
+
                 return {
                     "success": True,
                     "tool_name": tool_name,
@@ -594,3 +346,49 @@ async def select_tool_with_llm(
             "success": False,
             "error": f"Error during tool selection: {str(e)}"
         }
+
+
+async def synthesize_final_answer(
+    user_prompt: str,
+    tool_name: str,
+    error_or_result: str | Dict[str, Any],
+    *,
+    llm_model: str = "qwen2.5:14b",  # Better reasoning than llama3.1:8b
+    llm_base_url: str = "http://localhost:11434",
+    timeout: float = 15.0,
+) -> str:
+    """
+    Use the LLM to synthesize a short, user-friendly final answer after a failed tool call (or to summarize a raw error).
+    Forces a coherent response instead of returning only the raw error message.
+    """
+    if isinstance(error_or_result, dict):
+        err_msg = error_or_result.get("error") or error_or_result.get("message") or str(error_or_result)[:500]
+    else:
+        err_msg = str(error_or_result)[:500]
+    prompt_text = f"""The user asked: "{user_prompt}"
+
+The system tried to answer using the tool "{tool_name}" but got this result or error:
+{err_msg}
+
+Write a very short final answer (2-4 sentences) to show the user. Do the following:
+1. Briefly state what was attempted.
+2. Say why it failed or what went wrong in plain language.
+3. Suggest one or two concrete things the user can try (e.g. check spelling, specify a site name, ensure the MCP server is running).
+
+Reply with ONLY the final answer text, no prefix like "Answer:" or markdown."""
+    try:
+        llm = ChatOllama(model=llm_model, base_url=llm_base_url, temperature=0.3)
+        if hasattr(llm, "ainvoke"):
+            response = await asyncio.wait_for(llm.ainvoke(prompt_text), timeout=timeout)
+        else:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(llm.invoke, prompt_text),
+                timeout=timeout,
+            )
+        text = response.content if hasattr(response, "content") else str(response)
+        return (text or err_msg).strip() or err_msg
+    except asyncio.TimeoutError:
+        return f"The query could not be completed in time. {err_msg}"
+    except Exception as e:
+        print(f"DEBUG: synthesize_final_answer failed: {e}", file=sys.stderr, flush=True)
+        return f"{err_msg}\n\n(You can retry or rephrase your question; if the problem continues, check mcp_server.log and backend connectivity.)"
