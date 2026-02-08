@@ -1,107 +1,212 @@
-# Network Assistant - MCP Server and Client
+# Network Assistant - MCP-Based Infrastructure Management
 
-A Model Context Protocol (MCP) server and client for network infrastructure management: NetBrain path queries, NetBox device/rack lookups, Panorama address groups, and Splunk deny events, with AI-powered natural language understanding via Ollama.
-
----
-
-## Quick start
-
-1. **Install dependencies** (from the project root directory):
-   ```bash
-   uv sync
-   ```
-
-2. **Start Ollama** (for tool selection and analysis):
-   ```bash
-   ollama serve
-   ollama pull llama3.1:8b
-   ```
-
-3. **Start the MCP server** (first terminal):
-   ```bash
-   uv run python netbrain/mcp_server.py
-   ```
-   Leave this running. It listens on `http://127.0.0.1:8765` by default.
-
-4. **Start the web client** (second terminal, from project root):
-   ```bash
-   uv run python -m netbrain.app_fastapi
-   ```
-   The FastAPI app runs with **auto-reload**: edits to Python files (e.g. `chat_service.py`, `app_fastapi.py`) are picked up automatically; you don’t need to restart. (The MCP server in step 3 does not auto-reload—restart it if you change `mcp_server.py`.)
-
-5. **Open the app**: go to **http://localhost:8000**, log in with **admin** / **admin**, and type a query (e.g. *Find path from 10.0.0.1 to 10.0.1.1* or *Where is leander-dc-border-leaf1 racked?*).
+An AI-powered network infrastructure assistant built on the Model Context Protocol (MCP), providing intelligent natural language access to NetBrain path queries, NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
 
 ---
 
-## Overview
+## Table of Contents
 
-This project provides an MCP server that integrates with:
-- **NetBrain API**: Query network paths between source and destination endpoints
-- **NetBox API**: Look up device rack locations, positions, and device details
-- **Panorama**: Address group membership and IP-to-group lookups
-- **Splunk**: Recent deny events for an IP (Palo Alto firewall logs)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Application](#running-the-application)
+- [Available Tools](#available-tools)
+- [Usage Examples](#usage-examples)
 
-The server uses Ollama (running locally) for natural language tool selection. The **FastAPI** web client provides a chat UI with **local authentication** (SAML can be added later).
+---
 
-## Features
+## Architecture
 
-- **Network Path Querying (NetBrain)**: Query network paths between source and destination with protocol and port specifications
-- **Device Rack Location Lookup (NetBox)**: Query device rack location, position, site, and full device details
-- **Natural Language Understanding**: AI-powered query parsing that understands user intent and automatically selects the right tool
-- **Tool Discovery**: Dynamic tool selection based on available MCP tools and their descriptions
-- **AI-Enhanced Analysis**: Uses Ollama LLM (llama3.1:8b) for intelligent analysis of network path and device information
-- **Flexible Output Formats**: Support for table, JSON, list, and minimal formats for device queries
-- **Chat interface**: FastAPI app with conversation history
-- **Local authentication**: Username/password login (SAML can be added later)
-- **NetBrain/NetBox auth**: Credentials for backend APIs
+The system uses a **client-server architecture** with AI-powered tool selection:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Web Browser                             │
+│                  (React-style UI + WebSocket)                   │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTP/WebSocket
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FastAPI Web Server                           │
+│                   (app_fastapi.py)                              │
+│  • Authentication (auth.py)                                     │
+│  • Chat API endpoint (/api/chat)                                │
+│  • Static file serving (HTML, CSS, JS)                          │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Chat Service Layer                            │
+│                  (chat_service.py)                              │
+│  • Query parsing & routing                                      │
+│  • Tool discovery & execution                                   │
+│  • Conversation history management                              │
+│  • Result normalization                                         │
+└─────────────┬───────────────────────────────────┬───────────────┘
+              │                                   │
+              ▼                                   ▼
+┌──────────────────────────┐    ┌──────────────────────────────┐
+│  LLM Tool Selection      │    │    MCP Client                │
+│  (mcp_client_tool_       │    │    (mcp_client.py)           │
+│   selection.py)          │    │  • Session management        │
+│  • Ollama/Qwen2.5:14b    │    │  • Tool execution            │
+│  • Intent classification │    │  • Streaming responses       │
+│  • Parameter extraction  │    │                              │
+└──────────────────────────┘    └──────────────┬───────────────┘
+                                               │ MCP Protocol
+                                               ▼
+                             ┌─────────────────────────────────────┐
+                             │       MCP Server                    │
+                             │      (mcp_server.py)                │
+                             │  Exposes tools via MCP:             │
+                             │  • NetBrain path queries            │
+                             │  • NetBox device/rack lookups       │
+                             │  • Panorama address groups          │
+                             │  • Splunk deny events               │
+                             └─────────────┬───────────────────────┘
+                                           │
+                    ┌──────────────────────┼───────────────────────┐
+                    ▼                      ▼                       ▼
+            ┌───────────────┐     ┌──────────────┐     ┌─────────────────┐
+            │  NetBrain API │     │ NetBox API   │     │ Panorama/Splunk │
+            │  (netbrainauth│     │              │     │   (panoramaauth)│
+            │   .py)        │     │              │     │                 │
+            └───────────────┘     └──────────────┘     └─────────────────┘
+```
+
+### Key Components
+
+1. **FastAPI Web Server** (`app_fastapi.py`)
+   - Serves the web UI (HTML/JS/CSS)
+   - Handles authentication
+   - Provides `/api/chat` endpoint for user queries
+   - Auto-reloads on code changes (development mode)
+
+2. **Chat Service** (`chat_service.py`)
+   - Orchestrates tool discovery and execution
+   - Manages conversation context
+   - Implements agentic loop (retry on failure)
+   - Normalizes and formats results
+
+3. **LLM Tool Selection** (`mcp_client_tool_selection.py`)
+   - Uses Ollama (Qwen2.5:14b) for intelligent tool selection
+   - Extracts parameters from natural language queries
+   - Handles clarification questions
+   - Structured output via Pydantic schemas
+
+4. **MCP Client** (`mcp_client.py`)
+   - Connects to MCP server via HTTP transport
+   - Executes selected tools
+   - Handles streaming responses
+   - Session management
+
+5. **MCP Server** (`mcp_server.py`)
+   - Exposes network infrastructure tools via MCP protocol
+   - Integrates with NetBrain, NetBox, Panorama, Splunk APIs
+   - Runs independently on port 8765
+   - Must be started before the web client
+
+6. **Authentication Modules**
+   - `netbrainauth.py`: NetBrain API credentials
+   - `panoramaauth.py`: Panorama firewall credentials
+   - `auth.py`: Local web UI authentication
+
+---
+
+## Project Structure
+
+```
+palo-netbrain/
+└── netbrain/                          # Main application directory
+    ├── app_fastapi.py                 # FastAPI web server (port 8000)
+    ├── auth.py                        # Local authentication
+    ├── chat_service.py                # Tool orchestration & execution
+    ├── mcp_client.py                  # MCP client library
+    ├── mcp_client_tool_selection.py   # LLM-based tool selection
+    ├── mcp_server.py                  # MCP server (port 8765)
+    ├── netbrainauth.py                # NetBrain API credentials
+    ├── panoramaauth.py                # Panorama API credentials
+    ├── main.py                        # Legacy CLI entry point
+    ├── pyproject.toml                 # Project dependencies
+    ├── uv.lock                        # Dependency lock file
+    ├── README.md                      # This file
+    │
+    ├── templates/                     # Jinja2 HTML templates
+    │   ├── index.html                 # Main chat UI
+    │   └── login.html                 # Login page
+    │
+    ├── static/                        # Static assets
+    │   └── (CSS, JS, images)
+    │
+    ├── icons/                         # Device type icons (SVG)
+    │   ├── firewall.svg
+    │   ├── switch.svg
+    │   ├── router.svg
+    │   └── ...
+    │
+    └── test_*.py                      # Test scripts
+```
+
+---
 
 ## Prerequisites
 
-| Requirement | Purpose |
-|-------------|---------|
-| **Python 3.13+** | Runtime |
-| **Ollama** | LLM for tool selection; run `ollama serve` and `ollama pull llama3.1:8b` |
-| **NetBrain API** | Path queries (URL + credentials in `netbrainauth.py`) |
-| **NetBox API** | Device/rack lookups (URL + token in `mcp_server.py`) |
-| **Panorama** (optional) | Address group tools (see `panoramaauth.py`) |
-| **Splunk** (optional) | Recent denies tool (host/port/user/pass in `mcp_server.py`) |
+| Requirement | Version | Purpose |
+|------------|---------|---------|
+| **Python** | 3.13+ | Runtime environment |
+| **Ollama** | Latest | LLM for tool selection (runs locally) |
+| **uv** or **pip** | Latest | Package management |
+| **NetBrain** | N/A | Network path calculation API (optional) |
+| **NetBox** | N/A | Device/rack management API (optional) |
+| **Panorama** | N/A | Palo Alto address group API (optional) |
+| **Splunk** | N/A | Firewall log search API (optional) |
+
+---
 
 ## Installation
 
-**From the project root** (the directory that contains the `netbrain` folder):
+### 1. Install Ollama
 
-1. Install dependencies with **uv** (recommended):
-   ```bash
-   uv sync
-   ```
-   Or with **pip**:
-   ```bash
-   pip install -e .
-   ```
+Download and install Ollama from [https://ollama.ai](https://ollama.ai)
 
-2. Ensure **Ollama** is installed and running:
-   - https://ollama.ai
-   - `ollama serve`
-   - `ollama pull llama3.1:8b` (or the model referenced in tool selection config)
+```bash
+# Start Ollama service
+ollama serve
+
+# Pull the required model (in a separate terminal)
+ollama pull qwen2.5:14b
+```
+
+### 2. Install Python Dependencies
+
+**Using uv (recommended):**
+```bash
+cd netbrain
+uv sync
+```
+
+**Using pip:**
+```bash
+cd netbrain
+pip install -e .
+```
+
+---
 
 ## Configuration
 
-### NetBrain Credentials
+### 1. NetBrain Credentials
 
-Edit `netbrainauth.py` directly to set your NetBrain credentials:
+Edit `netbrainauth.py` to set your NetBrain username and password:
 
 ```python
-# NetBrain username for authentication
 USERNAME = "your_username"
-
-# NetBrain password for authentication
 PASSWORD = "your_password"
 ```
 
-### NetBrain URL (Optional)
-
-You can optionally set the NetBrain URL via environment variable:
-
+Optionally, set the NetBrain URL via environment variable:
 ```bash
 # Linux/Mac
 export NETBRAIN_URL="http://your-netbrain-server.com"
@@ -110,263 +215,344 @@ export NETBRAIN_URL="http://your-netbrain-server.com"
 $env:NETBRAIN_URL="http://your-netbrain-server.com"
 ```
 
-If not set, it defaults to `http://localhost`.
+### 2. NetBox Configuration
 
-### NetBox API (Device Rack Location Tool)
-
-NetBox is used for device rack location and rack details. Default URL is **192.168.15.109** (port 8080). You can override with environment variables:
-
-- **NetBox URL**: `NETBOX_URL` (default: `http://192.168.15.109:8080`)
-- **NetBox Token**: `NETBOX_TOKEN` (or set in `mcp_server.py` as fallback)
-- **SSL verification**: `NETBOX_VERIFY_SSL` — set to `false` to disable (e.g. self-signed certs)
-
-The NetBox integration provides:
-- Device rack location lookup
-- Device details (type, manufacturer, model, serial, IP addresses, etc.)
-- Site and rack information
-- Position and face (front/rear) information
-
-## Usage
-
-You need **two processes**: the **MCP server** (backend tools) and the **web client** (UI). Run them in two terminals.
-
-### Step 1: Start the MCP server
-
-In a terminal, from the **project root**:
+Set NetBox URL and token via environment variables:
 
 ```bash
-uv run python netbrain/mcp_server.py
+# Linux/Mac
+export NETBOX_URL="http://192.168.15.109:8080"
+export NETBOX_TOKEN="your_netbox_api_token"
+export NETBOX_VERIFY_SSL="false"  # Optional: disable SSL verification
+
+# Windows PowerShell
+$env:NETBOX_URL="http://192.168.15.109:8080"
+$env:NETBOX_TOKEN="your_netbox_api_token"
+$env:NETBOX_VERIFY_SSL="false"
 ```
 
-- The server starts on **http://127.0.0.1:8765** (streamable-http transport).
-- Leave this terminal open. The client will connect to this port.
+### 3. Panorama Configuration (Optional)
 
-If you are **inside** the `netbrain` directory:
+Edit `panoramaauth.py` to set your Panorama credentials:
 
-```bash
-uv run python mcp_server.py
+```python
+PANORAMA_HOST = "your-panorama-host.com"
+API_KEY = "your_api_key"
 ```
 
-### Step 2: Start the web client
+### 4. Splunk Configuration (Optional)
 
-In a **second** terminal, from the **project root**:
+Edit `mcp_server.py` to configure Splunk connection:
 
-```bash
-uv run python -m netbrain.app_fastapi
+```python
+SPLUNK_HOST = "your-splunk-host.com"
+SPLUNK_PORT = 8089
+SPLUNK_USERNAME = "your_username"
+SPLUNK_PASSWORD = "your_password"
 ```
 
-- The app listens on **http://0.0.0.0:8000**.
-- Open a browser at **http://localhost:8000**.
+### 5. Web UI Authentication (Optional)
 
-**Alternative** (custom host/port):
-
-```bash
-uv run uvicorn netbrain.app_fastapi:app --host 0.0.0.0 --port 8000
-```
-
-### Step 3: Log in and use the chat
-
-1. At **http://localhost:8000** you’ll see the login page.
-2. Default credentials: **Username** `admin`, **Password** `admin`.
-3. After login you’ll see the chat interface. Example queries:
-   - *Find path from 10.0.0.1 to 10.0.1.1*
-   - *Where is leander-dc-border-leaf1 racked?*
-   - *What address group is 11.0.0.0/24 part of?*
-   - *List all the denies for 10.0.0.250*
-   - *Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?*
-
-**If the chat returns nothing or “No result”:**
-
-- Ensure the **MCP server** is running first (Step 1). The web app talks to it at `http://127.0.0.1:8765`. If it’s not running, requests can hang or fail.
-- For *Where is &lt;device&gt; racked?*: ensure **NetBox** is reachable at `NETBOX_URL` (default `http://192.168.15.109:8080`) and `NETBOX_TOKEN` is set. Check the terminal where the MCP server runs for errors.
-
-#### Custom login users
-
-Set `NETBRAIN_USERS` to a comma-separated list of `username:password`:
+Set custom login users via environment variable:
 
 ```bash
-# Linux / macOS
+# Linux/Mac
 export NETBRAIN_USERS="admin:secret,operator:pass"
 
 # Windows PowerShell
 $env:NETBRAIN_USERS="admin:secret,operator:pass"
 ```
 
-Then start the FastAPI app as above.
+Default credentials: `admin` / `admin`
 
-### Example queries
+---
 
-| Category | Examples |
-|----------|----------|
-| **NetBrain path** | *Find path from 10.0.0.1 to 10.0.1.1* • *Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443* |
-| **NetBrain policy** | *Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?* |
-| **NetBox device** | *Where is leander-dc-border-leaf1 racked?* • *Rack location of roundrock-dc-leaf1* |
-| **NetBox rack** | *Rack details for A4* • *Show rack A1* |
-| **Panorama** | *What address group is 11.0.0.0/24 part of?* • *What IPs are in address group leander_web?* |
-| **Splunk** | *List all the denies for 10.0.0.250* • *Recent deny events for 192.168.1.1* |
+## Running the Application
 
-The FastAPI client uses the Ollama LLM to choose the right tool and extract parameters from your question.
+You need **two terminal windows** running simultaneously:
 
-**Agent loop and final answer:** The chat service runs an agent loop (up to 3 iterations by default). Each iteration: discover tool → execute. If a tool fails, the error is added to the conversation context and the LLM can try again (e.g. a different tool or parameters). After the last attempt, or when the tool returns an error, the service forces a **synthesized final answer**: the LLM summarizes what was tried, why it failed, and suggests what the user can do next, instead of returning only the raw error message. You can change the iteration limit via `MAX_AGENT_ITERATIONS` in `chat_service.py` or by passing `max_iterations` to `process_message`.
+### Terminal 1: Start the MCP Server
 
-### Tool selection: "path allowed" vs path hops vs Panorama
-
-| Query intent | Correct tool | What it does |
-|--------------|--------------|---------------|
-| **"Is path allowed from X to Y?"** / **"Is traffic allowed?"** / **"Check if traffic from A to B is allowed"** | **`check_path_allowed`** (NetBrain) | Runs NetBrain path calculation with policy enforcement; returns **allowed** / **denied** / **unknown**. This is the only tool that answers "is traffic allowed?" between two IPs. |
-| **"What is the path from X to Y?"** / **"Show path"** / **"Trace route"** | **`query_network_path`** (NetBrain) | Returns path hops (topology); can continue past policy denial. Use when you want to see the route, not a yes/no allow verdict. |
-| **"What address group is IP in?"** / **"Which group contains 10.0.0.1?"** | **Panorama** (`query_panorama_ip_object_group`) | Looks up whether an IP appears in Panorama address objects/groups. Does **not** simulate path or policy allow/deny. |
-| **"What IPs are in address group X?"** | **Panorama** (`query_panorama_address_group_members`) | Lists members of a Panorama address group. |
-
-If you see Panorama output (e.g. "IP not found in any address objects or address groups") for a question like **"Is path allowed from 10.0.0.1 to 10.0.1.1?"**, the agent chose a Panorama tool instead of **check_path_allowed**. Tool selection is driven by the LLM and the tool descriptions in `mcp_server.py`; there is no keyword-based routing in code. To get NetBrain path+policy for "is path allowed" queries, the tool descriptions must lead the LLM to select **check_path_allowed**.
-
-## Project Structure
-
-```
-netbrain/
-├── app_fastapi.py         # FastAPI app (login, chat UI, /api/chat)
-├── auth.py                # Local authentication (swap for SAML later)
-├── chat_service.py        # Tool discovery + execution for chat API
-├── mcp_server.py          # MCP server (tools for path, device, Panorama, Splunk)
-├── mcp_client.py          # MCP client library (get_mcp_session, execute_*); FastAPI is the UI
-├── mcp_client_tool_selection.py  # LLM tool selection
-├── netbrainauth.py        # NetBrain authentication
-├── panoramaauth.py        # Panorama authentication
-├── templates/             # Login and chat HTML
-│   ├── login.html
-│   └── index.html
-├── pyproject.toml
-└── README.md
+```bash
+cd netbrain
+uv run python mcp_server.py
 ```
 
-## MCP Server Tools
+**Output:**
+```
+INFO: MCP Server starting on http://127.0.0.1:8765
+INFO: Server initialized with tools: check_path_allowed, query_network_path, get_device_rack_location, ...
+```
 
-### `check_path_allowed`
+**Important:**
+- Leave this terminal running
+- The server must be started **before** the web client
+- Listens on `http://127.0.0.1:8765`
+- Does **not** auto-reload (restart manually if you change `mcp_server.py`)
 
-**Use for:** "Is path allowed from X to Y?", "Is traffic allowed?", "Check if traffic from A to B is allowed". Answers whether traffic between two IPs is **allowed**, **denied**, or **unknown** using NetBrain path calculation with policy enforcement (stops at first policy denial).
+### Terminal 2: Start the Web Client
 
-**Parameters:** `source`, `destination`, `protocol` (e.g. TCP), `port` (e.g. 443).
+```bash
+cd netbrain
+uv run python -m netbrain.app_fastapi
+```
 
-**Returns:** `status` ("allowed" / "denied" / "unknown"), `reason`, `path_exists`, `policy_details`, etc. This is **not** a Panorama object lookup; it uses NetBrain.
+**Output:**
+```
+INFO: Started server process [12345]
+INFO: Waiting for application startup.
+INFO: Application startup complete.
+INFO: Uvicorn running on http://0.0.0.0:8000
+```
 
-### `query_network_path`
+**Features:**
+- Web UI available at **http://localhost:8000**
+- **Auto-reload enabled**: changes to Python files are picked up automatically
+- No need to restart when editing `chat_service.py`, `app_fastapi.py`, etc.
 
-Queries the network path (hop-by-hop) between source and destination. Use when you want to see the route; for a yes/no "is traffic allowed?" use **check_path_allowed** instead.
+### Alternative: Custom Host/Port
+
+```bash
+uv run uvicorn netbrain.app_fastapi:app --host 0.0.0.0 --port 8000 --reload
+```
+
+---
+
+## Available Tools
+
+The MCP server exposes the following tools:
+
+### 1. `check_path_allowed`
+**Purpose:** Check if traffic between two IPs is allowed by firewall policies
 
 **Parameters:**
-- `source` (str, required): Source IP address or hostname
-- `destination` (str, required): Destination IP address or hostname
-- `protocol` (str, required): Protocol (TCP or UDP)
-- `port` (str, required): Port number
+- `source` (required): Source IP address
+- `destination` (required): Destination IP address
+- `protocol` (optional): TCP or UDP (default: TCP)
+- `port` (optional): Port number (default: 0)
 
-**Returns:**
-- Dictionary containing:
-  - `source`: Source endpoint
-  - `destination`: Destination endpoint
-  - `protocol`: Protocol used
-  - `port`: Port number
-  - `path_info`: Network path information from NetBrain API
-  - `ai_analysis`: AI-enhanced analysis (if LLM is available)
-  - `error`: Error message if query fails
+**Returns:** `allowed`, `denied`, or `unknown` with policy details
 
-### `get_device_rack_location`
+**Example Query:** *"Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 443 allowed?"*
 
-Looks up a device in NetBox and returns its rack location and device details.
+---
+
+### 2. `query_network_path`
+**Purpose:** Get hop-by-hop network path between two endpoints
 
 **Parameters:**
-- `device_name` (str, required): Device name to look up in NetBox
-- `format` (str, optional): Output format - "table", "json", "list", "minimal", "summary", or None for natural language summary
-- `conversation_history` (list, optional): Conversation history for context-aware responses
+- `source` (required): Source IP or hostname
+- `destination` (required): Destination IP or hostname
+- `protocol` (required): TCP or UDP
+- `port` (required): Port number
 
-**Returns:**
-- Dictionary containing:
-  - `device`: Device name
-  - `rack`: Rack name (if assigned)
-  - `position`: Rack unit position (formatted as U1, U2, etc.)
-  - `face`: Rack face (front/rear)
-  - `site`: Site name (if available)
-  - `status`: Device status (if available)
-  - `device_type`: Device type/model
-  - `device_role`: Device role
-  - `manufacturer`: Manufacturer name
-  - `model`: Device model
-  - `serial`: Serial number
-  - `primary_ip`: Primary IP address
-  - `primary_ip4`: Primary IPv4 address
-  - `ai_analysis`: AI-generated summary (if LLM is available)
-  - `error`: Error message if lookup fails
+**Returns:** Path hops with device names, interfaces, and zones
 
-**Format Options:**
-- `"table"`: Full device details displayed in a table format
-- `"minimal"` or `"summary"`: Only rack location fields (site, rack, position)
-- `"json"`: JSON format output
-- `"list"`: List format output
-- `None`: Natural language summary with AI analysis
+**Example Query:** *"Show me the path from 10.0.0.1 to 10.0.1.1"*
 
-## API Endpoints
+---
 
-### NetBrain API
+### 3. `get_device_rack_location`
+**Purpose:** Look up device rack location and details in NetBox
 
-The server communicates with the following NetBrain API endpoints:
+**Parameters:**
+- `device_name` (required): Device name to look up
+- `format` (optional): Output format (table, json, minimal)
+- `expected_rack` (optional): For yes/no questions like "is device X in rack Y?"
 
-- **Authentication**: `POST /ServicesAPI/API/V1/Session`
-- **Path Calculation**: `POST /ServicesAPI/API/V1/CMDB/Path/Calculation`
-- **Path Details**: `GET /ServicesAPI/API/V1/CMDB/Path/Calculation/{taskID}/OverView`
-- **Device Gateway Resolution**: `GET /ServicesAPI/API/V1/CMDB/Path/Gateways`
+**Returns:** Rack location, position, site, device type, IPs, etc.
 
-**Note:** The Path Calculation API returns a `taskID` which can be used with the GetPath API to retrieve detailed hop-by-hop path information. See the [NetBrain API documentation](https://github.com/NetBrainAPI/NetBrain-REST-API-R11/blob/main/REST%20APIs%20Documentation/Path%20Management/Calculate%20Path%20API.md) for more details.
+**Example Queries:**
+- *"Where is leander-dc-border-leaf1 racked?"*
+- *"Is roundrock-dc-leaf1 in rack A4?"*
 
-### NetBox API
+---
 
-The server communicates with the following NetBox API endpoints:
+### 4. `get_rack_details`
+**Purpose:** Get details about a specific rack
 
-- **Device Lookup**: `GET /api/dcim/devices/` (with name or search query)
-- **Device Details**: Returns full device information including rack, position, site, and device attributes
+**Parameters:**
+- `rack_name` (required): Rack name (e.g., "A4", "B12")
+- `site_name` (optional): Site name to disambiguate
 
-**Note:** The NetBox integration supports both exact name matching and search queries to find devices.
+**Returns:** Rack height, occupied units, space utilization, mounted devices
 
-## Dependencies
+**Example Query:** *"Show me details for rack A4 at Leander"*
 
-- `mcp>=1.0.0`: Model Context Protocol SDK
-- `fastmcp>=0.9.0`: FastMCP for building MCP servers
-- `fastapi>=0.115.0`, `uvicorn`, `jinja2`: Web app and auth
-- `ollama>=0.1.0`, `langchain`, `langchain-ollama`: LLM tool selection
-- `aiohttp`, `requests`, `urllib3`: HTTP clients
-- `pandas`, `matplotlib`, `networkx`: Data and visualizations
+---
+
+### 5. `list_racks`
+**Purpose:** List all racks at a site or globally
+
+**Parameters:**
+- `site_name` (optional): Filter by site name
+
+**Returns:** Table of all racks with utilization metrics
+
+**Example Query:** *"List all racks at Leander DC"*
+
+---
+
+### 6. `query_panorama_ip_object_group`
+**Purpose:** Find which address group(s) contain an IP or CIDR
+
+**Parameters:**
+- `ip_address` (required): IP or CIDR (e.g., "10.0.0.1", "11.0.0.0/24")
+
+**Returns:** Address groups and address objects containing the IP
+
+**Example Query:** *"What address group is 11.0.0.1 part of?"*
+
+---
+
+### 7. `query_panorama_address_group_members`
+**Purpose:** List all members of an address group
+
+**Parameters:**
+- `address_group_name` (required): Address group name
+
+**Returns:** All IPs, CIDRs, and nested groups in the address group
+
+**Example Query:** *"What IPs are in address group leander_web?"*
+
+---
+
+### 8. `get_splunk_recent_denies`
+**Purpose:** Search Splunk for recent firewall deny events
+
+**Parameters:**
+- `ip_address` (required): IP to search for (source or destination)
+- `limit` (optional): Max number of events (default: 100)
+- `earliest_time` (optional): Time window (default: -24h)
+
+**Returns:** Recent deny events with timestamps, source/dest, ports, etc.
+
+**Example Queries:**
+- *"List all the denies for 10.0.0.250"*
+- *"Show me the latest 10 deny events for 192.168.1.1"*
+
+---
+
+## Usage Examples
+
+### Web UI
+
+1. Open **http://localhost:8000** in your browser
+2. Log in with **admin** / **admin** (or your configured credentials)
+3. Type natural language queries in the chat box:
+
+#### NetBrain Path Queries
+```
+Find path from 10.0.0.1 to 10.0.1.1
+Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?
+Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443
+```
+
+#### NetBox Device Queries
+```
+Where is leander-dc-border-leaf1 racked?
+Rack location of roundrock-dc-leaf1
+Is roundrock-dc-leaf1 in rack A4?
+```
+
+#### NetBox Rack Queries
+```
+Rack details for A4
+Show rack A1 at Leander
+List all racks at Leander DC
+What is the space utilization of rack A4?
+```
+
+#### Panorama Queries
+```
+What address group is 11.0.0.0/24 part of?
+What IPs are in address group leander_web?
+Which group contains 10.0.0.1?
+```
+
+#### Splunk Queries
+```
+List all the denies for 10.0.0.250
+Show me the latest 10 deny events for 192.168.1.1
+Recent deny events for 192.168.1.1 in the last 24 hours
+```
+
+---
 
 ## Troubleshooting
 
-### Authentication Errors
+### 1. Chat Returns Nothing or "No result"
 
-If you encounter authentication errors:
-- Verify your username and password in `netbrainauth.py` are correct
-- Ensure the NetBrain server URL is accessible
-- Check that your account is not locked or expired
+**Cause:** MCP server is not running
 
-### LLM Not Available
+**Solution:** Start the MCP server first in Terminal 1 (see [Running the Application](#running-the-application))
 
-If Ollama is not running or the model is not available:
-- The server will continue to function but without AI-enhanced analysis
-- Ensure Ollama is running: `ollama serve`
-- Pull the required model: `ollama pull llama3.1:8b`
+---
 
-### Connection Errors
+### 2. "Tool selection failed" or "LLM did not select a tool"
 
-If you encounter network errors:
-- Verify the NetBrain server URL is correct and accessible
-- Check firewall and network connectivity
-- Ensure SSL certificates are properly configured (self-signed certificates are handled)
+**Cause:** Ollama is not running or model is not pulled
 
-### Import Errors
+**Solution:**
+```bash
+# Start Ollama (if not running)
+ollama serve
 
-If you encounter import errors:
-- Make sure all dependencies are installed: `uv sync` or `pip install -e .`
-- Verify you're using the correct Python environment
-- Check that `fastmcp` and `langchain-ollama` packages are installed
+# Pull the model (if not already pulled)
+ollama pull qwen2.5:14b
+```
+
+---
+
+### 3. NetBox/Panorama/Splunk Tools Fail
+
+**Cause:** API credentials or URLs are incorrect
+
+**Solution:** Check environment variables and credential files:
+- `NETBOX_URL` and `NETBOX_TOKEN`
+- `netbrainauth.py` for NetBrain credentials
+- `panoramaauth.py` for Panorama credentials
+- `mcp_server.py` for Splunk credentials
+
+---
+
+### 4. Browser Shows Old Cached UI
+
+**Cause:** Browser is caching old HTML/CSS/JS files
+
+**Solution:** Hard refresh the browser:
+- **Windows/Linux:** Ctrl + Shift + R or Ctrl + F5
+- **Mac:** Cmd + Shift + R
+
+---
+
+### 5. Import Errors
+
+**Cause:** Dependencies not installed
+
+**Solution:**
+```bash
+cd netbrain
+uv sync  # or: pip install -e .
+```
+
+---
+
+## Development Notes
+
+- **FastAPI auto-reload:** The web client (`app_fastapi.py`) automatically reloads when you edit Python files. No need to restart Terminal 2.
+- **MCP server does NOT auto-reload:** If you change `mcp_server.py`, you must restart Terminal 1.
+- **Frontend changes (HTML/CSS/JS):** Hard refresh your browser to see changes.
+- **Logs:** Check `mcp_server.log` for detailed MCP server logs.
+- **LLM prompts:** Edit `mcp_client_tool_selection.py` to customize tool selection behavior.
+
+---
 
 ## License
 
 [Add your license here]
+
+---
 
 ## Contributing
 
