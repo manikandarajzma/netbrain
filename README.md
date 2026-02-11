@@ -1,6 +1,6 @@
-# Network Assistant - MCP-Based Infrastructure Management
+# NetAssist - AI-Powered Network Infrastructure Assistant
 
-An AI-powered network infrastructure assistant built on the Model Context Protocol (MCP), providing intelligent natural language access to NetBrain path queries, NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
+**NetAssist** is an intelligent network infrastructure assistant built on the Model Context Protocol (MCP), providing natural language access to NetBrain path queries, NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
 
 ---
 

@@ -67,31 +67,40 @@ AUTHENTICATION_ID = None
 # Underscore prefix indicates it's a private module-level variable
 _access_token: Optional[str] = None
 
+# Timestamp when the token was obtained (for TTL-based expiry)
+_token_obtained_at: float = 0.0
+
+# Token time-to-live in seconds (30 minutes)
+# NetBrain tokens can expire server-side; this ensures we refresh proactively
+TOKEN_TTL_SECONDS = 30 * 60
+
 
 def get_auth_token() -> Optional[str]:
     """
     Get NetBrain API session token using username/password authentication.
-    Returns cached token if available, otherwise requests a new one.
-    
+    Returns cached token if available and not expired, otherwise requests a new one.
+
     This function implements token caching to minimize API calls:
-    - Checks if a cached token exists
-    - If available, returns the cached token immediately
-    - If missing, requests a new token from the Session API
+    - Checks if a cached token exists and hasn't exceeded TOKEN_TTL_SECONDS
+    - If available and fresh, returns the cached token immediately
+    - If missing or expired, requests a new token from the Session API
     - Caches the new token for reuse
-    
-    Note: The NetBrain Session API doesn't return token expiry information,
-    so tokens are cached until explicitly cleared or authentication fails.
-    
+
     Returns:
         Optional[str]: Session token string if successful, None if authentication fails
     """
     # Declare that we're modifying global variables
-    global _access_token
-    
-    # Check if we have a cached token
-    if _access_token:
+    global _access_token, _token_obtained_at
+
+    # Check if we have a cached token that hasn't expired
+    if _access_token and (time.time() - _token_obtained_at) < TOKEN_TTL_SECONDS:
         # Return the cached token immediately (no API call needed)
         return _access_token
+
+    # Token is missing or expired - clear it and request a fresh one
+    if _access_token:
+        print(f"NetBrain token expired (age: {time.time() - _token_obtained_at:.0f}s, TTL: {TOKEN_TTL_SECONDS}s), refreshing...", file=__import__('sys').stderr, flush=True)
+        _access_token = None
     
     # Validate that USERNAME and PASSWORD are configured
     if not USERNAME or not PASSWORD:
@@ -137,7 +146,8 @@ def get_auth_token() -> Optional[str]:
             if js.get("statusCode") == 790200:
                 # Extract the token from the response
                 _access_token = js.get("token")
-                
+                _token_obtained_at = time.time()
+
                 # Return the access token to the caller
                 return _access_token
             else:
@@ -168,10 +178,11 @@ def clear_token_cache():
     - Handling cases where token might be invalidated server-side
     """
     # Declare that we're modifying global variables
-    global _access_token
-    
-    # Reset the cached token to None
+    global _access_token, _token_obtained_at
+
+    # Reset the cached token and timestamp
     _access_token = None
+    _token_obtained_at = 0.0
 
 
 # Test code (only runs when script is executed directly, not when imported)

@@ -1,7 +1,7 @@
 [project]
-name = "ai-netbrain"
+name = "netassist"
 version = "0.1.0"
-description = "MCP Server and Client for NetBrain API with Ollama and Panorama integration"
+description = "NetAssist - AI-powered network infrastructure assistant with MCP, NetBrain, NetBox, Panorama, and Splunk integration"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

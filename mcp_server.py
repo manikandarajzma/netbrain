@@ -3781,15 +3781,15 @@ async def _query_network_path_impl(
     # Get authentication token from netbrainauth module
     # This token is required for all NetBrain API requests
     auth_token = netbrainauth.get_auth_token()
-    
+
     # Check if authentication token was successfully obtained
     # If not, return an error dictionary immediately
     if not auth_token:
         print("DEBUG: Failed to get authentication token", file=sys.stderr, flush=True)
         return {"error": "Failed to get authentication token"}
-    
+
     print(f"DEBUG: Authentication token obtained: {auth_token[:20]}...", file=sys.stderr, flush=True)
-    
+
     # Pre-build device type cache to ensure it's available when processing path hops
     print(f"DEBUG: Pre-building device type cache...", file=sys.stderr, flush=True)
     await get_device_type_mapping()
@@ -3797,14 +3797,18 @@ async def _query_network_path_impl(
         print(f"DEBUG: Device type cache ready with {len(_device_name_to_type_cache)} name-based entries", file=sys.stderr, flush=True)
     else:
         print(f"DEBUG: WARNING: Device type name cache is not available", file=sys.stderr, flush=True)
-    
+
+    # Helper: build headers with the given token
+    def _make_headers(token):
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Token": token
+        }
+
     # Prepare HTTP headers for all API requests
     # NetBrain API uses "Token" header (capital T) for authentication
-    headers = {
-        "Content-Type": "application/json",  # Indicates we're sending JSON data
-        "Accept": "application/json",  # Indicates we want JSON response
-        "Token": auth_token  # NetBrain API uses "Token" header for authentication
-    }
+    headers = _make_headers(auth_token)
     
     # Map protocol string to protocol number
     # Protocol numbers: 4=IPv4, 6=TCP, 17=UDP
@@ -3862,17 +3866,35 @@ async def _query_network_path_impl(
             print(f"DEBUG: Step 1 - Headers: {headers}", file=sys.stderr, flush=True)
             print(f"DEBUG: Step 1 - Params: {gateway_params}", file=sys.stderr, flush=True)
             
-            async with session.get(gateway_url, headers=headers, params=gateway_params, ssl=ssl_context) as gateway_response:
+            # Gateway resolution with retry-on-401 (expired token).
+            # Try up to 2 times: if the first attempt gets HTTP 401, refresh the
+            # token and retry once before giving up.
+            source_gateway = None
+            for _gw_attempt in range(2):
+              async with session.get(gateway_url, headers=headers, params=gateway_params, ssl=ssl_context) as gateway_response:
                 response_status = gateway_response.status
-                print(f"DEBUG: Step 1 - Response status: {response_status}", file=sys.stderr, flush=True)
-                
-                source_gateway = None  # Initialize to None
-                
+                print(f"DEBUG: Step 1 (attempt {_gw_attempt+1}) - Response status: {response_status}", file=sys.stderr, flush=True)
+
+                if response_status == 401 and _gw_attempt == 0:
+                    # Token expired - refresh and retry
+                    print(f"WARNING: Step 1 - HTTP 401 (token expired), refreshing token and retrying...", file=sys.stderr, flush=True)
+                    netbrainauth.clear_token_cache()
+                    auth_token = netbrainauth.get_auth_token()
+                    if not auth_token:
+                        return {
+                            "error": "Authentication failed: could not refresh expired token. Check NetBrain credentials.",
+                            "step": 1,
+                            "source": source_trimmed
+                        }
+                    headers = _make_headers(auth_token)
+                    print(f"DEBUG: Step 1 - New token obtained: {auth_token[:20]}..., retrying gateway resolution", file=sys.stderr, flush=True)
+                    continue  # retry the for loop
+
                 if response_status != 200:
                     # Read response body as text first
                     error_text = await gateway_response.text()
                     print(f"DEBUG: Step 1 - Error response text: {error_text[:500]}", file=sys.stderr, flush=True)
-                    
+
                     # Try to parse as JSON for more details
                     error_details = error_text
                     status_code = None
@@ -3891,7 +3913,7 @@ async def _query_network_path_impl(
                         # If JSON parsing fails, use text as-is
                         error_details = error_text
                         print(f"WARNING: Step 1 - HTTP {response_status}: {error_details}", file=sys.stderr, flush=True)
-                    
+
                     # If gateway was not found (792040) and fix-up rules are enabled, proceed anyway
                     # The fix-up rules will handle gateway resolution during path calculation
                     if status_code == 792040:  # Gateway was not found
@@ -3962,7 +3984,10 @@ async def _query_network_path_impl(
                             source_gateway = gateway_list[0]
                             print(f"DEBUG: Step 1 - Gateway resolved: {source_gateway.get('gatewayName', 'Unknown')}", file=sys.stderr, flush=True)
                             print(f"DEBUG: Step 1 - Gateway object structure: {json.dumps(source_gateway, indent=2)}", file=sys.stderr, flush=True)
-            
+
+                # Break out of retry loop after processing (only 'continue' on 401 should loop)
+                break
+
             # Proceed to Step 2 only if we have a gateway (either resolved or null for fix-up rules)
             if source_gateway is None:
                 return {
@@ -4608,7 +4633,12 @@ async def _query_network_path_impl(
                         cleaned_hops.append(cleaned_hop)
                     result["path_hops"] = cleaned_hops
                     result["path_status"] = path_status_overall
-                    result["path_status_description"] = path_data.get("statusDescription", path_failure_reason or "") or ""
+                    # Filter out noisy NetBrain status descriptions (e.g. "L2 connections has not been discovered")
+                    _raw_desc = path_data.get("statusDescription", path_failure_reason or "") or ""
+                    _noise_phrases = ["l2 connections has not been discovered", "l2 connection has not been discovered"]
+                    if any(p in _raw_desc.lower() for p in _noise_phrases):
+                        _raw_desc = ""
+                    result["path_status_description"] = _raw_desc
                     if path_failure_reason:
                         result["path_failure_reason"] = path_failure_reason or ""
                 else:
@@ -4671,7 +4701,12 @@ async def _query_network_path_impl(
                         cleaned_hops.append(cleaned_hop)
                     result["path_hops"] = cleaned_hops
                     result["path_status"] = path_status_overall
-                    result["path_status_description"] = calc_data.get("statusDescription", path_failure_reason or "") or ""
+                    # Filter out noisy NetBrain status descriptions (e.g. "L2 connections has not been discovered")
+                    _raw_desc2 = calc_data.get("statusDescription", path_failure_reason or "") or ""
+                    _noise_phrases2 = ["l2 connections has not been discovered", "l2 connection has not been discovered"]
+                    if any(p in _raw_desc2.lower() for p in _noise_phrases2):
+                        _raw_desc2 = ""
+                    result["path_status_description"] = _raw_desc2
                     if path_failure_reason:
                         result["path_failure_reason"] = path_failure_reason or ""
                     print(f"DEBUG: Successfully extracted {len(simplified_hops)} hops from Step 2 response", file=sys.stderr, flush=True)

@@ -879,6 +879,16 @@ def _apply_tool_param_fixes(
                 pass
 
 
+def _strip_l2_noise(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove noisy NetBrain status messages like 'L2 connections has not been discovered'."""
+    noise = ["l2 connections has not been discovered", "l2 connection has not been discovered"]
+    for key in ("path_status_description", "statusDescription"):
+        val = result.get(key)
+        if isinstance(val, str) and any(p in val.lower() for p in noise):
+            result[key] = ""
+    return result
+
+
 def _normalize_result(
     tool_name: str,
     result: dict[str, Any] | str | None,
@@ -887,6 +897,10 @@ def _normalize_result(
     """Apply Splunk/LLM normalizations to a successful result."""
     if result is None or (isinstance(result, dict) and len(result) == 0):
         return result
+    # Strip noisy L2 messages from path results
+    if isinstance(result, dict) and result.get("path_hops"):
+        result = dict(result)
+        _strip_l2_noise(result)
     if tool_name == "get_splunk_recent_denies" and isinstance(result, dict):
         if result.get("count") == 0 and "error" not in result:
             ip = result.get("ip_address", "this IP")

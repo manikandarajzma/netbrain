@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NetBrain Network Query</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>NetAssist</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -350,24 +353,126 @@
             border: 1px solid rgba(137, 180, 250, 0.15);
             overflow-x: auto;
             overflow-y: hidden;
+            position: relative;
         }
 
-        .path-visual .path-status {
-            margin-bottom: 1.5rem;
-            color: #a6e3a1;
-            font-size: 1.05rem;
+        .path-expand-btn {
+            position: absolute;
+            top: 0.75rem;
+            right: 0.75rem;
+            background: rgba(137, 180, 250, 0.15);
+            border: 1px solid rgba(137, 180, 250, 0.3);
+            color: #89b4fa;
+            border-radius: 6px;
+            padding: 0.4rem 0.7rem;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-family: inherit;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            transition: all 0.2s ease;
+            z-index: 5;
+        }
+        .path-expand-btn:hover {
+            background: rgba(137, 180, 250, 0.25);
+            border-color: rgba(137, 180, 250, 0.5);
+            color: #cdd6f4;
+        }
+
+        .path-fullscreen-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(10, 10, 20, 0.95);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            overflow: auto;
+        }
+
+        .path-fullscreen-overlay .path-fullscreen-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid rgba(137, 180, 250, 0.2);
+            flex-shrink: 0;
+        }
+
+        .path-fullscreen-overlay .path-fullscreen-title {
+            color: #89b4fa;
+            font-size: 1.1rem;
             font-weight: 600;
-            padding: 0.75rem 1rem;
-            background: rgba(166, 227, 161, 0.1);
-            border-left: 3px solid #a6e3a1;
-            border-radius: 4px;
         }
 
-        .path-visual .path-status.failed {
+        .path-fullscreen-close {
+            background: rgba(243, 139, 168, 0.15);
+            border: 1px solid rgba(243, 139, 168, 0.3);
             color: #f38ba8;
-            background: rgba(243, 139, 168, 0.1);
-            border-left-color: #f38ba8;
+            border-radius: 6px;
+            padding: 0.4rem 0.9rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-family: inherit;
+            transition: all 0.2s ease;
         }
+        .path-fullscreen-close:hover {
+            background: rgba(243, 139, 168, 0.3);
+            color: #fff;
+        }
+
+        .path-fullscreen-body {
+            flex: 1;
+            padding: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: auto;
+        }
+
+        .path-fullscreen-body .path-visual-clone {
+            transform-origin: center center;
+            padding: 2rem;
+        }
+
+        .path-fullscreen-body .path-horizontal {
+            gap: 4rem;
+        }
+
+        .path-fullscreen-body .path-item {
+            min-width: 180px;
+            max-width: 260px;
+            padding: 1.5rem;
+        }
+
+        .path-fullscreen-body .path-name {
+            font-size: 1.1rem;
+        }
+
+        .path-fullscreen-body .path-intf {
+            font-size: 0.9rem;
+        }
+
+        .path-fullscreen-body .path-badge {
+            width: 30px;
+            height: 30px;
+            font-size: 0.85rem;
+        }
+
+        .path-fullscreen-body .path-icon, .path-fullscreen-body .path-icon-fallback {
+            width: 56px;
+            height: 56px;
+            font-size: 1.1rem;
+        }
+
+        .path-fullscreen-body .path-fw-info {
+            font-size: 0.9rem;
+        }
+
+        /* path-status elements are created with inline styles only */
 
         .path-visual-row-wrap {
             position: relative;
@@ -559,6 +664,128 @@
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
         }
 
+        /* Upload button */
+        .upload-btn {
+            padding: 0.875rem 1.25rem;
+            background: rgba(137, 180, 250, 0.15);
+            color: #89b4fa;
+            border: 2px solid rgba(137, 180, 250, 0.3);
+            border-radius: 12px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .upload-btn:hover {
+            background: rgba(137, 180, 250, 0.25);
+            border-color: #89b4fa;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(137, 180, 250, 0.2);
+        }
+        .upload-btn:active { transform: translateY(0); }
+        .upload-btn.uploading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+
+        /* Attachment indicator */
+        .attach-indicator {
+            display: none;
+            align-items: center;
+            gap: 0.5rem;
+            max-width: 840px;
+            margin: 0 auto 0.5rem auto;
+            padding: 0.5rem 0.875rem;
+            background: rgba(137, 180, 250, 0.1);
+            border: 1px solid rgba(137, 180, 250, 0.3);
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #89b4fa;
+        }
+        .attach-indicator .attach-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .attach-indicator .attach-remove {
+            background: none;
+            border: none;
+            color: #f38ba8;
+            cursor: pointer;
+            font-size: 1rem;
+            padding: 0 0.25rem;
+            line-height: 1;
+        }
+        .attach-indicator .attach-remove:hover {
+            color: #fff;
+        }
+
+        /* Batch results table */
+        .batch-summary {
+            margin-bottom: 1rem;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            background: rgba(137, 180, 250, 0.08);
+            border: 1px solid rgba(137, 180, 250, 0.2);
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+        .batch-summary .batch-stat {
+            display: inline-block;
+            margin-right: 1.25rem;
+            font-weight: 600;
+        }
+        .batch-stat.allowed { color: #a6e3a1; }
+        .batch-stat.denied { color: #f38ba8; }
+        .batch-stat.unknown { color: #a6adc8; }
+        .batch-stat.error { color: #fab387; }
+
+        .batch-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 0.9rem;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            background: rgba(30, 30, 46, 0.5);
+            border: 1px solid rgba(137, 180, 250, 0.15);
+        }
+        .batch-table th {
+            background: rgba(137, 180, 250, 0.12);
+            font-weight: 600;
+            color: #89b4fa;
+            text-transform: uppercase;
+            font-size: 0.7rem;
+            letter-spacing: 0.08em;
+            border-bottom: 2px solid rgba(137, 180, 250, 0.25);
+            padding: 0.875rem 1rem;
+            text-align: left;
+        }
+        .batch-table td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid rgba(69, 71, 90, 0.3);
+            color: #cdd6f4;
+        }
+        .batch-table tbody tr:last-child td { border-bottom: none; }
+        .batch-table tbody tr { transition: background 0.2s; }
+        .batch-table tbody tr:nth-child(even) { background: rgba(49, 50, 68, 0.2); }
+        .batch-table tbody tr:hover { background: rgba(137, 180, 250, 0.12); }
+        .batch-table .status-cell {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.04em;
+        }
+        .batch-table .status-cell.allowed { color: #a6e3a1; }
+        .batch-table .status-cell.denied { color: #f38ba8; }
+        .batch-table .status-cell.unknown { color: #a6adc8; }
+        .batch-table .status-cell.error { color: #fab387; }
+
         /* Loading status */
         .status-msg {
             background: rgba(137, 180, 250, 0.1);
@@ -595,7 +822,7 @@
 </head>
 <body>
     <header>
-        <span>⚡ NetBrain Network Query</span>
+        <span>⚡ NetAssist</span>
         <a href="/logout">Sign out →</a>
     </header>
     <div id="app-main">
@@ -638,8 +865,14 @@
         <div id="chat-main">
             <div id="messages"></div>
             <div id="form">
+                <div class="attach-indicator" id="attachIndicator">
+                    <span class="attach-name" id="attachName"></span>
+                    <button type="button" class="attach-remove" onclick="clearAttachment()" title="Remove attachment">&times;</button>
+                </div>
                 <form onsubmit="return send(event)">
                     <input id="input" type="text" placeholder="Ask about paths, devices, racks, Panorama, Splunk..." autocomplete="off">
+                    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="onFileSelect(this)">
+                    <button type="button" class="upload-btn" id="uploadBtn" title="Upload spreadsheet (.xlsx, .csv) for batch queries" onclick="document.getElementById('fileInput').click()">&#128206;</button>
                     <button type="submit" id="sendBtn">Send →</button>
                 </form>
             </div>
@@ -713,25 +946,32 @@
             if (!hops || !hops.length) return;
             var wrap = document.createElement('div');
             wrap.className = 'path-visual';
-            if (content.path_status || content.path_status_description || content.path_failure_reason) {
+            // Show status bar for failed/denied/unknown paths only (inline styles to bypass CSS cache)
+            var _pathStatus = (content.path_status || '').toLowerCase();
+            var _contentStatus = (content.status || '').toLowerCase();
+            var _showStatus = (_pathStatus === 'failed' || _contentStatus === 'denied' || _contentStatus === 'unknown');
+            if (_showStatus) {
                 var statusEl = document.createElement('p');
-                statusEl.className = 'path-status';
-                var statusText = content.path_status_description || content.path_status || '';
-                if (content.path_failure_reason) statusText += (statusText ? ' ' : '') + content.path_failure_reason;
-                if ((content.path_status || '').toLowerCase() === 'failed') statusEl.classList.add('failed');
-                if ((content.status || '').toLowerCase() === 'denied') statusEl.classList.add('failed');
-                statusEl.textContent = statusText || ('Path: ' + (content.source || '') + ' → ' + (content.destination || ''));
+                statusEl.style.cssText = 'margin-bottom:1.5rem;color:#f38ba8;font-size:1.05rem;font-weight:600;padding:0.75rem 1rem;background:rgba(243,139,168,0.1);border-left:3px solid #f38ba8;border-radius:4px;';
+                var _statusText = content.reason || content.path_failure_reason || content.path_status_description || '';
+                statusEl.textContent = _statusText || ('Path: ' + (content.source || '') + ' → ' + (content.destination || ''));
                 wrap.appendChild(statusEl);
             }
-            if ((content.status === 'denied' || (content.path_status || '').toLowerCase() === 'failed') && (content.firewall_denied_by || content.policy_details)) {
+            if (content.firewall_denied_by || content.policy_details) {
                 var denyBlock = document.createElement('div');
                 denyBlock.className = 'path-deny-details';
                 denyBlock.style.marginTop = '0.5rem';
+                denyBlock.style.marginBottom = '1rem';
                 denyBlock.style.fontSize = '0.9rem';
+                denyBlock.style.padding = '0.75rem 1rem';
+                denyBlock.style.background = 'rgba(243,139,168,0.1)';
+                denyBlock.style.borderLeft = '3px solid #f38ba8';
+                denyBlock.style.borderRadius = '4px';
                 if (content.firewall_denied_by) {
                     var fwLine = document.createElement('p');
                     fwLine.style.margin = '0.2rem 0';
                     fwLine.style.color = '#f38ba8';
+                    fwLine.style.fontWeight = '600';
                     fwLine.textContent = 'Denied by firewall: ' + content.firewall_denied_by;
                     denyBlock.appendChild(fwLine);
                 }
@@ -744,6 +984,16 @@
                 }
                 wrap.appendChild(denyBlock);
             }
+            // Expand button
+            var expandBtn = document.createElement('button');
+            expandBtn.className = 'path-expand-btn';
+            expandBtn.innerHTML = '&#x26F6; Expand';
+            expandBtn.title = 'Open fullscreen view';
+            expandBtn.addEventListener('click', function() {
+                openPathFullscreen(wrap);
+            });
+            wrap.appendChild(expandBtn);
+
             var rowWrap = document.createElement('div');
             rowWrap.className = 'path-visual-row-wrap';
             var row = document.createElement('div');
@@ -874,13 +1124,38 @@
                 fwSection.style.overflowX = 'auto';
                 fwSection.style.overflowY = 'hidden';
 
+                var fwToolbar = document.createElement('div');
+                fwToolbar.style.display = 'flex';
+                fwToolbar.style.justifyContent = 'space-between';
+                fwToolbar.style.alignItems = 'center';
+                fwToolbar.style.marginBottom = '1rem';
+
                 var fwTitle = document.createElement('h4');
                 fwTitle.textContent = 'Firewall Details';
-                fwTitle.style.margin = '0 0 1rem 0';
+                fwTitle.style.margin = '0';
                 fwTitle.style.color = '#cba6f7';
                 fwTitle.style.fontSize = '1rem';
                 fwTitle.style.fontWeight = '600';
-                fwSection.appendChild(fwTitle);
+                fwToolbar.appendChild(fwTitle);
+
+                var fwExportBtn = document.createElement('button');
+                fwExportBtn.type = 'button';
+                fwExportBtn.className = 'export-csv';
+                fwExportBtn.textContent = 'Export CSV';
+                fwExportBtn.style.padding = '0.4rem 0.875rem';
+                fwExportBtn.style.background = 'rgba(137, 180, 250, 0.15)';
+                fwExportBtn.style.color = '#89b4fa';
+                fwExportBtn.style.border = '1px solid rgba(137, 180, 250, 0.3)';
+                fwExportBtn.style.borderRadius = '8px';
+                fwExportBtn.style.cursor = 'pointer';
+                fwExportBtn.style.fontSize = '0.8rem';
+                fwExportBtn.style.fontWeight = '500';
+                fwExportBtn.style.transition = 'all 0.2s';
+                fwExportBtn.addEventListener('mouseenter', function() { this.style.background = 'rgba(137, 180, 250, 0.25)'; });
+                fwExportBtn.addEventListener('mouseleave', function() { this.style.background = 'rgba(137, 180, 250, 0.15)'; });
+                fwToolbar.appendChild(fwExportBtn);
+
+                fwSection.appendChild(fwToolbar);
 
                 var fwTable = document.createElement('table');
                 fwTable.style.width = '100%';
@@ -948,6 +1223,24 @@
                 });
                 fwTable.appendChild(tbody);
                 fwSection.appendChild(fwTable);
+
+                // CSV export for Firewall Details
+                fwExportBtn.addEventListener('click', function() {
+                    var headers = ['Device', 'In Interface', 'Out Interface', 'In Zone', 'Out Zone', 'Device Group'];
+                    function esc(v) { var s = String(v == null ? '' : v).trim(); if (/[,\r\n"]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'; return s; }
+                    var lines = [headers.map(esc).join(',')];
+                    firewalls.forEach(function(fw) {
+                        lines.push([fw.name || '', fw.in || '', fw.out || '', fw.in_zone || '', fw.out_zone || '', fw.dg || ''].map(esc).join(','));
+                    });
+                    var blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'firewall_details.csv';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                });
+
                 wrap.appendChild(fwSection);
             }
 
@@ -1255,6 +1548,61 @@
             return false;
         }
 
+        function openPathFullscreen(pathVisualEl) {
+            var overlay = document.createElement('div');
+            overlay.className = 'path-fullscreen-overlay';
+
+            // Header bar
+            var header = document.createElement('div');
+            header.className = 'path-fullscreen-header';
+            var title = document.createElement('span');
+            title.className = 'path-fullscreen-title';
+            title.textContent = 'Network Path';
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'path-fullscreen-close';
+            closeBtn.textContent = 'Close (Esc)';
+            var cleanup = function() { overlay.remove(); document.removeEventListener('keydown', escHandler); };
+            closeBtn.addEventListener('click', cleanup);
+            header.appendChild(title);
+            header.appendChild(closeBtn);
+            overlay.appendChild(header);
+
+            // Body with cloned path visual
+            var body = document.createElement('div');
+            body.className = 'path-fullscreen-body';
+            var clone = pathVisualEl.cloneNode(true);
+            clone.className = 'path-visual-clone';
+            clone.style.background = 'none';
+            clone.style.border = 'none';
+            clone.style.margin = '0';
+            clone.style.maxWidth = 'none';
+            clone.style.overflow = 'visible';
+            // Remove the expand button from the clone
+            var cloneBtn = clone.querySelector('.path-expand-btn');
+            if (cloneBtn) cloneBtn.remove();
+            body.appendChild(clone);
+            overlay.appendChild(body);
+
+            // Close on Escape key
+            var escHandler = function(e) {
+                if (e.key === 'Escape') cleanup();
+            };
+            document.addEventListener('keydown', escHandler);
+
+            // Close on clicking backdrop (not the content)
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay || e.target === body) cleanup();
+            });
+
+            document.body.appendChild(overlay);
+
+            // Redraw SVG connectors in the cloned view after layout
+            requestAnimationFrame(function() {
+                var cloneRowWrap = clone.querySelector('.path-visual-row-wrap');
+                if (cloneRowWrap) drawPathConnectors(cloneRowWrap);
+            });
+        }
+
         function appendMessage(role, content) {
             var div = document.createElement('div');
             div.className = 'msg ' + role;
@@ -1290,7 +1638,9 @@
                     div.appendChild(directDiv);
                 }
 
-                if (content.error) {
+                if (content.batch_results && Array.isArray(content.batch_results)) {
+                    renderBatchResults(div, content.batch_results, content.tool || '');
+                } else if (content.error) {
                     // Don't treat clarification requests as errors (no red styling)
                     if (content.requires_site && content.sites && content.sites.length > 0) {
                         // This is a clarification question, not an error - display normally
@@ -1318,7 +1668,9 @@
                     pathLine.textContent = 'Path: ' + content.source + ' → ' + content.destination;
                     pathWrap.appendChild(pathLine);
                     var statusDesc = content.path_status_description || content.path_status || content.statusDescription || '';
-                    if (statusDesc) {
+                    var _descNoise = ['l2 connections has not been discovered', 'l2 connection has not been discovered'];
+                    var _descIsNoise = _descNoise.some(function(p) { return statusDesc.toLowerCase().indexOf(p) !== -1; });
+                    if (statusDesc && !_descIsNoise) {
                         var statusP = document.createElement('p');
                         statusP.className = 'path-status';
                         statusP.style.marginTop = '0.5rem';
@@ -1398,9 +1750,278 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
+        function renderBatchResults(container, results, tool) {
+            if (!Array.isArray(results) || results.length === 0) {
+                container.textContent = 'No results returned.';
+                return;
+            }
+            var isPathQuery = tool === 'query_network_path';
+
+            // Summary stats
+            var counts = { allowed: 0, denied: 0, unknown: 0, error: 0, success: 0, failed: 0 };
+            results.forEach(function(r) {
+                var s = (r.status || '').toLowerCase();
+                if (counts.hasOwnProperty(s)) counts[s]++;
+                else counts.unknown++;
+            });
+
+            var summary = document.createElement('div');
+            summary.className = 'batch-summary';
+            if (isPathQuery) {
+                summary.innerHTML =
+                    '<span class="batch-stat allowed">' + counts.success + ' Success</span>' +
+                    '<span class="batch-stat denied">' + counts.failed + ' Failed</span>' +
+                    (counts.error > 0 ? '<span class="batch-stat error">' + counts.error + ' Error</span>' : '') +
+                    (counts.unknown > 0 ? '<span class="batch-stat unknown">' + counts.unknown + ' Unknown</span>' : '') +
+                    '<span style="color:#a6adc8;"> out of ' + results.length + ' total</span>';
+            } else {
+                summary.innerHTML =
+                    '<span class="batch-stat allowed">' + counts.allowed + ' Allowed</span>' +
+                    '<span class="batch-stat denied">' + counts.denied + ' Denied</span>' +
+                    '<span class="batch-stat unknown">' + counts.unknown + ' Unknown</span>' +
+                    (counts.error > 0 ? '<span class="batch-stat error">' + counts.error + ' Error</span>' : '') +
+                    '<span style="color:#a6adc8;"> out of ' + results.length + ' total</span>';
+            }
+            container.appendChild(summary);
+
+            // Table columns differ by tool
+            var headers = isPathQuery
+                ? ['Source', 'Destination', 'Protocol', 'Port', 'Status', 'Path', 'Details']
+                : ['Source', 'Destination', 'Protocol', 'Port', 'Status', 'Reason', 'Firewall', 'Policy'];
+
+            var table = document.createElement('table');
+            table.className = 'batch-table';
+            var thead = document.createElement('thead');
+            var headRow = document.createElement('tr');
+            headers.forEach(function(h) {
+                var th = document.createElement('th');
+                th.textContent = h;
+                headRow.appendChild(th);
+            });
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            var tbody = document.createElement('tbody');
+            results.forEach(function(r) {
+                var tr = document.createElement('tr');
+                var statusLower = (r.status || 'unknown').toLowerCase();
+
+                // Common columns: Source, Destination, Protocol, Port
+                ['source', 'destination'].forEach(function(key) {
+                    var td = document.createElement('td');
+                    td.textContent = r[key] || '';
+                    tr.appendChild(td);
+                });
+                var tdProto = document.createElement('td');
+                tdProto.textContent = (r.protocol || 'tcp').toUpperCase();
+                tr.appendChild(tdProto);
+                var tdPort = document.createElement('td');
+                tdPort.textContent = r.port || '0';
+                tr.appendChild(tdPort);
+
+                // Status (color-coded)
+                var tdStatus = document.createElement('td');
+                var statusClass = statusLower;
+                if (statusLower === 'success') statusClass = 'allowed';
+                if (statusLower === 'failed') statusClass = 'denied';
+                tdStatus.className = 'status-cell ' + statusClass;
+                tdStatus.textContent = statusLower;
+                tr.appendChild(tdStatus);
+
+                if (isPathQuery) {
+                    // Path summary
+                    var tdPath = document.createElement('td');
+                    tdPath.textContent = r.path_summary || '';
+                    tdPath.style.whiteSpace = 'normal';
+                    tdPath.style.maxWidth = '300px';
+                    tdPath.style.fontSize = '0.8rem';
+                    tr.appendChild(tdPath);
+                    // Details (reason/status description)
+                    var tdDetails = document.createElement('td');
+                    tdDetails.textContent = r.reason || '';
+                    tdDetails.style.whiteSpace = 'normal';
+                    tdDetails.style.maxWidth = '200px';
+                    tr.appendChild(tdDetails);
+                } else {
+                    // Reason
+                    var tdReason = document.createElement('td');
+                    tdReason.textContent = r.reason || '';
+                    tdReason.style.whiteSpace = 'normal';
+                    tdReason.style.maxWidth = '200px';
+                    tr.appendChild(tdReason);
+                    // Firewall
+                    var tdFw = document.createElement('td');
+                    tdFw.textContent = r.firewall_denied_by || '';
+                    tr.appendChild(tdFw);
+                    // Policy
+                    var tdPol = document.createElement('td');
+                    tdPol.textContent = r.policy_details || '';
+                    tdPol.style.whiteSpace = 'normal';
+                    tdPol.style.maxWidth = '200px';
+                    tr.appendChild(tdPol);
+                }
+
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+
+            var tableWrap = document.createElement('div');
+            tableWrap.style.overflowX = 'auto';
+            tableWrap.appendChild(table);
+            container.appendChild(tableWrap);
+
+            // Export CSV button
+            var exportBtn = document.createElement('button');
+            exportBtn.type = 'button';
+            exportBtn.className = 'export-csv';
+            exportBtn.textContent = 'Export Results CSV';
+            exportBtn.style.marginTop = '0.75rem';
+            exportBtn.addEventListener('click', function() {
+                function esc(v) { var s = String(v || ''); if (/[,\r\n"]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'; return s; }
+                var csvHeaders = isPathQuery
+                    ? ['Source', 'Destination', 'Protocol', 'Port', 'Status', 'Path', 'Details']
+                    : ['Source', 'Destination', 'Protocol', 'Port', 'Status', 'Reason', 'Firewall', 'Policy'];
+                var lines = [csvHeaders.map(esc).join(',')];
+                results.forEach(function(r) {
+                    var row = isPathQuery
+                        ? [r.source, r.destination, r.protocol, r.port, r.status, r.path_summary, r.reason]
+                        : [r.source, r.destination, r.protocol, r.port, r.status, r.reason, r.firewall_denied_by, r.policy_details];
+                    lines.push(row.map(esc).join(','));
+                });
+                var blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url; a.download = 'batch_results.csv'; a.click();
+                URL.revokeObjectURL(url);
+            });
+            container.appendChild(exportBtn);
+
+            // Render individual path graphics for each batch row (path queries only)
+            if (isPathQuery) {
+                results.forEach(function(r, idx) {
+                    if (!r.path_hops || !Array.isArray(r.path_hops) || r.path_hops.length === 0) return;
+                    var pathSection = document.createElement('div');
+                    pathSection.style.cssText = 'margin-top: 1.5rem; padding: 1.25rem; background: rgba(30, 30, 46, 0.5); border-radius: 8px; border: 1px solid rgba(137, 180, 250, 0.15);';
+
+                    var pathHeader = document.createElement('div');
+                    pathHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;';
+
+                    var pathTitle = document.createElement('h4');
+                    pathTitle.style.cssText = 'margin: 0; color: #89b4fa; font-size: 0.95rem; font-weight: 600;';
+                    pathTitle.textContent = (r.source || '') + ' \u2192 ' + (r.destination || '');
+                    pathHeader.appendChild(pathTitle);
+
+                    var statusBadge = document.createElement('span');
+                    var sLower = (r.status || '').toLowerCase();
+                    statusBadge.textContent = sLower;
+                    statusBadge.style.cssText = 'padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase;';
+                    if (sLower === 'success') {
+                        statusBadge.style.background = 'rgba(166, 227, 161, 0.15)';
+                        statusBadge.style.color = '#a6e3a1';
+                    } else {
+                        statusBadge.style.background = 'rgba(243, 139, 168, 0.15)';
+                        statusBadge.style.color = '#f38ba8';
+                    }
+                    pathHeader.appendChild(statusBadge);
+                    pathSection.appendChild(pathHeader);
+
+                    // Reuse renderPathWithIcons by passing a content-like object
+                    var fakeContent = {
+                        path_hops: r.path_hops,
+                        source: r.source,
+                        destination: r.destination,
+                        path_status: r.path_status || r.status,
+                        path_failure_reason: r.path_failure_reason || '',
+                        path_status_description: r.reason || ''
+                    };
+                    renderPathWithIcons(pathSection, fakeContent);
+                    container.appendChild(pathSection);
+                });
+            }
+        }
+
+        // --- File attachment flow ---
+        var attachedFile = null;
+
+        function onFileSelect(input) {
+            if (input.files[0]) {
+                attachedFile = input.files[0];
+                document.getElementById('attachName').textContent = '\uD83D\uDCCE ' + attachedFile.name;
+                document.getElementById('attachIndicator').style.display = 'flex';
+                inputEl.placeholder = 'Describe what to do: e.g. "check if paths are allowed" or "show network path"...';
+                inputEl.focus();
+            }
+            input.value = '';
+        }
+
+        function clearAttachment() {
+            attachedFile = null;
+            document.getElementById('attachIndicator').style.display = 'none';
+            inputEl.placeholder = 'Ask about paths, devices, racks, Panorama, Splunk...';
+        }
+
+        async function sendBatchUpload(file, message) {
+            var uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.classList.add('uploading');
+            sendBtn.disabled = true;
+
+            var statusEl = document.createElement('div');
+            statusEl.className = 'msg status-msg';
+            statusEl.textContent = 'Processing batch upload...';
+            messagesEl.appendChild(statusEl);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+
+            try {
+                var formData = new FormData();
+                formData.append('file', file);
+                formData.append('message', message);
+
+                var res = await fetch('/api/batch-upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                statusEl.remove();
+
+                var data = await res.json().catch(function() { return {}; });
+                if (!res.ok) {
+                    appendMessage('assistant', data.error || data.detail || 'Upload failed');
+                } else {
+                    var content = data.content || data;
+                    if (content.batch_results) {
+                        var div = document.createElement('div');
+                        div.className = 'msg assistant';
+                        renderBatchResults(div, content.batch_results, content.tool || '');
+                        messagesEl.appendChild(div);
+                        messagesEl.scrollTop = messagesEl.scrollHeight;
+                    } else {
+                        appendMessage('assistant', content);
+                    }
+                }
+            } catch (err) {
+                statusEl.remove();
+                var errMsg = err && err.message ? err.message : String(err);
+                appendMessage('assistant', 'Upload error: ' + errMsg);
+            }
+
+            uploadBtn.classList.remove('uploading');
+            sendBtn.disabled = false;
+        }
+
         async function send(e) {
             e.preventDefault();
             var text = inputEl.value.trim();
+
+            // If file is attached, send as batch upload
+            if (attachedFile) {
+                var file = attachedFile;
+                var msg = text || 'check if paths are allowed';
+                inputEl.value = '';
+                clearAttachment();
+                appendMessage('user', msg + '\n\uD83D\uDCCE ' + file.name);
+                await sendBatchUpload(file, msg);
+                return false;
+            }
+
             if (!text) return false;
             inputEl.value = '';
             sendBtn.disabled = true;
