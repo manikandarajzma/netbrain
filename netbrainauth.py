@@ -40,23 +40,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Hardcoded configuration values for NetBrain API authentication
 # These can be changed directly in the code or overridden via environment variables
 
+# Load .env file if available
+from dotenv import load_dotenv
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    load_dotenv(_env_path)
+
 # NetBrain server URL
-# Can be overridden via NETBRAIN_URL environment variable
 NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 
 # NetBrain username for authentication
-# Hardcoded value - change this directly in the code
-USERNAME = "aiauto"
+USERNAME = os.getenv("NETBRAIN_USERNAME", "")
 
 # NetBrain password for authentication
-# Hardcoded value - change this directly in the code
-PASSWORD = "x*vPqQs$VYRH%jtvYG5q"
+PASSWORD = os.getenv("NETBRAIN_PASSWORD", "")
 
 # Authentication ID for external users (LDAP/AD/TACACS)
-# Only required for external users through LDAP/AD or TACACS
-# The value must match the name of external authentication configured by admin
-# Set to None if not using external authentication
-AUTHENTICATION_ID = None
+AUTHENTICATION_ID = os.getenv("NETBRAIN_AUTH_ID") or None
 
 # Cache for access token
 # Module-level variables to store the cached token

@@ -312,9 +312,10 @@ Query: "{prompt}"
 RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
 """
 
+        import os
         llm = ChatOllama(
-            model="qwen2.5:14b",
-            base_url="http://localhost:11434",
+            model=os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             temperature=0.0,
         )
 

@@ -32,17 +32,20 @@ import xml.etree.ElementTree as ET
 # Import Optional type hint from typing module
 from typing import Optional, Dict, Any, List
 
+# Load .env file if available
+from dotenv import load_dotenv
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    load_dotenv(_env_path)
+
 # Panorama API configuration
-# Can be overridden via environment variables
 PANORAMA_URL = os.getenv("PANORAMA_URL", "https://192.168.15.247")
 
 # Panorama username for authentication
-# Hardcoded value - change this directly in the code
-PANORAMA_USERNAME = "admin"
+PANORAMA_USERNAME = os.getenv("PANORAMA_USERNAME", "")
 
 # Panorama password for authentication
-# Hardcoded value - change this directly in the code or use environment variable
-PANORAMA_PASSWORD = "SriN@r@008"
+PANORAMA_PASSWORD = os.getenv("PANORAMA_PASSWORD", "")
 
 # Cache for API key
 # Module-level variable to store the cached API key

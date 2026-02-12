@@ -51,11 +51,14 @@ import json
 def get_server_url():
     """
     Get the HTTP URL for the MCP server.
-        
+
     Returns:
         str: Server URL for HTTP transport (streamable-http uses /mcp endpoint)
     """
-    return "http://127.0.0.1:8765/mcp"
+    import os
+    host = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
+    port = os.getenv("MCP_SERVER_PORT", "8765")
+    return f"http://{host}:{port}/mcp"
 
 async def get_mcp_session():
     """

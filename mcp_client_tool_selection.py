@@ -196,27 +196,33 @@ async def select_tool_with_llm(
     prompt: str,
     tools_description: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    llm_model: str = "qwen2.5:14b",  # Better reasoning than llama3.1:8b
-    llm_base_url: str = "http://localhost:11434"
+    llm_model: str = None,
+    llm_base_url: str = None
 ) -> Dict[str, Any]:
     """
     Use LLM to select appropriate tool based on user query.
-    
+
     Follows MCP best practices:
     - Uses Pydantic structured outputs for reliable JSON
     - Clean error handling
     - No complex JSON parsing hacks
-    
+
     Args:
         prompt: User query
         tools_description: Formatted tool descriptions
         conversation_history: Previous conversation messages
-        llm_model: LLM model name
+        llm_model: LLM model name (default from OLLAMA_MODEL env var)
         llm_base_url: LLM base URL
     
     Returns:
         Dict with keys: success, tool_name, parameters, format, intent, needs_clarification, clarification_question, error
     """
+    import os
+    if llm_model is None:
+        llm_model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+    if llm_base_url is None:
+        llm_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
     try:
         # Check if Ollama is accessible before creating LLM instance
         import socket
@@ -353,14 +359,20 @@ async def synthesize_final_answer(
     tool_name: str,
     error_or_result: str | Dict[str, Any],
     *,
-    llm_model: str = "qwen2.5:14b",  # Better reasoning than llama3.1:8b
-    llm_base_url: str = "http://localhost:11434",
+    llm_model: str = None,
+    llm_base_url: str = None,
     timeout: float = 15.0,
 ) -> str:
     """
     Use the LLM to synthesize a short, user-friendly final answer after a failed tool call (or to summarize a raw error).
     Forces a coherent response instead of returning only the raw error message.
     """
+    import os
+    if llm_model is None:
+        llm_model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+    if llm_base_url is None:
+        llm_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
     if isinstance(error_or_result, dict):
         err_msg = error_or_result.get("error") or error_or_result.get("message") or str(error_or_result)[:500]
     else:
