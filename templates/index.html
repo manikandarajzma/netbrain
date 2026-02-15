@@ -16,7 +16,12 @@
             <span class="health-dot checking"></span>
             <span class="health-label">Checking...</span>
         </div>
-        <a href="/logout">Sign out →</a>
+        <div class="header-right">
+            <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode" aria-label="Toggle theme">
+                <span class="theme-icon">&#9790;</span>
+            </button>
+            <a href="/logout">Sign out →</a>
+        </div>
     </header>
     <div id="app-main">
         <aside id="sidebar">
@@ -66,7 +71,8 @@
                     <input id="input" type="text" placeholder="Ask about paths, devices, racks, Panorama, Splunk..." autocomplete="off">
                     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="onFileSelect(this)">
                     <button type="button" class="upload-btn" id="uploadBtn" title="Upload spreadsheet (.xlsx, .csv) for batch queries" onclick="document.getElementById('fileInput').click()">&#128206;</button>
-                    <button type="submit" id="sendBtn">Send →</button>
+                    <button type="submit" id="sendBtn" aria-label="Send">&#8593;</button>
+                    <button type="button" id="stopBtn" class="stop-btn" aria-label="Stop" title="Stop generating" style="display:none">&#9632;</button>
                 </form>
             </div>
         </div>

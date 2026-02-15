@@ -4,10 +4,64 @@ const sendBtn = document.getElementById('sendBtn');
 const exampleQueriesEl = document.getElementById('example-queries');
 let conversationHistory = [];
 
+// --- Welcome empty state ---
+(function createWelcomeState() {
+    var welcome = document.createElement('div');
+    welcome.className = 'welcome-state';
+    welcome.id = 'welcomeState';
+    welcome.innerHTML =
+        '<div class="welcome-title">What can I help with?</div>' +
+        '<div class="welcome-subtitle">Ask about network paths, device racks, Panorama groups, or Splunk logs.</div>';
+    messagesEl.appendChild(welcome);
+})();
+
+function removeWelcomeState() {
+    var el = document.getElementById('welcomeState');
+    if (!el) return;
+    el.classList.add('hiding');
+    setTimeout(function() { el.remove(); }, 400);
+}
+
+// --- Floating background particles ---
+(function createParticles() {
+    var container = document.createElement('div');
+    container.className = 'particles-container';
+    document.body.insertBefore(container, document.body.firstChild);
+
+    var colors = [
+        'rgba(56, 139, 253, 0.06)',
+        'rgba(139, 148, 158, 0.04)',
+        'rgba(63, 185, 80, 0.04)',
+    ];
+
+    for (var i = 0; i < 15; i++) {
+        var p = document.createElement('div');
+        p.className = 'particle';
+        var size = 3 + Math.random() * 5;
+        p.style.width = size + 'px';
+        p.style.height = size + 'px';
+        p.style.left = Math.random() * 100 + '%';
+        p.style.background = colors[Math.floor(Math.random() * colors.length)];
+        p.style.animationDuration = (15 + Math.random() * 25) + 's';
+        p.style.animationDelay = (Math.random() * 20) + 's';
+        container.appendChild(p);
+    }
+})();
+
 document.querySelectorAll('.example-chip').forEach(function(btn) {
     btn.addEventListener('click', function() {
         var q = this.getAttribute('data-query');
         if (q) { inputEl.value = q; inputEl.focus(); }
+    });
+});
+
+// --- Collapsible sidebar categories (collapsed by default) ---
+document.querySelectorAll('.example-category').forEach(function(cat) {
+    cat.classList.add('collapsed');
+});
+document.querySelectorAll('.example-category-label').forEach(function(label) {
+    label.addEventListener('click', function() {
+        this.parentElement.classList.toggle('collapsed');
     });
 });
 
@@ -395,7 +449,7 @@ function drawPathConnectors(rowWrap) {
     marker.setAttribute('orient', 'auto');
     var polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
     polygon.setAttribute('points', '0 0, 10 3, 0 6');
-    polygon.setAttribute('fill', '#89b4fa');
+    polygon.setAttribute('fill', '#58a6ff');
     marker.appendChild(polygon);
     defs.appendChild(marker);
     svg.appendChild(defs);
@@ -415,7 +469,7 @@ function drawPathConnectors(rowWrap) {
         line.setAttribute('y1', y1);
         line.setAttribute('x2', x2);
         line.setAttribute('y2', y2);
-        line.setAttribute('stroke', '#89b4fa');
+        line.setAttribute('stroke', '#58a6ff');
         line.setAttribute('stroke-width', '2.5');
         line.setAttribute('stroke-linecap', 'round');
         line.setAttribute('marker-end', 'url(#arrowhead)');
@@ -723,6 +777,7 @@ function openPathFullscreen(pathVisualEl) {
 }
 
 function appendMessage(role, content) {
+    removeWelcomeState();
     var div = document.createElement('div');
     div.className = 'msg ' + role;
     if (content === undefined || content === null || (typeof content === 'string' && !content.trim())) {
@@ -1059,6 +1114,20 @@ function renderBatchResults(container, results, tool) {
     }
 }
 
+// --- Status message with typing dots ---
+function createStatusMessage(text) {
+    var el = document.createElement('div');
+    el.className = 'msg status-msg';
+    var span = document.createElement('span');
+    span.textContent = text;
+    el.appendChild(span);
+    var dots = document.createElement('span');
+    dots.className = 'typing-dots';
+    dots.innerHTML = '<span></span><span></span><span></span>';
+    el.appendChild(dots);
+    return el;
+}
+
 // --- File attachment flow ---
 var attachedFile = null;
 
@@ -1079,16 +1148,43 @@ function clearAttachment() {
     inputEl.placeholder = 'Ask about paths, devices, racks, Panorama, Splunk...';
 }
 
+// --- Stop / abort support ---
+var stopBtn = document.getElementById('stopBtn');
+var activeAbort = null;
+
+function showStopBtn() {
+    sendBtn.style.display = 'none';
+    stopBtn.style.display = 'flex';
+}
+
+function showSendBtn() {
+    stopBtn.style.display = 'none';
+    sendBtn.style.display = 'flex';
+    sendBtn.disabled = false;
+    activeAbort = null;
+}
+
+function stopGeneration() {
+    if (activeAbort) {
+        activeAbort.abort();
+        activeAbort = null;
+    }
+}
+
+if (stopBtn) {
+    stopBtn.addEventListener('click', stopGeneration);
+}
+
 async function sendBatchUpload(file, message) {
     var uploadBtn = document.getElementById('uploadBtn');
     uploadBtn.classList.add('uploading');
-    sendBtn.disabled = true;
+    showStopBtn();
 
-    var statusEl = document.createElement('div');
-    statusEl.className = 'msg status-msg';
-    statusEl.textContent = 'Processing batch upload...';
+    var statusEl = createStatusMessage('Processing batch upload');
     messagesEl.appendChild(statusEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    activeAbort = new AbortController();
 
     try {
         var formData = new FormData();
@@ -1098,6 +1194,7 @@ async function sendBatchUpload(file, message) {
         var res = await fetch('/api/batch-upload', {
             method: 'POST',
             body: formData,
+            signal: activeAbort.signal,
         });
         statusEl.remove();
 
@@ -1118,12 +1215,16 @@ async function sendBatchUpload(file, message) {
         }
     } catch (err) {
         statusEl.remove();
-        var errMsg = err && err.message ? err.message : String(err);
-        appendMessage('assistant', 'Upload error: ' + errMsg);
+        if (err && err.name === 'AbortError') {
+            appendMessage('assistant', 'Request stopped.');
+        } else {
+            var errMsg = err && err.message ? err.message : String(err);
+            appendMessage('assistant', 'Upload error: ' + errMsg);
+        }
     }
 
     uploadBtn.classList.remove('uploading');
-    sendBtn.disabled = false;
+    showSendBtn();
 }
 
 async function send(e) {
@@ -1143,19 +1244,21 @@ async function send(e) {
 
     if (!text) return false;
     inputEl.value = '';
-    sendBtn.disabled = true;
+    showStopBtn();
     appendMessage('user', text);
     conversationHistory.push({ role: 'user', content: text });
-    var statusEl = document.createElement('div');
-    statusEl.className = 'msg status-msg';
-    statusEl.textContent = 'Processing...';
+    var statusEl = createStatusMessage('Processing');
     messagesEl.appendChild(statusEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    activeAbort = new AbortController();
+
     try {
         var res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, conversation_history: conversationHistory.slice(-20) })
+            body: JSON.stringify({ message: text, conversation_history: conversationHistory.slice(-20) }),
+            signal: activeAbort.signal,
         });
         statusEl.remove();
         var data = await res.json().catch(function() { return {}; });
@@ -1166,14 +1269,45 @@ async function send(e) {
         conversationHistory.push({ role: 'assistant', content: forHistory });
     } catch (err) {
         statusEl.remove();
-        var errMsg = err && err.message ? err.message : String(err);
-        if (errMsg.indexOf('fetch') !== -1) errMsg = 'Request failed. Check that the server is running and the request did not time out.';
-        appendMessage('assistant', 'Error: ' + errMsg);
-        conversationHistory.push({ role: 'assistant', content: 'Error: ' + errMsg });
+        if (err && err.name === 'AbortError') {
+            appendMessage('assistant', 'Request stopped.');
+            conversationHistory.push({ role: 'assistant', content: 'Request stopped.' });
+        } else {
+            var errMsg = err && err.message ? err.message : String(err);
+            if (errMsg.indexOf('fetch') !== -1) errMsg = 'Request failed. Check that the server is running and the request did not time out.';
+            appendMessage('assistant', 'Error: ' + errMsg);
+            conversationHistory.push({ role: 'assistant', content: 'Error: ' + errMsg });
+        }
     }
-    sendBtn.disabled = false;
+    showSendBtn();
     return false;
 }
+
+// --- Theme toggle ---
+(function initTheme() {
+    var toggle = document.getElementById('themeToggle');
+    if (!toggle) return;
+    var iconEl = toggle.querySelector('.theme-icon');
+    var SUN = '\u2600';   // ☀
+    var MOON = '\u263E';  // ☾
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        if (iconEl) iconEl.textContent = theme === 'light' ? SUN : MOON;
+        toggle.title = theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
+    }
+
+    // Read saved preference, default to dark
+    var saved = localStorage.getItem('theme') || 'dark';
+    applyTheme(saved);
+
+    toggle.addEventListener('click', function() {
+        var current = document.documentElement.getAttribute('data-theme') || 'dark';
+        var next = current === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('theme', next);
+        applyTheme(next);
+    });
+})();
 
 // --- Health status polling ---
 (function() {
