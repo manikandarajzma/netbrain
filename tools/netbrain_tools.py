@@ -10,14 +10,14 @@ The shared FastMCP instance (`mcp`) is imported from tools.shared so that
 tool registrations are picked up by the central server.
 """
 
-import sys
 import ssl
 import json
 import asyncio
 import aiohttp
 from typing import Optional, Dict, Any, List
 
-from tools.shared import mcp, NETBRAIN_URL
+from tools.shared import mcp, NETBRAIN_URL, setup_logging
+logger = setup_logging(__name__)
 import netbrainauth
 from tools.panorama_tools import _add_panorama_zones_to_hops, _add_panorama_device_groups_to_hops
 
@@ -63,7 +63,7 @@ async def get_device_type_mapping() -> Dict[int, str]:
     # Get authentication token
     auth_token = netbrainauth.get_auth_token()
     if not auth_token:
-        print("WARNING: Could not get auth token for device type mapping", file=sys.stderr, flush=True)
+        logger.warning("Could not get auth token for device type mapping")
         return {}
 
     # Create SSL context
@@ -162,11 +162,11 @@ async def get_device_type_mapping() -> Dict[int, str]:
                             "Token": auth_token
                         }
 
-                    print(f"DEBUG: Trying device type endpoint: {endpoint} (Bearer={use_bearer})", file=sys.stderr, flush=True)
+                    logger.debug(f"Trying device type endpoint: {endpoint} (Bearer={use_bearer})")
                     async with session.get(endpoint, headers=headers, ssl=ssl_context, timeout=10) as response:
                         if response.status == 200:
                             data = await response.json()
-                            print(f"DEBUG: Device type API response: {json.dumps(data, indent=2)[:500]}...", file=sys.stderr, flush=True)
+                            logger.debug(f"Device type API response: {json.dumps(data, indent=2)[:500]}...")
 
                             # Extract device types from response
                             device_types = extract_device_types_from_response(data)
@@ -175,13 +175,13 @@ async def get_device_type_mapping() -> Dict[int, str]:
                             device_type_map = process_device_types(device_types)
 
                             if device_type_map:
-                                print(f"DEBUG: Successfully loaded {len(device_type_map)} device type mappings", file=sys.stderr, flush=True)
+                                logger.debug(f"Successfully loaded {len(device_type_map)} device type mappings")
                                 _device_type_cache = device_type_map
                                 return device_type_map
                         elif response.status == 401:
                             # If Bearer failed, try Token header (for SystemModel endpoints)
                             if use_bearer:
-                                print(f"DEBUG: Bearer token failed, trying Token header...", file=sys.stderr, flush=True)
+                                logger.debug("Bearer token failed, trying Token header...")
                                 token_headers = {
                                     "Content-Type": "application/json",
                                     "Accept": "application/json",
@@ -193,26 +193,26 @@ async def get_device_type_mapping() -> Dict[int, str]:
                                         device_types = extract_device_types_from_response(data)
                                         device_type_map = process_device_types(device_types)
                                         if device_type_map:
-                                            print(f"DEBUG: Successfully loaded {len(device_type_map)} device type mappings with Token header", file=sys.stderr, flush=True)
+                                            logger.debug(f"Successfully loaded {len(device_type_map)} device type mappings with Token header")
                                             _device_type_cache = device_type_map
                                             return device_type_map
                             error_text = await response.text()
-                            print(f"DEBUG: Authentication failed for {endpoint}: {error_text[:200]}", file=sys.stderr, flush=True)
+                            logger.debug(f"Authentication failed for {endpoint}: {error_text[:200]}")
                             continue
                         elif response.status == 404:
                             # Endpoint doesn't exist, try next one
                             continue
                         else:
                             error_text = await response.text()
-                            print(f"DEBUG: Device type API returned {response.status}: {error_text[:200]}", file=sys.stderr, flush=True)
+                            logger.debug(f"Device type API returned {response.status}: {error_text[:200]}")
                 except Exception as e:
-                    print(f"DEBUG: Error querying device type endpoint {endpoint}: {e}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error querying device type endpoint {endpoint}: {e}")
                     continue
 
         # If no endpoint worked, try fetching from devices API as fallback
         # Note: Devices API doesn't provide numeric deviceType IDs, only subTypeName
         # We'll build a name-based lookup cache that can be used when processing path hops
-        print("DEBUG: Direct device type endpoints failed, trying devices API as fallback...", file=sys.stderr, flush=True)
+        logger.debug("Direct device type endpoints failed, trying devices API as fallback...")
 
         # Store debug info to return in result
         devices_api_debug = {
@@ -239,26 +239,26 @@ async def get_device_type_mapping() -> Dict[int, str]:
                 "limit": 100  # Maximum allowed by API
             }
 
-            print(f"DEBUG: Calling Devices API: {devices_endpoint} with params: {params}", file=sys.stderr, flush=True)
+            logger.debug(f"Calling Devices API: {devices_endpoint} with params: {params}")
             async with aiohttp.ClientSession() as session:
                 async with session.get(devices_endpoint, headers=token_headers, params=params, ssl=ssl_context, timeout=30) as response:
                     devices_api_debug["status"] = response.status
-                    print(f"DEBUG: Devices API response status: {response.status}", file=sys.stderr, flush=True)
+                    logger.debug(f"Devices API response status: {response.status}")
                     if response.status == 200:
                         data = await response.json()
-                        print(f"DEBUG: Devices API response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
-                        print(f"DEBUG: Devices API statusCode: {data.get('statusCode') if isinstance(data, dict) else 'N/A'}", file=sys.stderr, flush=True)
+                        logger.debug(f"Devices API response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                        logger.debug(f"Devices API statusCode: {data.get('statusCode') if isinstance(data, dict) else 'N/A'}")
 
                         if data.get("statusCode") == 790200:
                             devices = data.get("devices", [])
                             devices_api_debug["devices_count"] = len(devices)
-                            print(f"DEBUG: Fetched {len(devices)} devices from devices API", file=sys.stderr, flush=True)
+                            logger.debug(f"Fetched {len(devices)} devices from devices API")
 
                             if len(devices) == 0:
-                                print(f"DEBUG: WARNING: Devices API returned 0 devices!", file=sys.stderr, flush=True)
+                                logger.warning("Devices API returned 0 devices!")
                                 devices_api_debug["error"] = "Devices API returned 0 devices"
                                 # Try without limit parameter
-                                print(f"DEBUG: Retrying Devices API without limit parameter...", file=sys.stderr, flush=True)
+                                logger.debug("Retrying Devices API without limit parameter...")
                                 async with session.get(devices_endpoint, headers=token_headers, ssl=ssl_context, timeout=30) as retry_response:
                                     devices_api_debug["retry_status"] = retry_response.status
                                     if retry_response.status == 200:
@@ -266,7 +266,7 @@ async def get_device_type_mapping() -> Dict[int, str]:
                                         if retry_data.get("statusCode") == 790200:
                                             devices = retry_data.get("devices", [])
                                             devices_api_debug["devices_count"] = len(devices)
-                                            print(f"DEBUG: Retry fetched {len(devices)} devices", file=sys.stderr, flush=True)
+                                            logger.debug(f"Retry fetched {len(devices)} devices")
 
                             # Extract device type mappings from devices
                             # Since Devices API doesn't provide numeric IDs, we'll try to find them
@@ -279,7 +279,7 @@ async def get_device_type_mapping() -> Dict[int, str]:
 
                                 # Debug: Print first few devices to see structure
                                 if len(device_name_to_type) < 3:
-                                    print(f"DEBUG: Sample device - name: '{dev_name}', subTypeName: '{dev_type_name}', keys: {list(dev.keys())[:10]}", file=sys.stderr, flush=True)
+                                    logger.debug(f"Sample device - name: '{dev_name}', subTypeName: '{dev_type_name}', keys: {list(dev.keys())[:10]}")
 
                                 # Try to find numeric device type ID
                                 dev_type_id = dev.get("deviceType") or dev.get("devType") or dev.get("typeId")
@@ -294,9 +294,9 @@ async def get_device_type_mapping() -> Dict[int, str]:
                                 if dev_name and dev_type_name:
                                     device_name_to_type[str(dev_name)] = str(dev_type_name)
 
-                            print(f"DEBUG: Built name-based cache with {len(device_name_to_type)} entries", file=sys.stderr, flush=True)
+                            logger.debug(f"Built name-based cache with {len(device_name_to_type)} entries")
                             if len(device_name_to_type) > 0:
-                                print(f"DEBUG: Sample cache entries: {list(device_name_to_type.items())[:5]}", file=sys.stderr, flush=True)
+                                logger.debug(f"Sample cache entries: {list(device_name_to_type.items())[:5]}")
 
                             # Store name-based cache as a module-level variable for later use
                             _device_name_to_type_cache = device_name_to_type
@@ -304,30 +304,30 @@ async def get_device_type_mapping() -> Dict[int, str]:
                             devices_api_debug["cache_size"] = len(device_name_to_type)
 
                             if device_type_map:
-                                print(f"DEBUG: Successfully loaded {len(device_type_map)} device type mappings from devices API", file=sys.stderr, flush=True)
+                                logger.debug(f"Successfully loaded {len(device_type_map)} device type mappings from devices API")
                                 _device_type_cache = device_type_map
                                 return device_type_map
                             elif device_name_to_type:
-                                print(f"DEBUG: Built name-based device type cache with {len(device_name_to_type)} entries (no numeric IDs found)", file=sys.stderr, flush=True)
-                                print(f"DEBUG: Name cache sample: {list(device_name_to_type.keys())[:10]}", file=sys.stderr, flush=True)
+                                logger.debug(f"Built name-based device type cache with {len(device_name_to_type)} entries (no numeric IDs found)")
+                                logger.debug(f"Name cache sample: {list(device_name_to_type.keys())[:10]}")
                                 # Return empty dict but cache is available for name-based lookup
                                 _device_type_cache = {}  # Cache empty dict to avoid repeated failed attempts
                                 return {}
                             else:
-                                print(f"DEBUG: WARNING: No devices found or no device types extracted!", file=sys.stderr, flush=True)
+                                logger.warning("No devices found or no device types extracted!")
                                 devices_api_debug["error"] = "No device types extracted from devices"
                         else:
                             status_desc = data.get('statusDescription', 'No description') if isinstance(data, dict) else 'Unknown'
-                            print(f"DEBUG: Devices API returned statusCode {data.get('statusCode')}: {status_desc}", file=sys.stderr, flush=True)
+                            logger.debug(f"Devices API returned statusCode {data.get('statusCode')}: {status_desc}")
                             devices_api_debug["error"] = f"statusCode {data.get('statusCode')}: {status_desc}"
                     else:
                         error_text = await response.text()
-                        print(f"DEBUG: Devices API returned HTTP {response.status}: {error_text[:500]}", file=sys.stderr, flush=True)
+                        logger.debug(f"Devices API returned HTTP {response.status}: {error_text[:500]}")
                         devices_api_debug["error"] = f"HTTP {response.status}: {error_text[:200]}"
         except Exception as e:
-            print(f"DEBUG: Error fetching from devices API: {e}", file=sys.stderr, flush=True)
+            logger.debug(f"Error fetching from devices API: {e}")
             import traceback
-            print(f"DEBUG: Devices API error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            logger.debug(f"Devices API error traceback: {traceback.format_exc()}")
             devices_api_debug["error"] = str(e)
 
         # Store debug info in module-level variable so it can be added to result
@@ -335,14 +335,14 @@ async def get_device_type_mapping() -> Dict[int, str]:
         _devices_api_debug_info = devices_api_debug
 
         # If no endpoint worked, return empty dict
-        print("WARNING: Could not retrieve device type mappings from NetBrain API", file=sys.stderr, flush=True)
+        logger.warning("Could not retrieve device type mappings from NetBrain API")
         _device_type_cache = {}  # Cache empty dict to avoid repeated failed attempts
         return {}
 
     except Exception as e:
-        print(f"ERROR: Exception getting device type mapping: {str(e)}", file=sys.stderr, flush=True)
+        logger.error(f"Exception getting device type mapping: {str(e)}")
         import traceback
-        print(f"ERROR: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.error(f"Traceback: {traceback.format_exc()}")
         _device_type_cache = {}  # Cache empty dict
         return {}
 
@@ -366,28 +366,28 @@ def map_device_type(dev_type: Any, device_type_map: Optional[Dict[int, str]] = N
         global _device_name_to_type_cache
         # Force cache rebuild if it doesn't exist (synchronous call - this is a sync function)
         if _device_name_to_type_cache is None:
-            print(f"DEBUG: map_device_type - Name cache is None, attempting to build it synchronously...", file=sys.stderr, flush=True)
+            logger.debug("map_device_type - Name cache is None, attempting to build it synchronously...")
             # We can't await here, but we can trigger an async task
             # For now, just log and continue - the cache should be built by get_device_type_mapping()
-            print(f"DEBUG: map_device_type - WARNING: Name cache not built yet, device_name='{device_name}', dev_type='{dev_type}'", file=sys.stderr, flush=True)
+            logger.warning(f"map_device_type - Name cache not built yet, device_name='{device_name}', dev_type='{dev_type}'")
 
         if _device_name_to_type_cache:
             # Try exact match first
             device_type_name = _device_name_to_type_cache.get(device_name)
             if device_type_name:
-                print(f"DEBUG: map_device_type - Found '{device_name}' -> '{device_type_name}' in name cache (exact match)", file=sys.stderr, flush=True)
+                logger.debug(f"map_device_type - Found '{device_name}' -> '{device_type_name}' in name cache (exact match)")
                 return device_type_name
 
             # Try case-insensitive match
             device_name_lower = device_name.lower()
             for cached_name, cached_type in _device_name_to_type_cache.items():
                 if cached_name.lower() == device_name_lower:
-                    print(f"DEBUG: map_device_type - Found '{device_name}' -> '{cached_type}' in name cache (case-insensitive match, cached as '{cached_name}')", file=sys.stderr, flush=True)
+                    logger.debug(f"map_device_type - Found '{device_name}' -> '{cached_type}' in name cache (case-insensitive match, cached as '{cached_name}')")
                     return cached_type
 
-            print(f"DEBUG: map_device_type - Device '{device_name}' not found in name cache (cache has {len(_device_name_to_type_cache)} entries: {list(_device_name_to_type_cache.keys())[:10]}...)", file=sys.stderr, flush=True)
+            logger.debug(f"map_device_type - Device '{device_name}' not found in name cache (cache has {len(_device_name_to_type_cache)} entries: {list(_device_name_to_type_cache.keys())[:10]}...)")
         else:
-            print(f"DEBUG: map_device_type - Name cache is empty dict, device_name='{device_name}', dev_type='{dev_type}'", file=sys.stderr, flush=True)
+            logger.debug(f"map_device_type - Name cache is empty dict, device_name='{device_name}', dev_type='{dev_type}'")
 
     # Fallback to numeric code mapping
     if dev_type is None:
@@ -430,7 +430,7 @@ async def _query_network_path_impl(
     import json
 
     # Debug: Print function entry and parameters
-    print(f"DEBUG: _query_network_path_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}, continue_on_policy_denial={continue_on_policy_denial}", file=sys.stderr, flush=True)
+    logger.debug(f"_query_network_path_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}, continue_on_policy_denial={continue_on_policy_denial}")
 
     # Get authentication token from netbrainauth module
     # This token is required for all NetBrain API requests
@@ -439,18 +439,18 @@ async def _query_network_path_impl(
     # Check if authentication token was successfully obtained
     # If not, return an error dictionary immediately
     if not auth_token:
-        print("DEBUG: Failed to get authentication token", file=sys.stderr, flush=True)
+        logger.debug("Failed to get authentication token")
         return {"error": "Failed to get authentication token"}
 
-    print(f"DEBUG: Authentication token obtained: {auth_token[:20]}...", file=sys.stderr, flush=True)
+    logger.debug(f"Authentication token obtained: {auth_token[:20]}...")
 
     # Pre-build device type cache to ensure it's available when processing path hops
-    print(f"DEBUG: Pre-building device type cache...", file=sys.stderr, flush=True)
+    logger.debug("Pre-building device type cache...")
     await get_device_type_mapping()
     if _device_name_to_type_cache:
-        print(f"DEBUG: Device type cache ready with {len(_device_name_to_type_cache)} name-based entries", file=sys.stderr, flush=True)
+        logger.debug(f"Device type cache ready with {len(_device_name_to_type_cache)} name-based entries")
     else:
-        print(f"DEBUG: WARNING: Device type name cache is not available", file=sys.stderr, flush=True)
+        logger.warning("Device type name cache is not available")
 
     # Helper: build headers with the given token
     def _make_headers(token):
@@ -488,7 +488,7 @@ async def _query_network_path_impl(
 
     # Validate source is not empty
     if not source_trimmed:
-        print("ERROR: Source IP/hostname is empty", file=sys.stderr, flush=True)
+        logger.error("Source IP/hostname is empty")
         return {
             "error": "Source IP/hostname cannot be empty",
             "step": 0
@@ -509,16 +509,16 @@ async def _query_network_path_impl(
             # STEP 1: Resolve Device Gateway
             # GET /V1/CMDB/Path/Gateways?ipOrHost=<source>
             # ====================================================================
-            print(f"DEBUG: Step 1 - Resolving gateway for source: {source_trimmed}", file=sys.stderr, flush=True)
+            logger.debug(f"Step 1 - Resolving gateway for source: {source_trimmed}")
             gateway_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Gateways"
             gateway_params = {"ipOrHost": source_trimmed}
 
             # Debug: Print full request details
             import urllib.parse
             full_url_with_params = f"{gateway_url}?{urllib.parse.urlencode(gateway_params)}"
-            print(f"DEBUG: Step 1 - Full URL: {full_url_with_params}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Step 1 - Headers: {headers}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Step 1 - Params: {gateway_params}", file=sys.stderr, flush=True)
+            logger.debug(f"Step 1 - Full URL: {full_url_with_params}")
+            logger.debug(f"Step 1 - Headers: {headers}")
+            logger.debug(f"Step 1 - Params: {gateway_params}")
 
             # Gateway resolution with retry-on-401 (expired token).
             # Try up to 2 times: if the first attempt gets HTTP 401, refresh the
@@ -527,11 +527,11 @@ async def _query_network_path_impl(
             for _gw_attempt in range(2):
               async with session.get(gateway_url, headers=headers, params=gateway_params, ssl=ssl_context) as gateway_response:
                 response_status = gateway_response.status
-                print(f"DEBUG: Step 1 (attempt {_gw_attempt+1}) - Response status: {response_status}", file=sys.stderr, flush=True)
+                logger.debug(f"Step 1 (attempt {_gw_attempt+1}) - Response status: {response_status}")
 
                 if response_status == 401 and _gw_attempt == 0:
                     # Token expired - refresh and retry
-                    print(f"WARNING: Step 1 - HTTP 401 (token expired), refreshing token and retrying...", file=sys.stderr, flush=True)
+                    logger.warning("Step 1 - HTTP 401 (token expired), refreshing token and retrying...")
                     netbrainauth.clear_token_cache()
                     auth_token = netbrainauth.get_auth_token()
                     if not auth_token:
@@ -541,13 +541,13 @@ async def _query_network_path_impl(
                             "source": source_trimmed
                         }
                     headers = _make_headers(auth_token)
-                    print(f"DEBUG: Step 1 - New token obtained: {auth_token[:20]}..., retrying gateway resolution", file=sys.stderr, flush=True)
+                    logger.debug(f"Step 1 - New token obtained: {auth_token[:20]}..., retrying gateway resolution")
                     continue  # retry the for loop
 
                 if response_status != 200:
                     # Read response body as text first
                     error_text = await gateway_response.text()
-                    print(f"DEBUG: Step 1 - Error response text: {error_text[:500]}", file=sys.stderr, flush=True)
+                    logger.debug(f"Step 1 - Error response text: {error_text[:500]}")
 
                     # Try to parse as JSON for more details
                     error_details = error_text
@@ -559,26 +559,26 @@ async def _query_network_path_impl(
                             status_code = error_json.get("statusCode", "Unknown")
                             status_desc = error_json.get("statusDescription", "No description")
                             error_details = f"statusCode: {status_code}, statusDescription: {status_desc}"
-                            print(f"WARNING: Step 1 - HTTP {response_status}, {error_details}", file=sys.stderr, flush=True)
+                            logger.warning(f"Step 1 - HTTP {response_status}, {error_details}")
                         else:
                             error_details = str(error_json)
-                            print(f"WARNING: Step 1 - HTTP {response_status}: {error_details}", file=sys.stderr, flush=True)
+                            logger.warning(f"Step 1 - HTTP {response_status}: {error_details}")
                     except:
                         # If JSON parsing fails, use text as-is
                         error_details = error_text
-                        print(f"WARNING: Step 1 - HTTP {response_status}: {error_details}", file=sys.stderr, flush=True)
+                        logger.warning(f"Step 1 - HTTP {response_status}: {error_details}")
 
                     # If gateway was not found (792040) and fix-up rules are enabled, proceed anyway
                     # The fix-up rules will handle gateway resolution during path calculation
                     if status_code == 792040:  # Gateway was not found
-                        print(f"INFO: Gateway not found (statusCode 792040), but fix-up rules are enabled. Proceeding to path calculation...", file=sys.stderr, flush=True)
+                        logger.info("Gateway not found (statusCode 792040), but fix-up rules are enabled. Proceeding to path calculation...")
                         # Create a minimal valid gateway object - fix-up rules will override this
                         # Use source IP as placeholder, fix-up rules will replace it
                         source_gateway = {
                             "gatewayName": source_trimmed  # Use source IP as placeholder, fix-up rules will replace it
                             # Omit type and payload - let fix-up rules handle it
                         }
-                        print(f"DEBUG: Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation", file=sys.stderr, flush=True)
+                        logger.debug(f"Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation")
                     else:
                         # For other errors, return error
                         return {
@@ -597,12 +597,12 @@ async def _query_network_path_impl(
                     if gateway_data.get("statusCode") != 790200:
                         status_code = gateway_data.get("statusCode", "Unknown")
                         status_desc = gateway_data.get("statusDescription", "No description")
-                        print(f"WARNING: Step 1 - Gateway resolution failed - statusCode={status_code}: {status_desc}", file=sys.stderr, flush=True)
+                        logger.warning(f"Step 1 - Gateway resolution failed - statusCode={status_code}: {status_desc}")
 
                         # If gateway was not found (792040) and fix-up rules are enabled, proceed anyway
                         # The fix-up rules will handle gateway resolution during path calculation
                         if status_code == 792040:  # Gateway was not found
-                            print(f"INFO: Gateway not found, but fix-up rules are enabled. Proceeding to path calculation...", file=sys.stderr, flush=True)
+                            logger.info("Gateway not found, but fix-up rules are enabled. Proceeding to path calculation...")
                             # Create a minimal valid gateway object - fix-up rules will override this
                             # Use source IP as placeholder, fix-up rules will replace it
                             source_gateway = {
@@ -610,7 +610,7 @@ async def _query_network_path_impl(
                                 "type": "",
                                 "payload": None
                             }
-                            print(f"DEBUG: Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation", file=sys.stderr, flush=True)
+                            logger.debug(f"Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation")
                         else:
                             # For other errors, return error
                             return {
@@ -623,7 +623,7 @@ async def _query_network_path_impl(
                         # Get the gateway list from the response
                         gateway_list = gateway_data.get("gatewayList", [])
                         if not gateway_list:
-                            print("WARNING: Step 1 - No gateways found in response, but fix-up rules are enabled. Proceeding...", file=sys.stderr, flush=True)
+                            logger.warning("Step 1 - No gateways found in response, but fix-up rules are enabled. Proceeding...")
                             # Create a minimal valid gateway object - fix-up rules will override this
                             # Use source IP as placeholder, fix-up rules will replace it
                             source_gateway = {
@@ -631,13 +631,13 @@ async def _query_network_path_impl(
                                 "type": "",
                                 "payload": None
                             }
-                            print(f"DEBUG: Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation", file=sys.stderr, flush=True)
+                            logger.debug(f"Step 1 - Using placeholder gateway ({source_trimmed}), fix-up rules will apply during path calculation")
                         else:
                             # Use the first gateway from the list
                             # The gateway object contains: gatewayName, type, payload
                             source_gateway = gateway_list[0]
-                            print(f"DEBUG: Step 1 - Gateway resolved: {source_gateway.get('gatewayName', 'Unknown')}", file=sys.stderr, flush=True)
-                            print(f"DEBUG: Step 1 - Gateway object structure: {json.dumps(source_gateway, indent=2)}", file=sys.stderr, flush=True)
+                            logger.debug(f"Step 1 - Gateway resolved: {source_gateway.get('gatewayName', 'Unknown')}")
+                            logger.debug(f"Step 1 - Gateway object structure: {json.dumps(source_gateway, indent=2)}")
 
                 # Break out of retry loop after processing (only 'continue' on 401 should loop)
                 break
@@ -654,7 +654,7 @@ async def _query_network_path_impl(
             # STEP 2: Calculate Path
             # POST /V1/CMDB/Path/Calculation
             # ====================================================================
-            print(f"DEBUG: Step 2 - Calculating path from {source_trimmed} to {destination_trimmed}", file=sys.stderr, flush=True)
+            logger.debug(f"Step 2 - Calculating path from {source_trimmed} to {destination_trimmed}")
             calc_url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Path/Calculation"
 
             # Build payload for path calculation
@@ -680,14 +680,14 @@ async def _query_network_path_impl(
             # Always include sourceGateway - it's required by the API
             # If gateway resolution failed, we use a placeholder that fix-up rules will override
             payload["sourceGateway"] = source_gateway
-            print(f"DEBUG: Step 2 - Including sourceGateway: {source_gateway.get('gatewayName', 'Unknown')}", file=sys.stderr, flush=True)
+            logger.debug(f"Step 2 - Including sourceGateway: {source_gateway.get('gatewayName', 'Unknown')}")
 
-            print(f"DEBUG: Step 2 - Payload: {json.dumps(payload, indent=2)}", file=sys.stderr, flush=True)
+            logger.debug(f"Step 2 - Payload: {json.dumps(payload, indent=2)}")
 
             async with session.post(calc_url, headers=headers, json=payload, ssl=ssl_context) as calc_response:
                 if calc_response.status != 200:
                     error_text = await calc_response.text()
-                    print(f"ERROR: Step 2 failed - HTTP {calc_response.status}: {error_text}", file=sys.stderr, flush=True)
+                    logger.error(f"Step 2 failed - HTTP {calc_response.status}: {error_text}")
                     return {
                         "error": f"Path calculation failed: HTTP {calc_response.status}",
                         "step": 2,
@@ -702,7 +702,7 @@ async def _query_network_path_impl(
                 if calc_data.get("statusCode") != 790200:
                     status_code = calc_data.get("statusCode", "Unknown")
                     status_desc = calc_data.get("statusDescription", "No description")
-                    print(f"ERROR: Step 2 failed - statusCode={status_code}: {status_desc}", file=sys.stderr, flush=True)
+                    logger.error(f"Step 2 failed - statusCode={status_code}: {status_desc}")
                     return {
                         "error": f"Path calculation failed: statusCode={status_code}",
                         "step": 2,
@@ -716,7 +716,7 @@ async def _query_network_path_impl(
                 # Ensure taskID is a string (JSON may return it as different type)
                 task_id = calc_data.get("taskID")
                 if not task_id:
-                    print("ERROR: Step 2 - No taskID in response", file=sys.stderr, flush=True)
+                    logger.error("Step 2 - No taskID in response")
                     return {
                         "error": "No taskID returned from path calculation",
                         "step": 2,
@@ -726,7 +726,7 @@ async def _query_network_path_impl(
                 # Convert taskID to string to ensure it's in the correct format
                 task_id = str(task_id)
 
-                print(f"DEBUG: Step 2 - Path calculation successful, taskID: {task_id}", file=sys.stderr, flush=True)
+                logger.debug(f"Step 2 - Path calculation successful, taskID: {task_id}")
 
             # ====================================================================
             # STEP 3: Get Path Details (Optional)
@@ -735,7 +735,7 @@ async def _query_network_path_impl(
             # Path details may not be immediately available or may require different endpoint
             # The taskID from Step 2 can be used to query path details separately if needed
             # ====================================================================
-            print(f"DEBUG: Step 3 - Attempting to get path details for taskID: {task_id} (optional)", file=sys.stderr, flush=True)
+            logger.debug(f"Step 3 - Attempting to get path details for taskID: {task_id} (optional)")
 
             path_data = None
             step3_error = None
@@ -760,7 +760,7 @@ async def _query_network_path_impl(
 
                 max_wait_time = max_attempts * max_poll_interval  # Approximate max wait time
 
-                print(f"DEBUG: Step 3 - Polling endpoint: {path_url} (max {max_attempts} attempts, {initial_poll_interval}-{max_poll_interval}s interval)", file=sys.stderr, flush=True)
+                logger.debug(f"Step 3 - Polling endpoint: {path_url} (max {max_attempts} attempts, {initial_poll_interval}-{max_poll_interval}s interval)")
 
                 for attempt in range(1, max_attempts + 1):
                     # Wait before each attempt (except the first one)
@@ -773,7 +773,7 @@ async def _query_network_path_impl(
                             poll_interval = min(initial_poll_interval + (attempt - 20) // 10, max_poll_interval)
                         await asyncio.sleep(poll_interval)
 
-                    print(f"DEBUG: Step 3 - Attempt {attempt}/{max_attempts}", file=sys.stderr, flush=True)
+                    logger.debug(f"Step 3 - Attempt {attempt}/{max_attempts}")
 
                     async with session.get(path_url, headers=headers, ssl=ssl_context) as path_response:
                         # Read the response text first (can only read once)
@@ -787,7 +787,7 @@ async def _query_network_path_impl(
                             status_code = response_json.get("statusCode")
                             if status_code == 794007:
                                 status_desc = response_json.get("statusDescription", "")
-                                print(f"DEBUG: Step 3 - Attempt {attempt}: Task not finished yet: {status_desc}", file=sys.stderr, flush=True)
+                                logger.debug(f"Step 3 - Attempt {attempt}: Task not finished yet: {status_desc}")
                                 # Continue polling
                                 continue
 
@@ -795,11 +795,11 @@ async def _query_network_path_impl(
                             if "path_overview" in response_json or "path_list" in response_json or "hop_detail_list" in response_json:
                                 # Response contains path data, use it even if status is not 200
                                 path_data = response_json
-                                print(f"DEBUG: Step 3 - Path details retrieved on attempt {attempt} (status {path_response.status})", file=sys.stderr, flush=True)
+                                logger.debug(f"Step 3 - Path details retrieved on attempt {attempt} (status {path_response.status})")
 
                                 # If status is not 200, note it but still use the data
                                 if path_response.status != 200:
-                                    print(f"INFO: Step 3 - Path details available but HTTP status is {path_response.status}", file=sys.stderr, flush=True)
+                                    logger.info(f"Step 3 - Path details available but HTTP status is {path_response.status}")
                                     # Store the status code in the data for reference
                                     path_data["_http_status"] = path_response.status
                                 # Success - break out of polling loop
@@ -807,14 +807,14 @@ async def _query_network_path_impl(
                             elif path_response.status == 200 and status_code == 790200:
                                 # Standard success case
                                 path_data = response_json
-                                print(f"DEBUG: Step 3 - Path details retrieved successfully on attempt {attempt}", file=sys.stderr, flush=True)
+                                logger.debug(f"Step 3 - Path details retrieved successfully on attempt {attempt}")
                                 # Success - break out of polling loop
                                 break
                             else:
                                 # Check if this is a final error (not "not finished yet")
                                 if status_code != 794007:
                                     # No path data in response and it's not a "not finished" error
-                                    print(f"DEBUG: Step 3 - HTTP {path_response.status}, statusCode {status_code}: {response_text[:200]}", file=sys.stderr, flush=True)
+                                    logger.debug(f"Step 3 - HTTP {path_response.status}, statusCode {status_code}: {response_text[:200]}")
                                     step3_error = f"HTTP {path_response.status}: {response_text[:200]}"
                                     # Don't continue polling if we got a different error
                                     break
@@ -826,7 +826,7 @@ async def _query_network_path_impl(
                                 path_data = {"raw_response": response_text}
                                 break
                             else:
-                                print(f"DEBUG: Step 3 - HTTP {path_response.status}: Invalid JSON response", file=sys.stderr, flush=True)
+                                logger.debug(f"Step 3 - HTTP {path_response.status}: Invalid JSON response")
                                 step3_error = f"HTTP {path_response.status}: {response_text[:200]}"
                                 break
 
@@ -837,16 +837,16 @@ async def _query_network_path_impl(
                 # If we exhausted all attempts without getting data
                 if path_data is None and step3_error is None:
                     step3_error = f"Task did not complete within {max_wait_time} seconds after {max_attempts} polling attempts"
-                    print(f"DEBUG: Step 3 - {step3_error}", file=sys.stderr, flush=True)
+                    logger.debug(f"Step 3 - {step3_error}")
 
             except Exception as e:
-                print(f"DEBUG: Step 3 - Exception during path details retrieval: {str(e)}", file=sys.stderr, flush=True)
+                logger.debug(f"Step 3 - Exception during path details retrieval: {str(e)}")
                 step3_error = str(e)
 
             # Step 3 is optional - if it fails, we still return success from Step 2
             # The taskID can be used to query path details separately
             if path_data is None:
-                print(f"INFO: Step 3 - Path details not available, but path calculation (Step 2) succeeded", file=sys.stderr, flush=True)
+                logger.info("Step 3 - Path details not available, but path calculation (Step 2) succeeded")
 
             # Build result dictionary
             # Don't include full calc_data in path_info to avoid huge responses
@@ -873,15 +873,15 @@ async def _query_network_path_impl(
                 # Ensure name cache is available (it might have been built even if numeric map is empty)
                 global _device_name_to_type_cache
                 if _device_name_to_type_cache:
-                    print(f"DEBUG: extract_path_hops - Name cache available with {len(_device_name_to_type_cache)} entries: {list(_device_name_to_type_cache.keys())}", file=sys.stderr, flush=True)
+                    logger.debug(f"extract_path_hops - Name cache available with {len(_device_name_to_type_cache)} entries: {list(_device_name_to_type_cache.keys())}")
                 else:
-                    print(f"DEBUG: extract_path_hops - Name cache is None/empty, attempting to build it...", file=sys.stderr, flush=True)
+                    logger.debug("extract_path_hops - Name cache is None/empty, attempting to build it...")
                     # Force rebuild the cache if it doesn't exist
                     device_type_map = await get_device_type_mapping()
                     if _device_name_to_type_cache:
-                        print(f"DEBUG: extract_path_hops - Name cache now available with {len(_device_name_to_type_cache)} entries", file=sys.stderr, flush=True)
+                        logger.debug(f"extract_path_hops - Name cache now available with {len(_device_name_to_type_cache)} entries")
                     else:
-                        print(f"DEBUG: extract_path_hops - WARNING: Name cache still not available after rebuild attempt", file=sys.stderr, flush=True)
+                        logger.warning("extract_path_hops - Name cache still not available after rebuild attempt")
 
                 simplified_hops = []
                 path_status_overall = "Unknown"
@@ -906,7 +906,7 @@ async def _query_network_path_impl(
                         path_overview = [{"path_list": data_source.get("path_list", [])}]
 
                     if path_overview:
-                        print(f"DEBUG: Found path_overview in {source_name}, processing {len(path_overview)} path group(s)", file=sys.stderr, flush=True)
+                        logger.debug(f"Found path_overview in {source_name}, processing {len(path_overview)} path group(s)")
                         for path_group in path_overview:
                             # Handle both dict and list structures
                             if isinstance(path_group, dict):
@@ -977,7 +977,7 @@ async def _query_network_path_impl(
                                         to_dev_type = str(to_dev.get("devType", "")).lower() if isinstance(to_dev, dict) else ""
 
                                         # Debug: Print all device info for troubleshooting
-                                        print(f"DEBUG: Hop device check - from: '{from_dev_name}' (type: '{from_dev_type}'), to: '{to_dev_name}' (type: '{to_dev_type}')", file=sys.stderr, flush=True)
+                                        logger.debug(f"Hop device check - from: '{from_dev_name}' (type: '{from_dev_type}'), to: '{to_dev_name}' (type: '{to_dev_type}')")
 
                                         # Check if from_device is a firewall
                                         is_from_firewall = (
@@ -1005,7 +1005,7 @@ async def _query_network_path_impl(
 
                                         # Debug firewall detection
                                         if is_from_firewall or is_to_firewall:
-                                            print(f"DEBUG: ✓ Firewall detected - from: {from_dev_name} (type: {from_dev_type}, is_fw: {is_from_firewall}), to: {to_dev_name} (type: {to_dev_type}, is_fw: {is_to_firewall})", file=sys.stderr, flush=True)
+                                            logger.debug(f"Firewall detected - from: {from_dev_name} (type: {from_dev_type}, is_fw: {is_from_firewall}), to: {to_dev_name} (type: {to_dev_type}, is_fw: {is_to_firewall})")
 
                                         # Extract interface information from hop (for firewalls)
                                         # Interfaces should be from the firewall device's perspective
@@ -1021,13 +1021,13 @@ async def _query_network_path_impl(
                                                 firewall_dev = to_dev
 
                                             # Debug: print hop keys to see what's available
-                                            print(f"DEBUG: Firewall detected! Firewall device: {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'}", file=sys.stderr, flush=True)
-                                            print(f"DEBUG: Hop keys: {list(hop.keys())}", file=sys.stderr, flush=True)
-                                            print(f"DEBUG: Branch keys: {list(branch.keys())}", file=sys.stderr, flush=True)
+                                            logger.debug(f"Firewall detected! Firewall device: {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'}")
+                                            logger.debug(f"Hop keys: {list(hop.keys())}")
+                                            logger.debug(f"Branch keys: {list(branch.keys())}")
 
                                             # Print full structures for debugging
-                                            print(f"DEBUG: Full hop structure: {json.dumps(hop, indent=2, default=str)}", file=sys.stderr, flush=True)
-                                            print(f"DEBUG: Full branch structure: {json.dumps(branch, indent=2, default=str)}", file=sys.stderr, flush=True)
+                                            logger.debug(f"Full hop structure: {json.dumps(hop, indent=2, default=str)}")
+                                            logger.debug(f"Full branch structure: {json.dumps(branch, indent=2, default=str)}")
 
                                             # Try various possible field names for interfaces
                                             # Check hop level first - these should be the firewall's interfaces
@@ -1104,7 +1104,7 @@ async def _query_network_path_impl(
                                                     branch.get("output_interface")
                                                 )
 
-                                            print(f"DEBUG: Extracted interfaces for firewall {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'} - In: {in_interface}, Out: {out_interface}", file=sys.stderr, flush=True)
+                                            logger.debug(f"Extracted interfaces for firewall {firewall_dev.get('devName') if isinstance(firewall_dev, dict) else 'unknown'} - In: {in_interface}, Out: {out_interface}")
 
                                         # Only add if we have device information
                                         if from_dev_name != "Unknown" or to_dev_name:
@@ -1138,7 +1138,7 @@ async def _query_network_path_impl(
                                                     # The out_interface from this hop is the firewall's IN interface
                                                     if out_interface:
                                                         hop_info["in_interface"] = out_interface
-                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'to') - IN interface from out_interface: {out_interface}", file=sys.stderr, flush=True)
+                                                        logger.debug(f"Firewall {firewall_device_name} (as 'to') - IN interface from out_interface: {out_interface}")
 
                                                 if is_from_firewall:
                                                     # Firewall is the "from" device - its egress is the interface toward "to"
@@ -1146,7 +1146,7 @@ async def _query_network_path_impl(
                                                     fw_out = in_interface or out_interface
                                                     if fw_out:
                                                         hop_info["out_interface"] = fw_out
-                                                        print(f"DEBUG: Firewall {firewall_device_name} (as 'from') - OUT interface: {fw_out} (in_interface={in_interface}, out_interface={out_interface})", file=sys.stderr, flush=True)
+                                                        logger.debug(f"Firewall {firewall_device_name} (as 'from') - OUT interface: {fw_out} (in_interface={in_interface}, out_interface={out_interface})")
 
                                                 hop_info["is_firewall"] = True
                                                 hop_info["firewall_device"] = firewall_device_name
@@ -1201,13 +1201,13 @@ async def _query_network_path_impl(
                         out_val = fw_info.get("out_interface")
                         if in_val is not None and out_val is not None and _interface_normalize(in_val) == _interface_normalize(out_val):
                             fw_info["out_interface"] = None
-                            print(f"DEBUG: Server - Cleared duplicate out_interface for {fw_name} (same as in_interface)", file=sys.stderr, flush=True)
+                            logger.debug(f"Server - Cleared duplicate out_interface for {fw_name} (same as in_interface)")
                         # Infer egress when missing so path query matches port-check (1/1 -> 1/2)
                         if in_val is not None and fw_info.get("out_interface") is None:
                             inferred = _infer_egress_interface(in_val)
                             if inferred:
                                 fw_info["out_interface"] = inferred
-                                print(f"DEBUG: Server - Inferred out_interface for {fw_name}: {inferred}", file=sys.stderr, flush=True)
+                                logger.debug(f"Server - Inferred out_interface for {fw_name}: {inferred}")
 
                     # Update all firewall hops with complete interface information
                     for hop_info in simplified_hops:
@@ -1219,13 +1219,13 @@ async def _query_network_path_impl(
                                     hop_info["in_interface"] = firewall_interface_map[fw_name]["in_interface"]
                                 if "out_interface" in firewall_interface_map[fw_name]:
                                     hop_info["out_interface"] = firewall_interface_map[fw_name]["out_interface"]
-                                print(f"DEBUG: Final interfaces for {fw_name}: In={hop_info.get('in_interface')}, Out={hop_info.get('out_interface')}", file=sys.stderr, flush=True)
+                                logger.debug(f"Final interfaces for {fw_name}: In={hop_info.get('in_interface')}, Out={hop_info.get('out_interface')}")
 
                     return simplified_hops, path_status_overall, path_failure_reason
                 except Exception as e:
-                    print(f"DEBUG: Error extracting path hops from {source_name}: {str(e)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error extracting path hops from {source_name}: {str(e)}")
                     import traceback
-                    print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.debug(traceback.format_exc())
                     return [], "Unknown", None
 
             # Try to extract path details from Step 3 response first
@@ -1300,11 +1300,11 @@ async def _query_network_path_impl(
                     # Set message so the chat UI shows a friendly summary instead of raw tables
                     result["message"] = f"Path from {source_trimmed} to {destination_trimmed} was calculated. Hop-by-hop details could not be extracted from the API response; you can view the full path in the NetBrain UI."
                     result["note"] = f"Path details available via taskID '{task_id}'."
-                    print(f"DEBUG: Could not extract hops from Step 3, not storing full path_data to avoid large response", file=sys.stderr, flush=True)
+                    logger.debug("Could not extract hops from Step 3, not storing full path_data to avoid large response")
             else:
                 # If Step 3 didn't return data, try to extract from Step 2 response (calc_data)
                 # Sometimes live data returns path details directly in the calculation response
-                print(f"DEBUG: Step 3 returned no data, checking Step 2 response for path details", file=sys.stderr, flush=True)
+                logger.debug("Step 3 returned no data, checking Step 2 response for path details")
                 simplified_hops, path_status_overall, path_failure_reason = await extract_path_hops(calc_data, "Step 2 response")
 
                 # Query Panorama for security zones and device groups for firewall hops
@@ -1363,7 +1363,7 @@ async def _query_network_path_impl(
                     result["path_status_description"] = _raw_desc2
                     if path_failure_reason:
                         result["path_failure_reason"] = path_failure_reason or ""
-                    print(f"DEBUG: Successfully extracted {len(simplified_hops)} hops from Step 2 response", file=sys.stderr, flush=True)
+                    logger.debug(f"Successfully extracted {len(simplified_hops)} hops from Step 2 response")
                 else:
                     # Path calculated but hop details could not be extracted - set message for chat UI
                     result["message"] = f"Path from {source_trimmed} to {destination_trimmed} was calculated. Hop-by-hop details could not be extracted; view the full path in the NetBrain UI."
@@ -1392,13 +1392,13 @@ async def _query_network_path_impl(
 
                 # Test serialization before returning
                 json.dumps(final_result, default=str)
-                print(f"DEBUG: Final result is JSON-serializable, returning", file=sys.stderr, flush=True)
-                print(f"DEBUG: Final result keys: {list(final_result.keys())}", file=sys.stderr, flush=True)
+                logger.debug("Final result is JSON-serializable, returning")
+                logger.debug(f"Final result keys: {list(final_result.keys())}")
                 return final_result
             except Exception as e:
-                print(f"DEBUG: Error preparing result for return: {e}", file=sys.stderr, flush=True)
+                logger.debug(f"Error preparing result for return: {e}")
                 import traceback
-                print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                logger.debug(traceback.format_exc())
                 # Return minimal error result
                 return {
                     "error": f"Error preparing result: {str(e)}",
@@ -1408,17 +1408,17 @@ async def _query_network_path_impl(
                 }
 
     except aiohttp.ClientError as e:
-        print(f"DEBUG: aiohttp.ClientError in _query_network_path_impl: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"aiohttp.ClientError in _query_network_path_impl: {str(e)}")
         import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(traceback.format_exc())
         return {"error": f"Network error: {str(e)}"}
     except asyncio.TimeoutError:
-        print(f"DEBUG: asyncio.TimeoutError in _query_network_path_impl", file=sys.stderr, flush=True)
+        logger.debug("asyncio.TimeoutError in _query_network_path_impl")
         return {"error": "Request timed out. Please try again later."}
     except Exception as e:
-        print(f"DEBUG: Unexpected exception in _query_network_path_impl: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Unexpected exception in _query_network_path_impl: {str(e)}")
         import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(traceback.format_exc())
         return {"error": f"An unexpected error occurred: {str(e)}"}
 
 
@@ -1457,7 +1457,7 @@ async def _check_path_allowed_impl(
     is_live: int = 1
 ):
     """Internal implementation: run path calc with continue_on_policy_denial=False and interpret result."""
-    print(f"DEBUG: _check_path_allowed_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
+    logger.debug(f"_check_path_allowed_impl called with source={source}, destination={destination}, protocol={protocol}, port={port}, is_live={is_live}")
     try:
         path_result = await _query_network_path_impl(
             source=source,
@@ -1563,9 +1563,9 @@ async def _check_path_allowed_impl(
             "status_description": status_description
         }
     except Exception as e:
-        print(f"DEBUG: Error in _check_path_allowed_impl: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in _check_path_allowed_impl: {str(e)}")
         import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(traceback.format_exc())
         return {
             "source": source,
             "destination": destination,

@@ -4,13 +4,15 @@ Splunk MCP tools – get_splunk_recent_denies.
 Fully isolated domain module; no cross-domain dependencies.
 """
 
-import sys
 import ssl
 import asyncio
 import aiohttp
 from typing import Dict, Any
 
 from tools.shared import mcp, SPLUNK_HOST, SPLUNK_PORT, SPLUNK_USER, SPLUNK_PASSWORD
+from tools.shared import setup_logging
+
+logger = setup_logging(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +104,10 @@ async def _splunk_search_impl(
             # Log first event keys and _raw sample so we can see Splunk format
             if raw_results and isinstance(raw_results[0], dict):
                 first_keys = list(raw_results[0].keys())
-                print(f"DEBUG: Splunk first event keys: {first_keys}", file=sys.stderr, flush=True)
+                logger.debug(f"Splunk first event keys: {first_keys}")
                 raw_sample = raw_results[0].get("_raw", "")
                 if raw_sample:
-                    print(f"DEBUG: Splunk first event _raw (first 1000 chars): {raw_sample[:1000]!r}", file=sys.stderr, flush=True)
+                    logger.debug(f"Splunk first event _raw (first 1000 chars): {raw_sample[:1000]!r}")
             # Get value by key (case-insensitive); Splunk may return "Protocol" etc.
             def _get(e, *keys):
                 if not isinstance(e, dict):
@@ -225,8 +227,8 @@ async def _splunk_search_impl(
         return {"ip_address": ip_address, "events": [], "error": "Splunk request timed out"}
     except Exception as e:
         import traceback
-        print(f"DEBUG: Splunk search error: {e}", file=sys.stderr, flush=True)
-        print(traceback.format_exc(), file=sys.stderr, flush=True)
+        logger.debug(f"Splunk search error: {e}")
+        logger.debug(traceback.format_exc())
         return {"ip_address": ip_address, "events": [], "error": str(e)}
     finally:
         await connector.close()
@@ -262,5 +264,5 @@ async def get_splunk_recent_denies(
     Returns:
         dict: ip_address, events (list of Splunk event dicts), count, and optional error
     """
-    print(f"DEBUG: get_splunk_recent_denies called with ip_address={ip_address}, limit={limit}, earliest_time={earliest_time}", file=sys.stderr, flush=True)
+    logger.debug(f"get_splunk_recent_denies called with ip_address={ip_address}, limit={limit}, earliest_time={earliest_time}")
     return await _splunk_search_impl(ip_address, limit, earliest_time)

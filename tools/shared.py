@@ -1,12 +1,13 @@
 """
 Shared infrastructure for MCP tool modules.
 
-Owns the FastMCP instance, configuration constants, and shared helpers.
+Owns the FastMCP instance, configuration constants, logging setup, and shared helpers.
 Domain tool modules import `mcp` from here to register their tools.
 """
 
 import os
 import sys
+import logging
 
 # Ensure parent directory (netbrain/) is on sys.path so sibling modules
 # (netbrainauth, panoramaauth) can be imported from tool modules.
@@ -23,6 +24,34 @@ from dotenv import load_dotenv
 _env_path = os.path.join(_parent_dir, ".env")
 if os.path.exists(_env_path):
     load_dotenv(_env_path)
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
+
+def setup_logging(name: str) -> logging.Logger:
+    """Create a named logger for a domain module.
+
+    Usage in each module::
+
+        from tools.shared import setup_logging
+        logger = setup_logging(__name__)   # e.g. "tools.netbox_tools"
+        logger.debug("something happened")
+    """
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        logger.addHandler(handler)
+    logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
+    return logger
+
+# Module-level logger for shared.py itself
+logger = setup_logging("tools.shared")
 
 # Disable SSL warnings from urllib3
 import urllib3
@@ -54,7 +83,7 @@ def _get_llm():
     """Get or initialize the LLM instance (lazy initialization)."""
     if mcp.llm is None:
         try:
-            print("DEBUG: Initializing LLM (ChatOllama)...", file=sys.stderr, flush=True)
+            logger.debug("Initializing LLM (ChatOllama)...")
             llm = ChatOllama(
                 model=OLLAMA_MODEL,
                 temperature=0.0,
@@ -62,7 +91,7 @@ def _get_llm():
             )
             mcp.llm = llm
             mcp.llm_error = None
-            print("DEBUG: LLM initialized successfully", file=sys.stderr, flush=True)
+            logger.debug("LLM initialized successfully")
         except Exception as e:
             error_msg = str(e)
             error_traceback = None
@@ -71,9 +100,9 @@ def _get_llm():
                 error_traceback = traceback.format_exc()
             except:
                 pass
-            print(f"DEBUG: LLM initialization failed: {error_msg}", file=sys.stderr, flush=True)
+            logger.error("LLM initialization failed: %s", error_msg)
             if error_traceback:
-                print(f"DEBUG: LLM initialization traceback: {error_traceback}", file=sys.stderr, flush=True)
+                logger.debug("LLM initialization traceback: %s", error_traceback)
             mcp.llm = False  # False = tried and failed (distinct from None = not tried)
             mcp.llm_error = {
                 "error": error_msg,

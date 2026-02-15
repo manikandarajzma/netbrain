@@ -136,6 +136,35 @@ async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+# --- Health check ---
+
+@app.get("/health")
+async def health_check():
+    """Return app status and MCP server reachability."""
+    import os, aiohttp
+    host = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
+    port = os.getenv("MCP_SERVER_PORT", "8765")
+    mcp_url = f"http://{host}:{port}/health"
+    mcp_status = "unknown"
+    mcp_tools = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(mcp_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    mcp_status = data.get("status", "ok")
+                    mcp_tools = data.get("tools_registered")
+                else:
+                    mcp_status = f"error ({resp.status})"
+    except Exception:
+        mcp_status = "unreachable"
+    return {
+        "status": "ok",
+        "mcp_server": mcp_status,
+        "mcp_tools_registered": mcp_tools,
+    }
+
+
 # --- Chat API ---
 class ChatRequest(BaseModel):
     message: str

@@ -10,9 +10,11 @@ This module handles LLM-based tool selection with:
 
 import asyncio
 import json
+import logging
 import re
-import sys
 from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger("netbrain.tool_selection")
 from langchain_ollama import ChatOllama
 
 try:
@@ -262,7 +264,7 @@ async def select_tool_with_llm(
                 structured_llm = llm.with_structured_output(ToolSelection)
                 prompt_text = build_tool_selection_prompt(prompt, tools_description, conversation_history)
                 
-                print(f"DEBUG: Using Pydantic structured outputs", file=sys.stderr, flush=True)
+                logger.debug("Using Pydantic structured outputs")
                 response = structured_llm.invoke(prompt_text)
                 
                 # Convert Pydantic model to dict
@@ -278,8 +280,8 @@ async def select_tool_with_llm(
                 tool_name = result.get("tool_name")
                 needs_clarification = result.get("needs_clarification", False)
                 entity_analysis = result.get("entity_analysis", "")
-                print(f"DEBUG: LLM Analysis: {entity_analysis}", file=sys.stderr, flush=True)
-                print(f"DEBUG: Pydantic result - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {result.get('clarification_question')}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM Analysis: {entity_analysis}")
+                logger.debug(f"Pydantic result - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {result.get('clarification_question')}")
 
                 return {
                     "success": True,
@@ -291,8 +293,8 @@ async def select_tool_with_llm(
                     "clarification_question": result.get("clarification_question")
                 }
             except Exception as pydantic_error:
-                print(f"DEBUG: Pydantic structured output failed: {str(pydantic_error)}", file=sys.stderr, flush=True)
-                print(f"DEBUG: Falling back to manual JSON parsing", file=sys.stderr, flush=True)
+                logger.debug(f"Pydantic structured output failed: {str(pydantic_error)}")
+                logger.debug("Falling back to manual JSON parsing")
                 # Fall through to manual parsing
         
         # Fallback: Manual JSON parsing (simplified, no complex hacks)
@@ -300,7 +302,7 @@ async def select_tool_with_llm(
         response = llm.invoke(prompt_text)
         content = response.content if hasattr(response, 'content') else str(response)
         
-        print(f"DEBUG: LLM response (first 500 chars): {content[:500]}", file=sys.stderr, flush=True)
+        logger.debug(f"LLM response (first 500 chars): {content[:500]}")
         
         # Simple JSON extraction - find first { to last }
         first_brace = content.find('{')
@@ -332,7 +334,7 @@ async def select_tool_with_llm(
         needs_clarification = parsed.get("needs_clarification", False)
         tool_name = parsed.get("tool_name")
         
-        print(f"DEBUG: Parsed JSON - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {parsed.get('clarification_question')}", file=sys.stderr, flush=True)
+        logger.debug(f"Parsed JSON - tool_name: {tool_name}, needs_clarification: {needs_clarification}, clarification_question: {parsed.get('clarification_question')}")
         
         return {
             "success": True,
@@ -346,8 +348,8 @@ async def select_tool_with_llm(
         
     except Exception as e:
         import traceback
-        print(f"DEBUG: Error in tool selection: {str(e)}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.error(f"Error in tool selection: {str(e)}")
+        logger.debug(f"Traceback: {traceback.format_exc()}")
         return {
             "success": False,
             "error": f"Error during tool selection: {str(e)}"
@@ -402,5 +404,5 @@ Reply with ONLY the final answer text, no prefix like "Answer:" or markdown."""
     except asyncio.TimeoutError:
         return f"The query could not be completed in time. {err_msg}"
     except Exception as e:
-        print(f"DEBUG: synthesize_final_answer failed: {e}", file=sys.stderr, flush=True)
+        logger.error(f"synthesize_final_answer failed: {e}")
         return f"{err_msg}\n\n(You can retry or rephrase your question; if the problem continues, check mcp_server.log and backend connectivity.)"

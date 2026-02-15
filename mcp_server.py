@@ -11,6 +11,7 @@ Domain modules:
   - tools.netbrain_tools : query_network_path, check_path_allowed
 """
 
+import logging
 import os
 import sys
 
@@ -29,27 +30,39 @@ import tools.netbox_tools      # noqa: F401
 import tools.panorama_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
 
+logger = logging.getLogger("netbrain.server")
+
+# ---------------------------------------------------------------------------
+# Health check endpoint (available at GET /health on the MCP HTTP server)
+# ---------------------------------------------------------------------------
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> JSONResponse:
+    """Return server status and registered tool count."""
+    tools = await mcp.get_tools()
+    return JSONResponse({
+        "status": "ok",
+        "server": mcp.name,
+        "tools_registered": len(tools),
+    })
+
 
 if __name__ == "__main__":
-    # Redirect stderr to a log file for easier debugging
+    # Add a file handler so all log output also goes to mcp_server.log
     script_dir = os.path.dirname(os.path.abspath(__file__))
     log_file_path = os.path.join(script_dir, "mcp_server.log")
-    log_file = open(log_file_path, "a", encoding="utf-8")
+    file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
 
-    class TeeStderr:
-        def __init__(self, file, stderr):
-            self.file = file
-            self.stderr = stderr
-        def write(self, text):
-            self.stderr.write(text)
-            self.file.write(text)
-            self.file.flush()
-        def flush(self):
-            self.stderr.flush()
-            self.file.flush()
-
-    sys.stderr = TeeStderr(log_file, sys.__stderr__)
-    print(f"DEBUG: Server logs will be written to: {log_file_path}", file=sys.__stderr__, flush=True)
+    logger.info("Server logs will be written to: %s", log_file_path)
 
     # Run the MCP server using streamable-http transport
     mcp.run(transport="streamable-http", port=MCP_SERVER_PORT, host=MCP_SERVER_HOST)

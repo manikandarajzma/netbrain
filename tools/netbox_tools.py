@@ -6,7 +6,6 @@ lookups.  All tools are registered on the shared ``mcp`` FastMCP instance
 imported from ``tools.shared``.
 """
 
-import sys
 import ssl
 import json
 import asyncio
@@ -21,7 +20,10 @@ from tools.shared import (
     NETBOX_TOKEN,
     NETBOX_VERIFY_SSL,
     ChatPromptTemplate,
+    setup_logging,
 )
+
+logger = setup_logging(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +82,7 @@ async def _fetch_elevation_image_base64(elevation_url: str) -> Optional[str]:
         import re
         rack_id_match = re.search(r'/racks/(\d+)/', elevation_url)
         if not rack_id_match:
-            print(f"DEBUG: Could not extract rack_id from URL: {elevation_url}", file=sys.stderr, flush=True)
+            logger.debug(f"Could not extract rack_id from URL: {elevation_url}")
             return None
 
         rack_id = rack_id_match.group(1)
@@ -96,7 +98,7 @@ async def _fetch_elevation_image_base64(elevation_url: str) -> Optional[str]:
         headers["Accept"] = "image/svg+xml"
         ssl_context = _netbox_ssl_context()
 
-        print(f"DEBUG: Fetching elevation SVG from API: {api_url}", file=sys.stderr, flush=True)
+        logger.debug(f"Fetching elevation SVG from API: {api_url}")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(api_url, headers=headers, ssl=ssl_context, timeout=15) as response:
@@ -106,17 +108,17 @@ async def _fetch_elevation_image_base64(elevation_url: str) -> Optional[str]:
                     # Convert SVG to base64 data URI
                     import base64
                     svg_base64 = base64.b64encode(svg_content.encode('utf-8')).decode('utf-8')
-                    print(f"DEBUG: Successfully fetched SVG ({len(svg_content)} bytes)", file=sys.stderr, flush=True)
+                    logger.debug(f"Successfully fetched SVG ({len(svg_content)} bytes)")
                     return f"data:image/svg+xml;base64,{svg_base64}"
                 else:
                     error_text = await response.text()
-                    print(f"DEBUG: API returned status {response.status}: {error_text[:200]}", file=sys.stderr, flush=True)
+                    logger.debug(f"API returned status {response.status}: {error_text[:200]}")
                     return None
 
     except Exception as e:
-        print(f"DEBUG: Error fetching elevation SVG: {e}", file=sys.stderr, flush=True)
+        logger.debug(f"Error fetching elevation SVG: {e}")
         import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(traceback.format_exc())
         return None
 
 
@@ -307,7 +309,7 @@ async def get_rack_details(
                                             site_id = search_results[0].get("id")
                                             site_name_found = search_results[0].get("name")
             except Exception as e:
-                print(f"DEBUG: Error looking up site: {str(e)}", file=sys.stderr, flush=True)
+                logger.debug(f"Error looking up site: {str(e)}")
 
     url = f"{NETBOX_URL}/api/dcim/racks/"
     headers = _netbox_headers()
@@ -333,11 +335,11 @@ async def get_rack_details(
                 results_page = data.get("results", []) if isinstance(data, dict) else []
                 all_results.extend(results_page)
                 next_url = data.get("next") if isinstance(data, dict) else None
-                print(f"DEBUG get_rack_details: API response keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}, count={data.get('count') if isinstance(data, dict) else 'n/a'}, results_this_page={len(results_page)}, next={bool(next_url)}", file=sys.stderr, flush=True)
+                logger.debug(f"get_rack_details: API response keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}, count={data.get('count') if isinstance(data, dict) else 'n/a'}, results_this_page={len(results_page)}, next={bool(next_url)}")
                 if results_page:
                     r0 = results_page[0]
                     site_raw = r0.get("site")
-                    print(f"DEBUG get_rack_details: first result name={r0.get('name')}, site type={type(site_raw).__name__}, site value={site_raw}", file=sys.stderr, flush=True)
+                    logger.debug(f"get_rack_details: first result name={r0.get('name')}, site type={type(site_raw).__name__}, site value={site_raw}")
             while next_url:
                 async with session.get(next_url, headers=headers, ssl=ssl_context, timeout=15) as response:
                     if response.status != 200:
@@ -346,7 +348,7 @@ async def get_rack_details(
                     all_results.extend(data.get("results", []) if isinstance(data, dict) else [])
                     next_url = data.get("next") if isinstance(data, dict) else None
             results = all_results
-            print(f"DEBUG get_rack_details: total results after pagination={len(results)}", file=sys.stderr, flush=True)
+            logger.debug(f"get_rack_details: total results after pagination={len(results)}")
             if not results:
                 # Fallback: exact name filter in case search (q) returned nothing
                 params_exact = {"name": rack_name_clean, "limit": 250}
@@ -374,7 +376,7 @@ async def get_rack_details(
         # If no exact matches, use first result
         if not matching_racks:
             matching_racks = [results[0]] if results else []
-        print(f"DEBUG get_rack_details: matching_racks count={len(matching_racks)}, site_id={site_id}", file=sys.stderr, flush=True)
+        logger.debug(f"get_rack_details: matching_racks count={len(matching_racks)}, site_id={site_id}")
 
         # If site filtering was requested, find rack in that site
         rack = None
@@ -411,7 +413,7 @@ async def get_rack_details(
                                     sites[site_id_val] = f"Site ID {site_id_val}"
                         except Exception:
                             sites[site_id_val] = f"Site ID {site_id_val}"
-            print(f"DEBUG get_rack_details: unique sites={sites}, len(sites)={len(sites)}", file=sys.stderr, flush=True)
+            logger.debug(f"get_rack_details: unique sites={sites}, len(sites)={len(sites)}")
 
             # If user provided site_name but we couldn't resolve site_id (e.g. "Leander" vs "Leander DC"),
             # match against the site names we already have from the matching racks
@@ -436,7 +438,7 @@ async def get_rack_details(
                         if rid == site_id:
                             rack = candidate
                             break
-                    print(f"DEBUG get_rack_details: matched user site_name to site id {site_id}, rack={rack.get('name') if rack else None}", file=sys.stderr, flush=True)
+                    logger.debug(f"get_rack_details: matched user site_name to site id {site_id}, rack={rack.get('name') if rack else None}")
 
             # If multiple sites and no site filter provided (and we didn't just resolve above), ask which site
             if not rack and len(sites) > 1 and not site_id:
@@ -469,7 +471,7 @@ async def get_rack_details(
                     devices_data = await response.json()
                     devices_in_rack = devices_data.get("results", []) if isinstance(devices_data, dict) else []
         except Exception as e:
-            print(f"DEBUG: Error fetching devices in rack: {str(e)}", file=sys.stderr, flush=True)
+            logger.debug(f"Error fetching devices in rack: {str(e)}")
 
         # Calculate space utilization
         u_height = rack.get("u_height") or 42  # Default to 42U if not specified
@@ -548,7 +550,7 @@ async def get_rack_details(
                 if rear_img_base64:
                     result["elevation_rear_image"] = rear_img_base64
             except Exception as e:
-                print(f"DEBUG: Error fetching elevation images: {e}", file=sys.stderr, flush=True)
+                logger.debug(f"Error fetching elevation images: {e}")
 
         # Try to enhance with LLM analysis if available
         llm = _get_llm()
@@ -616,14 +618,14 @@ Format your response as a JSON object with this field:
                     rack_data=json.dumps(device_details, indent=2)
                 )
 
-                print(f"DEBUG: Invoking LLM for rack analysis", file=sys.stderr, flush=True)
+                logger.debug("Invoking LLM for rack analysis")
                 response = await asyncio.wait_for(
                     llm.ainvoke(formatted_messages),
                     timeout=30.0
                 )
                 content = response.content if hasattr(response, 'content') else str(response)
 
-                print(f"DEBUG: LLM response received: {content[:200]}...", file=sys.stderr, flush=True)
+                logger.debug(f"LLM response received: {content[:200]}...")
 
                 # Extract JSON from response
                 import re
@@ -640,7 +642,7 @@ Format your response as a JSON object with this field:
                     result["ai_analysis"] = {"summary": content}
 
             except Exception as e:
-                print(f"DEBUG: LLM analysis failed: {str(e)}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM analysis failed: {str(e)}")
                 result["ai_analysis"] = {"summary": f"Rack {result['rack']} located at {result.get('site', 'Unknown site')} with {result['devices_count']} devices."}
 
         return result
@@ -773,7 +775,7 @@ async def list_racks(
                                             site_id = search_results[0].get("id")
                                             site_name_found = search_results[0].get("name")
             except Exception as e:
-                print(f"DEBUG: Error looking up site: {str(e)}", file=sys.stderr, flush=True)
+                logger.debug(f"Error looking up site: {str(e)}")
 
     # Get racks from NetBox
     url = f"{NETBOX_URL}/api/dcim/racks/"
@@ -827,7 +829,7 @@ async def list_racks(
                             devices_data = await response.json()
                             devices_in_rack = devices_data.get("results", []) if isinstance(devices_data, dict) else []
                 except Exception as e:
-                    print(f"DEBUG: Error fetching devices for rack {rack_name}: {str(e)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error fetching devices for rack {rack_name}: {str(e)}")
 
                 # Calculate space utilization
                 u_height = rack.get("u_height") or 42
@@ -861,7 +863,7 @@ async def list_racks(
                         elevation_front_image = await _fetch_elevation_image_base64(elevation_front_url)
                         elevation_rear_image = await _fetch_elevation_image_base64(elevation_rear_url)
                     except Exception as e:
-                        print(f"DEBUG: Error fetching elevation images for rack {rack_name}: {e}", file=sys.stderr, flush=True)
+                        logger.debug(f"Error fetching elevation images for rack {rack_name}: {e}")
 
                 racks_list.append({
                     "rack": rack_name,
@@ -932,14 +934,14 @@ Format your response as a JSON object with this field:
                         racks_data=json.dumps(racks_list, indent=2)
                     )
 
-                    print(f"DEBUG: Invoking LLM for racks list analysis", file=sys.stderr, flush=True)
+                    logger.debug("Invoking LLM for racks list analysis")
                     response = await asyncio.wait_for(
                         llm.ainvoke(formatted_messages),
                         timeout=30.0
                     )
                     content = response.content if hasattr(response, 'content') else str(response)
 
-                    print(f"DEBUG: LLM response received: {content[:200]}...", file=sys.stderr, flush=True)
+                    logger.debug(f"LLM response received: {content[:200]}...")
 
                     # Extract JSON from response
                     import re
@@ -956,7 +958,7 @@ Format your response as a JSON object with this field:
                         result["ai_analysis"] = {"summary": content}
 
                 except Exception as e:
-                    print(f"DEBUG: LLM analysis failed: {str(e)}", file=sys.stderr, flush=True)
+                    logger.debug(f"LLM analysis failed: {str(e)}")
                     result["ai_analysis"] = {"summary": f"Found {len(racks_list)} rack(s){' at ' + site_name_found if site_name_found else ''}."}
 
             return result
@@ -1228,13 +1230,13 @@ async def get_device_rack_location(
         }
 
         if llm is not None:
-            print(f"DEBUG: LLM available, starting analysis for rack location", file=sys.stderr, flush=True)
+            logger.debug("LLM available, starting analysis for rack location")
             result["_debug_llm_check"]["status"] = "LLM available, attempting analysis"
             try:
-                print(f"DEBUG: Entering LLM analysis try block", file=sys.stderr, flush=True)
+                logger.debug("Entering LLM analysis try block")
                 # Get full device details from NetBox for LLM analysis
                 # The device object contains all NetBox fields
-                print(f"DEBUG: Preparing device_details from device object", file=sys.stderr, flush=True)
+                logger.debug("Preparing device_details from device object")
                 device_details = {
                     "name": device.get("name"),
                     "display": device.get("display"),
@@ -1274,10 +1276,10 @@ async def get_device_rack_location(
                 }
                 # Remove None values to keep JSON clean
                 device_details = {k: v for k, v in device_details.items() if v is not None}
-                print(f"DEBUG: Device details prepared, keys: {list(device_details.keys())}", file=sys.stderr, flush=True)
+                logger.debug(f"Device details prepared, keys: {list(device_details.keys())}")
 
                 # Use LangChain ChatPromptTemplate for structured prompt management
-                print(f"DEBUG: Building format instruction and conversation context", file=sys.stderr, flush=True)
+                logger.debug("Building format instruction and conversation context")
                 format_instruction = ""
                 if format == "table":
                     format_instruction = "\n\nIMPORTANT: The user requested the response in TABLE FORMAT. Format your summary and notes as a markdown table with columns: Field | Value. Structure the information clearly in table rows."
@@ -1326,29 +1328,29 @@ Format your response as a JSON object with this field:
                 ])
 
                 # Format the prompt with the full device data
-                print(f"DEBUG: Formatting prompt template with device data", file=sys.stderr, flush=True)
+                logger.debug("Formatting prompt template with device data")
                 formatted_messages = analysis_prompt_template.format_messages(
                     format_instruction=format_instruction,
                     conversation_context=conversation_context,
                     device_data=json.dumps(device_details, indent=2, default=str)
                 )
-                print(f"DEBUG: Prompt formatted, about to invoke LLM", file=sys.stderr, flush=True)
+                logger.debug("Prompt formatted, about to invoke LLM")
 
-                print(f"DEBUG: Invoking LLM for rack location analysis...", file=sys.stderr, flush=True)
+                logger.debug("Invoking LLM for rack location analysis...")
                 # Invoke the LLM with the formatted prompt (with timeout)
                 try:
                     llm_response = await asyncio.wait_for(
                         llm.ainvoke(formatted_messages),
                         timeout=30.0  # 30 second timeout
                     )
-                    print(f"DEBUG: LLM response received", file=sys.stderr, flush=True)
+                    logger.debug("LLM response received")
                 except asyncio.TimeoutError:
-                    print(f"DEBUG: LLM invocation timed out after 30 seconds", file=sys.stderr, flush=True)
+                    logger.debug("LLM invocation timed out after 30 seconds")
                     raise
                 except Exception as llm_invoke_error:
-                    print(f"DEBUG: LLM invocation failed: {str(llm_invoke_error)}", file=sys.stderr, flush=True)
+                    logger.debug(f"LLM invocation failed: {str(llm_invoke_error)}")
                     import traceback
-                    print(f"DEBUG: LLM invocation traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.debug(traceback.format_exc())
                     raise
 
                 # Extract content from the response
@@ -1357,8 +1359,8 @@ Format your response as a JSON object with this field:
                 else:
                     response_content = str(llm_response)
 
-                print(f"DEBUG: LLM response content length: {len(response_content)}", file=sys.stderr, flush=True)
-                print(f"DEBUG: LLM response preview: {response_content[:500]}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM response content length: {len(response_content)}")
+                logger.debug(f"LLM response preview: {response_content[:500]}")
 
                 # Simple approach: try to find and extract JSON from the response
                 import re
@@ -1369,7 +1371,7 @@ Format your response as a JSON object with this field:
                 json_block_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response_content, re.DOTALL)
                 if json_block_match:
                     json_content = json_block_match.group(1).strip()
-                    print(f"DEBUG: Extracted JSON from markdown code block", file=sys.stderr, flush=True)
+                    logger.debug("Extracted JSON from markdown code block")
                 else:
                     # Try to find JSON object by matching balanced braces
                     start_idx = response_content.find('{')
@@ -1382,7 +1384,7 @@ Format your response as a JSON object with this field:
                                 brace_count -= 1
                                 if brace_count == 0:
                                     json_content = response_content[start_idx:i+1]
-                                    print(f"DEBUG: Extracted JSON object from text", file=sys.stderr, flush=True)
+                                    logger.debug("Extracted JSON object from text")
                                     break
 
                 # Try to parse the JSON - wrap in try-except to catch any KeyError
@@ -1395,7 +1397,7 @@ Format your response as a JSON object with this field:
                             if isinstance(analysis, dict):
                                 # Log original keys for debugging
                                 original_keys = list(analysis.keys())
-                                print(f"DEBUG: Original JSON keys (before cleaning): {[repr(k) for k in original_keys]}", file=sys.stderr, flush=True)
+                                logger.debug(f"Original JSON keys (before cleaning): {[repr(k) for k in original_keys]}")
 
                                 # Check if keys are valid (no quotes, spaces, or newlines)
                                 valid_keys = {}
@@ -1414,38 +1416,38 @@ Format your response as a JSON object with this field:
                                     if clean_key:
                                         valid_keys[clean_key] = v
                                         if original_key != clean_key:
-                                            print(f"DEBUG: Cleaned key: {repr(original_key)} -> {repr(clean_key)}", file=sys.stderr, flush=True)
+                                            logger.debug(f"Cleaned key: {repr(original_key)} -> {repr(clean_key)}")
                                     else:
-                                        print(f"DEBUG: Skipping empty key after cleaning: {repr(k)}", file=sys.stderr, flush=True)
+                                        logger.debug(f"Skipping empty key after cleaning: {repr(k)}")
                                 analysis = valid_keys
-                                print(f"DEBUG: Successfully parsed JSON, cleaned keys: {list(analysis.keys())}", file=sys.stderr, flush=True)
+                                logger.debug(f"Successfully parsed JSON, cleaned keys: {list(analysis.keys())}")
                             else:
                                 analysis = {"summary": str(analysis)[:1000]}
                         except json.JSONDecodeError as je:
-                            print(f"DEBUG: JSON parse failed: {str(je)}", file=sys.stderr, flush=True)
+                            logger.debug(f"JSON parse failed: {str(je)}")
                             # Try to extract just the summary field using regex
                             summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', response_content, re.DOTALL)
                             if summary_match:
                                 analysis = {"summary": summary_match.group(1)}
-                                print(f"DEBUG: Extracted summary using regex", file=sys.stderr, flush=True)
+                                logger.debug("Extracted summary using regex")
                             else:
                                 # Last resort: use the full response as summary
                                 analysis = {"summary": response_content[:1000]}
-                                print(f"DEBUG: Using full response as summary", file=sys.stderr, flush=True)
+                                logger.debug("Using full response as summary")
                     else:
                         # No JSON found, extract summary from text
                         summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', response_content, re.DOTALL)
                         if summary_match:
                             analysis = {"summary": summary_match.group(1)}
-                            print(f"DEBUG: Extracted summary from text (no JSON block found)", file=sys.stderr, flush=True)
+                            logger.debug("Extracted summary from text (no JSON block found)")
                         else:
                             analysis = {"summary": response_content[:1000]}
-                            print(f"DEBUG: Using full response as summary (no JSON found)", file=sys.stderr, flush=True)
+                            logger.debug("Using full response as summary (no JSON found)")
                 except KeyError as ke:
-                    print(f"DEBUG: KeyError during JSON parsing/extraction: {str(ke)}", file=sys.stderr, flush=True)
+                    logger.debug(f"KeyError during JSON parsing/extraction: {str(ke)}")
                     analysis = {"summary": response_content[:1000] if 'response_content' in locals() else "Analysis error: KeyError in JSON parsing"}
                 except Exception as parse_err:
-                    print(f"DEBUG: Error during JSON parsing/extraction: {str(parse_err)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error during JSON parsing/extraction: {str(parse_err)}")
                     analysis = {"summary": response_content[:1000] if 'response_content' in locals() else f"Analysis error: {str(parse_err)[:200]}"}
 
 
@@ -1480,13 +1482,13 @@ Format your response as a JSON object with this field:
                                     if k_str == "summary":
                                         summary = analysis.get(k)  # Use .get() - should never raise KeyError
                                         if summary:
-                                            print(f"DEBUG: Found summary using cleaned key: {repr(k)} -> 'summary'", file=sys.stderr, flush=True)
+                                            logger.debug(f"Found summary using cleaned key: {repr(k)} -> 'summary'")
                                             break
                                 except Exception as key_err:
-                                    print(f"DEBUG: Error processing key {repr(k)}: {str(key_err)}", file=sys.stderr, flush=True)
+                                    logger.debug(f"Error processing key {repr(k)}: {str(key_err)}")
                                     continue
                         except Exception as search_err:
-                            print(f"DEBUG: Error in case-insensitive search: {str(search_err)}", file=sys.stderr, flush=True)
+                            logger.debug(f"Error in case-insensitive search: {str(search_err)}")
                             pass
 
                     # If still no summary, use first value
@@ -1501,34 +1503,34 @@ Format your response as a JSON object with this field:
                     final_analysis = {"summary": str(summary)[:1000] if summary else "Analysis completed"}
 
                     result["ai_analysis"] = final_analysis
-                    print(f"DEBUG: Added ai_analysis to result with keys: {list(final_analysis.keys())}", file=sys.stderr, flush=True)
+                    logger.debug(f"Added ai_analysis to result with keys: {list(final_analysis.keys())}")
                 except KeyError as ke:
                     # Catch KeyError here and create fallback
-                    print(f"DEBUG: KeyError in analysis processing: {str(ke)}", file=sys.stderr, flush=True)
+                    logger.debug(f"KeyError in analysis processing: {str(ke)}")
                     import traceback
-                    print(f"DEBUG: KeyError traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.debug(traceback.format_exc())
                     result["ai_analysis"] = {"summary": response_content[:1000] if 'response_content' in locals() else "Analysis error: KeyError occurred"}
                 except Exception as analysis_err:
                     # Catch any other error
-                    print(f"DEBUG: Error in analysis processing: {str(analysis_err)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error in analysis processing: {str(analysis_err)}")
                     import traceback
-                    print(f"DEBUG: Analysis error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.debug(traceback.format_exc())
                     result["ai_analysis"] = {"summary": response_content[:1000] if 'response_content' in locals() else f"Analysis error: {str(analysis_err)[:200]}"}
             except asyncio.TimeoutError as te:
                 # Log timeout error
-                print(f"DEBUG: LLM analysis timed out: {str(te)}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM analysis timed out: {str(te)}")
                 result["_debug_llm_check"]["llm_timeout"] = True
                 error_msg = str(te).replace('\n', ' ').replace('\r', ' ')[:100]
                 result["_debug_llm_check"]["llm_timeout_error"] = error_msg
             except KeyError as ke:
                 # Handle KeyError specifically
                 error_msg = f"KeyError: {str(ke)}"
-                print(f"DEBUG: LLM analysis KeyError: {error_msg}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM analysis KeyError: {error_msg}")
                 import traceback
-                print(f"DEBUG: KeyError traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+                logger.debug(traceback.format_exc())
                 # Try to log what keys are available if analysis exists
                 if 'analysis' in locals() and isinstance(analysis, dict):
-                    print(f"DEBUG: Available keys in analysis dict: {[repr(k) for k in analysis.keys()]}", file=sys.stderr, flush=True)
+                    logger.debug(f"Available keys in analysis dict: {[repr(k) for k in analysis.keys()]}")
                 result["_debug_llm_check"]["llm_error"] = error_msg[:150]
                 result["_debug_llm_check"]["llm_error_type"] = "KeyError"
                 # Try to create a basic analysis even on KeyError
@@ -1536,31 +1538,31 @@ Format your response as a JSON object with this field:
                     # Use the raw response as summary if available
                     if 'response_content' in locals():
                         result["ai_analysis"] = {"summary": response_content[:500]}
-                        print(f"DEBUG: Created fallback ai_analysis from response_content", file=sys.stderr, flush=True)
+                        logger.debug("Created fallback ai_analysis from response_content")
                     elif 'llm_response' in locals():
                         # Try to get content from llm_response
                         try:
                             if hasattr(llm_response, 'content'):
                                 content = str(llm_response.content)[:500]
                                 result["ai_analysis"] = {"summary": content}
-                                print(f"DEBUG: Created fallback ai_analysis from llm_response.content", file=sys.stderr, flush=True)
+                                logger.debug("Created fallback ai_analysis from llm_response.content")
                         except:
                             result["ai_analysis"] = {"summary": "LLM analysis encountered a KeyError. Check server logs for details."}
-                            print(f"DEBUG: Created basic fallback ai_analysis", file=sys.stderr, flush=True)
+                            logger.debug("Created basic fallback ai_analysis")
                     else:
                         result["ai_analysis"] = {"summary": "LLM analysis encountered a KeyError. Check server logs for details."}
-                        print(f"DEBUG: Created basic fallback ai_analysis", file=sys.stderr, flush=True)
+                        logger.debug("Created basic fallback ai_analysis")
                 except Exception as fallback_error:
-                    print(f"DEBUG: Failed to create fallback ai_analysis: {str(fallback_error)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Failed to create fallback ai_analysis: {str(fallback_error)}")
                     # Last resort: create a minimal analysis
                     result["ai_analysis"] = {"summary": "Analysis unavailable due to error"}
             except Exception as e:
                 # Log the error for debugging but don't fail the entire request
-                print(f"DEBUG: LLM analysis failed for rack location: {str(e)}", file=sys.stderr, flush=True)
-                print(f"DEBUG: Exception type: {type(e).__name__}", file=sys.stderr, flush=True)
+                logger.debug(f"LLM analysis failed for rack location: {str(e)}")
+                logger.debug(f"Exception type: {type(e).__name__}")
                 import traceback
                 traceback_str = traceback.format_exc()
-                print(f"DEBUG: LLM analysis traceback: {traceback_str}", file=sys.stderr, flush=True)
+                logger.debug(traceback_str)
                 # Store error info safely (ensure it's JSON-serializable)
                 try:
                     # Sanitize error message: remove newlines, control characters, and limit length
@@ -1578,19 +1580,19 @@ Format your response as a JSON object with this field:
                     error_str = error_str[:150]
                     result["_debug_llm_check"]["llm_error"] = error_str
                     result["_debug_llm_check"]["llm_error_type"] = type(e).__name__
-                    print(f"DEBUG: Stored sanitized error: {error_str}", file=sys.stderr, flush=True)
+                    logger.debug(f"Stored sanitized error: {error_str}")
                 except Exception as store_error:
-                    print(f"DEBUG: Failed to store error info: {str(store_error)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Failed to store error info: {str(store_error)}")
                     # Use a very safe fallback
                     result["_debug_llm_check"]["llm_error"] = f"Error type: {type(e).__name__}"
                     result["_debug_llm_check"]["llm_error_type"] = type(e).__name__
                 pass
         else:
-            print(f"DEBUG: LLM not available (llm={llm})", file=sys.stderr, flush=True)
+            logger.debug(f"LLM not available (llm={llm})")
             result["_debug_llm_check"]["status"] = f"LLM not available (llm={llm})"
 
-        print(f"DEBUG: Final result keys: {list(result.keys())}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Final result has ai_analysis: {'ai_analysis' in result}", file=sys.stderr, flush=True)
+        logger.debug(f"Final result keys: {list(result.keys())}")
+        logger.debug(f"Final result has ai_analysis: {'ai_analysis' in result}")
 
         # Clean up result to ensure it's JSON-serializable
         # Remove any non-serializable values and sanitize error messages
@@ -1623,11 +1625,11 @@ Format your response as a JSON object with this field:
                             key_str = str(k) if not isinstance(k, str) else k
                             cleaned_dict[key_str] = clean_value(val)
                         except Exception as key_error:
-                            print(f"DEBUG: Error cleaning dict key '{k}': {str(key_error)}", file=sys.stderr, flush=True)
+                            logger.debug(f"Error cleaning dict key '{k}': {str(key_error)}")
                             # Skip problematic keys
                             continue
                 except Exception as dict_error:
-                    print(f"DEBUG: Error iterating dict: {str(dict_error)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error iterating dict: {str(dict_error)}")
                     # Return string representation if we can't iterate
                     return str(v)[:500]
                 return cleaned_dict
@@ -1655,23 +1657,23 @@ Format your response as a JSON object with this field:
                 # Test if it's JSON-serializable
                 json.dumps(cleaned_result[key], default=str)
             except (TypeError, ValueError) as e:
-                print(f"DEBUG: WARNING - Key '{key}' has non-serializable value after cleaning, using fallback: {str(e)}", file=sys.stderr, flush=True)
+                logger.warning(f"Key '{key}' has non-serializable value after cleaning, using fallback: {str(e)}")
                 cleaned_result[key] = f"<error serializing: {type(value).__name__}>"
 
         # Ensure result is JSON-serializable (FastMCP will serialize it)
         try:
             # Test JSON serialization to catch any issues
             json_str = json.dumps(cleaned_result, default=str, ensure_ascii=False)
-            print(f"DEBUG: Result is JSON-serializable, length: {len(json_str)}", file=sys.stderr, flush=True)
+            logger.debug(f"Result is JSON-serializable, length: {len(json_str)}")
             # Verify ai_analysis is in the serialized JSON
             if "ai_analysis" in json_str:
-                print(f"DEBUG: ai_analysis found in JSON serialization", file=sys.stderr, flush=True)
+                logger.debug("ai_analysis found in JSON serialization")
             else:
-                print(f"DEBUG: WARNING - ai_analysis NOT found in JSON serialization!", file=sys.stderr, flush=True)
+                logger.warning("ai_analysis NOT found in JSON serialization!")
         except Exception as e:
-            print(f"DEBUG: ERROR - Result is NOT JSON-serializable: {str(e)}", file=sys.stderr, flush=True)
+            logger.error(f"Result is NOT JSON-serializable: {str(e)}")
             import traceback
-            print(f"DEBUG: JSON serialization traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            logger.debug(traceback.format_exc())
             # Return a safe fallback result
             return {
                 "device": result.get("device", "unknown"),
@@ -1684,9 +1686,9 @@ Format your response as a JSON object with this field:
             }
 
         # Add yes/no answer if expected_rack is provided (for questions like "is device X in rack Y?")
-        print(f"DEBUG: expected_rack parameter = {repr(expected_rack)}", file=sys.stderr, flush=True)
+        logger.debug(f"expected_rack parameter = {repr(expected_rack)}")
         if expected_rack:
-            print(f"DEBUG: Generating yes/no answer for expected_rack={expected_rack}", file=sys.stderr, flush=True)
+            logger.debug(f"Generating yes/no answer for expected_rack={expected_rack}")
             actual_rack = cleaned_result.get("rack")
             device_name_str = cleaned_result.get("device", device_name)
 

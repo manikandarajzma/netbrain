@@ -13,8 +13,11 @@ Use the FastAPI app for the chat UI: uv run python -m netbrain.app_fastapi
 
 # Import asyncio for handling asynchronous operations (needed for MCP client)
 import asyncio
+import logging
 import sys
 import warnings
+
+logger = logging.getLogger("netbrain.mcp_client")
 
 # Suppress asyncio cleanup warnings on Windows (these are harmless cleanup errors)
 if sys.platform == 'win32':
@@ -34,7 +37,7 @@ try:
     FASTMCP_CLIENT_AVAILABLE = True
 except ImportError:
     FASTMCP_CLIENT_AVAILABLE = False
-    print("DEBUG: FastMCP Client not available, will use stdio transport", file=sys.stderr, flush=True)
+    logger.debug("FastMCP Client not available, will use stdio transport")
 
 # Fallback to stdio if HTTP client not available
 from mcp import StdioServerParameters
@@ -72,7 +75,7 @@ async def get_mcp_session():
         # Use FastMCP Client for HTTP transport (automatically handles streamable-http)
         try:
             server_url = get_server_url()
-            print(f"DEBUG: Connecting to MCP server via HTTP at {server_url}...", file=sys.stderr, flush=True)
+            logger.debug(f"Connecting to MCP server via HTTP at {server_url}...")
             # FastMCP Client automatically infers streamable-http from URL
             # Try to configure with longer timeout for long-running requests
             try:
@@ -82,21 +85,21 @@ async def get_mcp_session():
                 # If timeout parameter not supported, use default
                 client = FastMCPClient(server_url)
             async with client:
-                print(f"DEBUG: FastMCP HTTP client connected successfully", file=sys.stderr, flush=True)
+                logger.debug("FastMCP HTTP client connected successfully")
                 yield client
         except Exception as e:
             # HTTP connection failed - this is expected if server is running in stdio mode
             # Silently fall back to stdio (don't print verbose traceback as it's expected)
-            print(f"DEBUG: HTTP connection unavailable (server may be in stdio mode), using stdio transport...", file=sys.stderr, flush=True)
+            logger.debug("HTTP connection unavailable (server may be in stdio mode), using stdio transport...")
             # Fall through to stdio fallback
     
     # Fallback to stdio transport
     server_params = get_server_params()
-    print(f"DEBUG: Connecting to MCP server via stdio...", file=sys.stderr, flush=True)
+    logger.debug("Connecting to MCP server via stdio...")
     async with stdio_client(server_params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
-            print(f"DEBUG: Stdio session initialized successfully", file=sys.stderr, flush=True)
+            logger.debug("Stdio session initialized successfully")
             yield session
 
 def get_server_params():
@@ -138,13 +141,12 @@ async def execute_path_allowed_check(source, destination, protocol, port, is_liv
     Returns:
         dict: Policy check result
     """
-    import sys
-    print(f"DEBUG: Starting path allowed check: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
+    logger.debug(f"Starting path allowed check: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}")
     
     try:
-        print(f"DEBUG: Connecting to MCP server...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized, calling check_path_allowed tool...", file=sys.stderr, flush=True)
+            logger.debug("Session initialized, calling check_path_allowed tool...")
             
             # Use defaults if protocol or port are None (server expects strings, not None)
             protocol_str = protocol if protocol is not None else "TCP"
@@ -157,8 +159,8 @@ async def execute_path_allowed_check(source, destination, protocol, port, is_liv
                 "port": port_str,
                 "is_live": 1 if is_live else 0
             }
-            print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
-            
+            logger.debug(f"Tool arguments: {tool_arguments}")
+
             # Try standard format first, then FastMCP format if needed
             is_fastmcp = False
             if FASTMCP_CLIENT_AVAILABLE:
@@ -174,11 +176,11 @@ async def execute_path_allowed_check(source, destination, protocol, port, is_liv
                     client_or_session.call_tool("check_path_allowed", arguments=tool_arguments),
                     timeout=360.0  # 6 minute timeout for path checks
                 )
-                print(f"DEBUG: Standard format succeeded for check_path_allowed", file=sys.stderr, flush=True)
+                logger.debug("Standard format succeeded for check_path_allowed")
             except TypeError as e:
                 if "unexpected keyword argument 'arguments'" in str(e) and is_fastmcp:
                     # FastMCP client expects **kwargs instead of arguments=dict
-                    print(f"DEBUG: Standard format failed, trying FastMCP format (kwargs) for check_path_allowed", file=sys.stderr, flush=True)
+                    logger.debug("Standard format failed, trying FastMCP format (kwargs) for check_path_allowed")
                     result = await asyncio.wait_for(
                         client_or_session.call_tool("check_path_allowed", **tool_arguments),
                         timeout=360.0
@@ -197,8 +199,8 @@ async def execute_path_allowed_check(source, destination, protocol, port, is_liv
             else:
                 result_text = str(result)
             
-            print(f"DEBUG: Result text length: {len(result_text)}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Result text (first 500 chars): {result_text[:500]}", file=sys.stderr, flush=True)
+            logger.debug(f"Result text length: {len(result_text)}")
+            logger.debug(f"Result text (first 500 chars): {result_text[:500]}")
             
             try:
                 result_dict = json.loads(result_text)
@@ -210,8 +212,8 @@ async def execute_path_allowed_check(source, destination, protocol, port, is_liv
         return {"error": "Path allowed check timed out. Please try again."}
     except Exception as e:
         import traceback
-        print(f"DEBUG: Error in execute_path_allowed_check: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in execute_path_allowed_check: {type(e).__name__}: {e}")
+        logger.debug(traceback.format_exc())
         return {"error": f"Error executing path allowed check: {str(e)}"}
 
 
@@ -229,13 +231,12 @@ async def execute_network_query(source, destination, protocol, port, is_live):
     Returns:
         dict: Query result
     """
-    import sys
-    print(f"DEBUG: Starting network query: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}", file=sys.stderr, flush=True)
-    
+    logger.debug(f"Starting network query: {source} -> {destination}, protocol={protocol}, port={port}, is_live={is_live}")
+
     try:
-        print(f"DEBUG: Connecting to MCP server...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized, calling tool...", file=sys.stderr, flush=True)
+            logger.debug("Session initialized, calling tool...")
             
             # Use defaults if protocol or port are None (server expects strings, not None)
             protocol_str = protocol if protocol is not None else "TCP"
@@ -249,9 +250,9 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                 "is_live": 1 if is_live else 0,
                 "continue_on_policy_denial": True  # Always continue even if denied by policy
             }
-            print(f"DEBUG: Tool arguments: {tool_arguments}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Calling tool with arguments: {tool_arguments}", file=sys.stderr, flush=True)
-            print(f"DEBUG: Client type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}, FASTMCP_CLIENT_AVAILABLE: {FASTMCP_CLIENT_AVAILABLE}", file=sys.stderr, flush=True)
+            logger.debug(f"Tool arguments: {tool_arguments}")
+            logger.debug(f"Calling tool with arguments: {tool_arguments}")
+            logger.debug(f"Client type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}, FASTMCP_CLIENT_AVAILABLE: {FASTMCP_CLIENT_AVAILABLE}")
             try:
                 # Try to detect FastMCP Client - be conservative, default to standard format
                 is_fastmcp = False
@@ -259,35 +260,35 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                     try:
                         # Check if it's actually a FastMCPClient instance
                         is_fastmcp = isinstance(client_or_session, FastMCPClient)
-                        print(f"DEBUG: isinstance check result: {is_fastmcp}", file=sys.stderr, flush=True)
+                        logger.debug(f"isinstance check result: {is_fastmcp}")
                     except (NameError, TypeError) as e:
-                        print(f"DEBUG: isinstance check failed: {e}, checking by module name", file=sys.stderr, flush=True)
+                        logger.debug(f"isinstance check failed: {e}, checking by module name")
                         # Fallback: check by module name (more reliable)
                         module_name = type(client_or_session).__module__
                         is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
-                        print(f"DEBUG: Module-based check result: {is_fastmcp} (module: {module_name})", file=sys.stderr, flush=True)
-                
-                print(f"DEBUG: Final detection - is_fastmcp: {is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+                        logger.debug(f"Module-based check result: {is_fastmcp} (module: {module_name})")
+
+                logger.debug(f"Final detection - is_fastmcp: {is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}")
                 
                 # Try standard format first (safest), then FastMCP format if needed
                 try:
                     # Standard MCP ClientSession format: pass arguments as a dictionary
-                    print(f"DEBUG: Trying standard format (arguments=dict) for query_network_path...", file=sys.stderr, flush=True)
+                    logger.debug("Trying standard format (arguments=dict) for query_network_path...")
                     tool_result = await asyncio.wait_for(
                         client_or_session.call_tool("query_network_path", arguments=tool_arguments),
                         timeout=360.0  # 6 minute timeout for network path queries (server polls up to 120 times)
                     )
-                    print(f"DEBUG: Standard format succeeded for query_network_path, result type: {type(tool_result)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Standard format succeeded for query_network_path, result type: {type(tool_result)}")
                 except TypeError as e:
                     error_str = str(e)
                     # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
                     if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
-                        print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_network_path...", file=sys.stderr, flush=True)
+                        logger.debug("Standard format failed, trying FastMCP format (keyword args) for query_network_path...")
                         tool_result_list = await asyncio.wait_for(
                             client_or_session.call_tool("query_network_path", **tool_arguments),
                             timeout=360.0  # 6 minute timeout for network path queries (server polls up to 120 times)
                         )
-                        print(f"DEBUG: FastMCP call completed, result type: {type(tool_result_list)}, length: {len(tool_result_list) if isinstance(tool_result_list, list) else 'N/A'}", file=sys.stderr, flush=True)
+                        logger.debug(f"FastMCP call completed, result type: {type(tool_result_list)}, length: {len(tool_result_list) if isinstance(tool_result_list, list) else 'N/A'}")
                         # FastMCP returns a list of results, each with .text attribute
                         # Convert to standard format for processing
                         if tool_result_list and len(tool_result_list) > 0:
@@ -299,44 +300,44 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                                         text = r.text if hasattr(r, 'text') else str(r)
                                         self.content.append(type('Content', (), {'text': text})())
                             tool_result = FastMCPToolResult(tool_result_list)
-                            print(f"DEBUG: FastMCP result wrapped, content items: {len(tool_result.content)}", file=sys.stderr, flush=True)
+                            logger.debug(f"FastMCP result wrapped, content items: {len(tool_result.content)}")
                         else:
                             tool_result = None
-                            print(f"DEBUG: FastMCP returned empty result", file=sys.stderr, flush=True)
-                        print(f"DEBUG: FastMCP format succeeded for query_network_path", file=sys.stderr, flush=True)
+                            logger.debug("FastMCP returned empty result")
+                        logger.debug("FastMCP format succeeded for query_network_path")
                     else:
                         # Re-raise if it's a different error
-                        print(f"DEBUG: Error calling query_network_path: {e}", file=sys.stderr, flush=True)
+                        logger.debug(f"Error calling query_network_path: {e}")
                         raise
-                print(f"DEBUG: Tool call completed, processing result...", file=sys.stderr, flush=True)
+                logger.debug("Tool call completed, processing result...")
             except asyncio.TimeoutError:
-                print(f"DEBUG: Tool call timed out after 360 seconds", file=sys.stderr, flush=True)
+                logger.debug("Tool call timed out after 360 seconds")
                 return {"error": "Network path query timed out after 6 minutes. The query may be too complex or the server may be slow. Please try again or use baseline data instead of live data."}
             except (ConnectionResetError, ConnectionError, OSError) as conn_error:
                 # Connection was closed, but server may have completed - check if we got partial result
-                print(f"DEBUG: Connection error during tool call: {conn_error}", file=sys.stderr, flush=True)
-                print(f"DEBUG: Connection error type: {type(conn_error).__name__}", file=sys.stderr, flush=True)
+                logger.debug(f"Connection error during tool call: {conn_error}")
+                logger.debug(f"Connection error type: {type(conn_error).__name__}")
                 # If we have a tool_result, try to process it anyway
                 if 'tool_result' in locals() and tool_result:
-                    print(f"DEBUG: Connection closed but we have a result, attempting to process...", file=sys.stderr, flush=True)
+                    logger.debug("Connection closed but we have a result, attempting to process...")
                     # Fall through to result processing below
                 else:
                     import traceback
-                    print(f"DEBUG: Connection error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                    logger.debug(traceback.format_exc())
                     return {"error": f"Connection was closed during query. The server may have completed processing, but the connection was lost. Error: {str(conn_error)}"}
             except Exception as tool_error:
-                print(f"DEBUG: Tool call failed with error: {tool_error}", file=sys.stderr, flush=True)
+                logger.debug(f"Tool call failed with error: {tool_error}")
                 import traceback
-                print(f"DEBUG: Tool call error traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                logger.debug(traceback.format_exc())
                 # If we have a tool_result despite the error, try to process it
                 if 'tool_result' in locals() and tool_result:
-                    print(f"DEBUG: Error occurred but we have a result, attempting to process...", file=sys.stderr, flush=True)
+                    logger.debug("Error occurred but we have a result, attempting to process...")
                     # Fall through to result processing below
                 else:
                     return {"error": f"Tool call failed: {str(tool_error)}"}
             
             if tool_result:
-                print(f"DEBUG: Tool result received, type: {type(tool_result)}, dir: {[x for x in dir(tool_result) if not x.startswith('_')]}", file=sys.stderr, flush=True)
+                logger.debug(f"Tool result received, type: {type(tool_result)}, dir: {[x for x in dir(tool_result) if not x.startswith('_')]}")
                 result_text = None
                 
                 # Handle FastMCP Client response (list of results or FastMCPToolResult wrapper)
@@ -348,12 +349,12 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                             result_text = first_result.text
                         else:
                             result_text = str(first_result)
-                        print(f"DEBUG: FastMCP list result (first 500 chars): {result_text[:500] if result_text else 'None'}", file=sys.stderr, flush=True)
+                        logger.debug(f"FastMCP list result (first 500 chars): {result_text[:500] if result_text else 'None'}")
                     else:
                         return {"error": "Tool call returned empty result"}
                 # Handle FastMCPToolResult wrapper or standard MCP ClientSession response (both have .content)
                 elif hasattr(tool_result, 'content') and tool_result.content:
-                    print(f"DEBUG: Standard MCP result content length: {len(tool_result.content)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Standard MCP result content length: {len(tool_result.content)}")
                     if isinstance(tool_result.content, list) and len(tool_result.content) > 0:
                         content_item = tool_result.content[0]
                         if hasattr(content_item, 'text'):
@@ -362,57 +363,57 @@ async def execute_network_query(source, destination, protocol, port, is_live):
                             result_text = str(content_item)
                     else:
                         result_text = str(tool_result.content)
-                    print(f"DEBUG: Result text length: {len(result_text) if result_text else 0}", file=sys.stderr, flush=True)
-                    print(f"DEBUG: Result text (first 500 chars): {result_text[:500] if result_text else 'None'}", file=sys.stderr, flush=True)
+                    logger.debug(f"Result text length: {len(result_text) if result_text else 0}")
+                    logger.debug(f"Result text (first 500 chars): {result_text[:500] if result_text else 'None'}")
                 else:
                     # Try to convert to string or check if it's already a dict
                     if isinstance(tool_result, dict):
-                        print(f"DEBUG: Tool result is already a dict, returning directly", file=sys.stderr, flush=True)
+                        logger.debug("Tool result is already a dict, returning directly")
                         return tool_result
                     result_text = str(tool_result)
-                    print(f"DEBUG: Converted result to string (first 500 chars): {result_text[:500]}", file=sys.stderr, flush=True)
+                    logger.debug(f"Converted result to string (first 500 chars): {result_text[:500]}")
                 
                 if not result_text:
-                    print(f"DEBUG: ERROR - result_text is None or empty", file=sys.stderr, flush=True)
+                    logger.debug("ERROR - result_text is None or empty")
                     return {"error": "Tool call returned empty or unparseable result"}
                 
                 # Try to parse as JSON (use module-level json)
                 try:
                     result = json.loads(result_text)
-                    print(f"DEBUG: Result parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                    logger.debug(f"Result parsed successfully, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
                     return result
                 except json.JSONDecodeError as e:
-                    print(f"DEBUG: JSON decode error: {e}, result_text: {result_text[:200]}", file=sys.stderr, flush=True)
+                    logger.debug(f"JSON decode error: {e}, result_text: {result_text[:200]}")
                     # Try to extract JSON from the text if it's embedded
                     import re
                     json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
                     if json_match:
                         try:
                             result = json.loads(json_match.group())
-                            print(f"DEBUG: Extracted JSON from text, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}", file=sys.stderr, flush=True)
+                            logger.debug(f"Extracted JSON from text, keys: {list(result.keys()) if isinstance(result, dict) else 'not a dict'}")
                             return result
                         except json.JSONDecodeError as e2:
-                            print(f"DEBUG: Failed to parse extracted JSON: {e2}", file=sys.stderr, flush=True)
+                            logger.debug(f"Failed to parse extracted JSON: {e2}")
                     # If still can't parse, return the raw text wrapped
-                    print(f"DEBUG: Returning raw text as result", file=sys.stderr, flush=True)
+                    logger.debug("Returning raw text as result")
                     return {"error": f"Failed to parse JSON result: {str(e)}", "raw_result": result_text[:1000]}
             else:
-                print(f"DEBUG: Tool result is None or empty", file=sys.stderr, flush=True)
+                logger.debug("Tool result is None or empty")
                 return {"error": "Tool call returned no result"}
     except asyncio.TimeoutError:
-        print(f"DEBUG: Query timed out", file=sys.stderr, flush=True)
+        logger.debug("Query timed out")
         return {"error": "Query timed out. The network path calculation is taking longer than expected."}
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
-        print(f"DEBUG: Exception in execute_network_query: {e}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Traceback: {error_traceback}", file=sys.stderr, flush=True)
+        logger.debug(f"Exception in execute_network_query: {e}")
+        logger.debug(error_traceback)
         prefix = "Error executing query"
         if "JSON" in str(e) or "json" in str(e):
             return {"error": f"{prefix}: {e} (JSON parsing error - check server logs)"}
         return {"error": _format_tool_error(e, prefix)}
     except BaseException as e:
-        print(f"DEBUG: Exception in execute_network_query (base): {e}", file=sys.stderr, flush=True)
+        logger.debug(f"Exception in execute_network_query (base): {e}")
         return {"error": _format_tool_error(e, "Error executing query")}
 
 
@@ -455,13 +456,12 @@ async def execute_rack_details_query(rack_name, format_type=None, conversation_h
     Returns:
         dict: Rack details result
     """
-    import sys
-    print(f"DEBUG: Starting rack details query for rack: {rack_name}, site: {site_name}, format: {format_type}", file=sys.stderr, flush=True)
+    logger.debug(f"Starting rack details query for rack: {rack_name}, site: {site_name}, format: {format_type}")
 
     try:
-        print(f"DEBUG: Connecting to MCP server for rack details query...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server for rack details query...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized for rack details query", file=sys.stderr, flush=True)
+            logger.debug("Session initialized for rack details query")
             
             tool_arguments = {"rack_name": rack_name}
             if site_name:
@@ -480,23 +480,23 @@ async def execute_rack_details_query(rack_name, format_type=None, conversation_h
                     module_name = type(client_or_session).__module__
                     is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
             
-            print(f"DEBUG: Client type for rack details: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+            logger.debug(f"Client type for rack details: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}")
             
             tool_result = None
             # Try standard format first (safest), then FastMCP format if needed
             try:
                 # Standard MCP ClientSession format: pass arguments as a dictionary
-                print(f"DEBUG: Trying standard format (arguments=dict) for get_rack_details...", file=sys.stderr, flush=True)
+                logger.debug("Trying standard format (arguments=dict) for get_rack_details...")
                 tool_result = await asyncio.wait_for(
                     client_or_session.call_tool("get_rack_details", arguments=tool_arguments),
                     timeout=60.0
                 )
-                print(f"DEBUG: Standard format succeeded for get_rack_details", file=sys.stderr, flush=True)
+                logger.debug("Standard format succeeded for get_rack_details")
             except TypeError as type_err:
                 error_str = str(type_err)
                 # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
                 if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
-                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for get_rack_details...", file=sys.stderr, flush=True)
+                    logger.debug("Standard format failed, trying FastMCP format (keyword args) for get_rack_details...")
                     tool_result_list = await asyncio.wait_for(
                         client_or_session.call_tool("get_rack_details", **tool_arguments),
                         timeout=60.0
@@ -510,26 +510,26 @@ async def execute_rack_details_query(rack_name, format_type=None, conversation_h
                                     text = r.text if hasattr(r, 'text') else str(r)
                                     self.content.append(type('Content', (), {'text': text})())
                         tool_result = FastMCPToolResult(tool_result_list)
-                        print(f"DEBUG: FastMCP format succeeded for get_rack_details", file=sys.stderr, flush=True)
+                        logger.debug("FastMCP format succeeded for get_rack_details")
                     else:
                         tool_result = None
                 else:
                     # Re-raise if it's a different error
-                    print(f"DEBUG: Error calling get_rack_details: {error_str}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error calling get_rack_details: {error_str}")
                     raise
                 
                 if tool_result and tool_result.content:
                     result_text = tool_result.content[0].text
-                    print(f"DEBUG: Rack details result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                    logger.debug(f"Rack details result text length: {len(result_text)}")
                     try:
                         result = json.loads(result_text)
-                        print(f"DEBUG: Rack details result parsed successfully", file=sys.stderr, flush=True)
+                        logger.debug("Rack details result parsed successfully")
                         return result
                     except json.JSONDecodeError as e:
-                        print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                        logger.debug(f"JSON decode error: {e}")
                         return {"result": result_text}
                 else:
-                    print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+                    logger.debug("No result content returned")
                     return None
             # Standard format succeeded: parse and return result
             if tool_result and getattr(tool_result, "content", None):
@@ -543,11 +543,11 @@ async def execute_rack_details_query(rack_name, format_type=None, conversation_h
     except asyncio.TimeoutError:
         return {"error": "Rack details lookup timed out"}
     except Exception as e:
-        print(f"DEBUG: Error executing rack details query: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing rack details query: {str(e)}")
         return {"error": _format_tool_error(e)}
     except BaseException as e:
         # ExceptionGroup (e.g. TaskGroup) extends BaseException, not Exception
-        print(f"DEBUG: Error executing rack details query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing rack details query (base): {str(e)}")
         return {"error": _format_tool_error(e)}
 
 
@@ -563,13 +563,12 @@ async def execute_racks_list_query(site_name=None, format_type=None, conversatio
     Returns:
         dict: Racks list result
     """
-    import sys
-    print(f"DEBUG: Starting racks list query, site: {site_name}, format: {format_type}", file=sys.stderr, flush=True)
+    logger.debug(f"Starting racks list query, site: {site_name}, format: {format_type}")
 
     try:
-        print(f"DEBUG: Connecting to MCP server for racks list query...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server for racks list query...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized for racks list query", file=sys.stderr, flush=True)
+            logger.debug("Session initialized for racks list query")
             tool_arguments = {}
             if site_name:
                 tool_arguments["site_name"] = site_name
@@ -613,24 +612,24 @@ async def execute_racks_list_query(site_name=None, format_type=None, conversatio
 
             if tool_result and tool_result.content:
                 result_text = tool_result.content[0].text
-                print(f"DEBUG: Racks list result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                logger.debug(f"Racks list result text length: {len(result_text)}")
                 try:
                     result = json.loads(result_text)
-                    print(f"DEBUG: Racks list result parsed successfully", file=sys.stderr, flush=True)
+                    logger.debug("Racks list result parsed successfully")
                     return result
                 except json.JSONDecodeError as e:
-                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    logger.debug(f"JSON decode error: {e}")
                     return {"result": result_text}
-            print(f"DEBUG: No result content returned", file=sys.stderr, flush=True)
+            logger.debug("No result content returned")
             return None
     except asyncio.TimeoutError:
         return {"error": "Racks list lookup timed out"}
     except Exception as e:
-        print(f"DEBUG: Error executing racks list query: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing racks list query: {str(e)}")
         return {"error": _format_tool_error(e)}
     except BaseException as e:
         # ExceptionGroup (e.g. TaskGroup) extends BaseException, not Exception
-        print(f"DEBUG: Error executing racks list query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing racks list query (base): {str(e)}")
         return {"error": _format_tool_error(e)}
 
 
@@ -646,13 +645,12 @@ async def execute_panorama_address_group_members_query(address_group_name, devic
     Returns:
         dict: Address group members information
     """
-    import sys
-    print(f"DEBUG: Starting Panorama address group members query for group: {address_group_name}, device_group: {device_group}", file=sys.stderr, flush=True)
-    
+    logger.debug(f"Starting Panorama address group members query for group: {address_group_name}, device_group: {device_group}")
+
     try:
-        print(f"DEBUG: Connecting to MCP server for Panorama address group members query...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server for Panorama address group members query...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized for Panorama address group members query", file=sys.stderr, flush=True)
+            logger.debug("Session initialized for Panorama address group members query")
             
             tool_arguments = {"address_group_name": address_group_name}
             if device_group:
@@ -660,7 +658,7 @@ async def execute_panorama_address_group_members_query(address_group_name, devic
             if vsys:
                 tool_arguments["vsys"] = vsys
             
-            print(f"DEBUG: Calling query_panorama_address_group_members with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            logger.debug(f"Calling query_panorama_address_group_members with arguments: {tool_arguments}")
             
             # Detect client type for fallback
             is_fastmcp = False
@@ -671,22 +669,22 @@ async def execute_panorama_address_group_members_query(address_group_name, devic
                     module_name = type(client_or_session).__module__
                     is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
             
-            print(f"DEBUG: Client type for Panorama query: FastMCP={is_fastmcp}", file=sys.stderr, flush=True)
-            
+            logger.debug(f"Client type for Panorama query: FastMCP={is_fastmcp}")
+
             # Try standard format first (safest), then FastMCP format if needed
             try:
                 # Standard MCP ClientSession format: pass arguments as a dictionary
-                print(f"DEBUG: Trying standard format (arguments=dict) for query_panorama_address_group_members...", file=sys.stderr, flush=True)
+                logger.debug("Trying standard format (arguments=dict) for query_panorama_address_group_members...")
                 tool_result = await asyncio.wait_for(
                     client_or_session.call_tool("query_panorama_address_group_members", arguments=tool_arguments),
                     timeout=60.0
                 )
-                print(f"DEBUG: Standard format succeeded for query_panorama_address_group_members", file=sys.stderr, flush=True)
+                logger.debug("Standard format succeeded for query_panorama_address_group_members")
             except TypeError as type_err:
                 error_str = str(type_err)
                 # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
                 if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
-                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_panorama_address_group_members...", file=sys.stderr, flush=True)
+                    logger.debug("Standard format failed, trying FastMCP format (keyword args) for query_panorama_address_group_members...")
                     tool_result_list = await asyncio.wait_for(
                         client_or_session.call_tool("query_panorama_address_group_members", **tool_arguments),
                         timeout=60.0
@@ -700,35 +698,35 @@ async def execute_panorama_address_group_members_query(address_group_name, devic
                                     text = r.text if hasattr(r, 'text') else str(r)
                                     self.content.append(type('Content', (), {'text': text})())
                         tool_result = FastMCPToolResult(tool_result_list)
-                        print(f"DEBUG: FastMCP format succeeded for query_panorama_address_group_members", file=sys.stderr, flush=True)
+                        logger.debug("FastMCP format succeeded for query_panorama_address_group_members")
                     else:
                         tool_result = None
                 else:
                     # Re-raise if it's a different error
-                    print(f"DEBUG: Error calling query_panorama_address_group_members: {error_str}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error calling query_panorama_address_group_members: {error_str}")
                     raise
             
             if tool_result and tool_result.content:
                 result_text = tool_result.content[0].text
-                print(f"DEBUG: Panorama address group members result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                logger.debug(f"Panorama address group members result text length: {len(result_text)}")
                 try:
                     result = json.loads(result_text)
-                    print(f"DEBUG: Panorama address group members result parsed successfully", file=sys.stderr, flush=True)
+                    logger.debug("Panorama address group members result parsed successfully")
                     return result
                 except json.JSONDecodeError as e:
-                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    logger.debug(f"JSON decode error: {e}")
                     return {"result": result_text}
             return None
     except asyncio.TimeoutError:
-        print(f"DEBUG: Panorama address group members query timed out", file=sys.stderr, flush=True)
+        logger.debug("Panorama address group members query timed out")
         return {"error": "Panorama query timed out. Please try again."}
     except Exception as e:
-        print(f"DEBUG: Error in Panorama address group members query: {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in Panorama address group members query: {str(e)}")
         import traceback
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(traceback.format_exc())
         return {"error": _format_tool_error(e, "Error querying Panorama")}
     except BaseException as e:
-        print(f"DEBUG: Error in Panorama address group members query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in Panorama address group members query (base): {str(e)}")
         return {"error": _format_tool_error(e, "Error querying Panorama")}
 
 
@@ -744,13 +742,12 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
     Returns:
         dict: Object group information
     """
-    import sys
-    print(f"DEBUG: Starting Panorama IP object group query for IP: {ip_address}, device_group: {device_group}", file=sys.stderr, flush=True)
-    
+    logger.debug(f"Starting Panorama IP object group query for IP: {ip_address}, device_group: {device_group}")
+
     try:
-        print(f"DEBUG: Connecting to MCP server for Panorama IP object group query...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server for Panorama IP object group query...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized for Panorama IP object group query", file=sys.stderr, flush=True)
+            logger.debug("Session initialized for Panorama IP object group query")
             
             tool_arguments = {"ip_address": ip_address}
             if device_group:
@@ -758,7 +755,7 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
             if vsys:
                 tool_arguments["vsys"] = vsys
             
-            print(f"DEBUG: Calling query_panorama_ip_object_group with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            logger.debug(f"Calling query_panorama_ip_object_group with arguments: {tool_arguments}")
             
             # Detect client type for fallback
             is_fastmcp = False
@@ -769,22 +766,22 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
                     module_name = type(client_or_session).__module__
                     is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
             
-            print(f"DEBUG: Client type for Panorama query: FastMCP={is_fastmcp}", file=sys.stderr, flush=True)
-            
+            logger.debug(f"Client type for Panorama query: FastMCP={is_fastmcp}")
+
             # Try standard format first (safest), then FastMCP format if needed
             try:
                 # Standard MCP ClientSession format: pass arguments as a dictionary
-                print(f"DEBUG: Trying standard format (arguments=dict) for query_panorama_ip_object_group...", file=sys.stderr, flush=True)
+                logger.debug("Trying standard format (arguments=dict) for query_panorama_ip_object_group...")
                 tool_result = await asyncio.wait_for(
                     client_or_session.call_tool("query_panorama_ip_object_group", arguments=tool_arguments),
                     timeout=60.0
                 )
-                print(f"DEBUG: Standard format succeeded for query_panorama_ip_object_group", file=sys.stderr, flush=True)
+                logger.debug("Standard format succeeded for query_panorama_ip_object_group")
             except TypeError as type_err:
                 error_str = str(type_err)
                 # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
                 if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
-                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for query_panorama_ip_object_group...", file=sys.stderr, flush=True)
+                    logger.debug("Standard format failed, trying FastMCP format (keyword args) for query_panorama_ip_object_group...")
                     tool_result_list = await asyncio.wait_for(
                         client_or_session.call_tool("query_panorama_ip_object_group", **tool_arguments),
                         timeout=60.0
@@ -798,35 +795,34 @@ async def execute_panorama_ip_object_group_query(ip_address, device_group=None, 
                                     text = r.text if hasattr(r, 'text') else str(r)
                                     self.content.append(type('Content', (), {'text': text})())
                         tool_result = FastMCPToolResult(tool_result_list)
-                        print(f"DEBUG: FastMCP format succeeded for query_panorama_ip_object_group", file=sys.stderr, flush=True)
+                        logger.debug("FastMCP format succeeded for query_panorama_ip_object_group")
                     else:
                         tool_result = None
                 else:
                     # Re-raise if it's a different error
-                    print(f"DEBUG: Error calling query_panorama_ip_object_group: {error_str}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error calling query_panorama_ip_object_group: {error_str}")
                     raise
             
             if tool_result and tool_result.content:
                 result_text = tool_result.content[0].text
-                print(f"DEBUG: Panorama result text length: {len(result_text)}", file=sys.stderr, flush=True)
+                logger.debug(f"Panorama result text length: {len(result_text)}")
                 try:
                     result = json.loads(result_text)
-                    print(f"DEBUG: Panorama result parsed successfully", file=sys.stderr, flush=True)
+                    logger.debug("Panorama result parsed successfully")
                     return result
                 except json.JSONDecodeError as e:
-                    print(f"DEBUG: JSON decode error: {e}", file=sys.stderr, flush=True)
+                    logger.debug(f"JSON decode error: {e}")
                     return {"result": result_text}
             return None
     except asyncio.TimeoutError:
         return {"error": "Panorama query timed out"}
     except Exception as e:
-        import sys
         import traceback
-        print(f"DEBUG: Error executing Panorama query: {str(e)}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Full traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing Panorama query: {str(e)}")
+        logger.debug(traceback.format_exc())
         return {"error": _format_tool_error(e)}
     except BaseException as e:
-        print(f"DEBUG: Error executing Panorama query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing Panorama query (base): {str(e)}")
         return {"error": _format_tool_error(e)}
 
 
@@ -842,8 +838,7 @@ async def execute_splunk_recent_denies_query(ip_address, limit=100, earliest_tim
     Returns:
         dict: ip_address, events (list), count, and optional error
     """
-    import sys
-    print(f"DEBUG: Starting Splunk recent denies query for IP: {ip_address}", file=sys.stderr, flush=True)
+    logger.debug(f"Starting Splunk recent denies query for IP: {ip_address}")
     try:
         async for client_or_session in get_mcp_session():
             tool_arguments = {"ip_address": ip_address, "limit": limit, "earliest_time": earliest_time}
@@ -888,11 +883,11 @@ async def execute_splunk_recent_denies_query(ip_address, limit=100, earliest_tim
         return {"error": "Splunk query timed out"}
     except Exception as e:
         import traceback
-        print(f"DEBUG: Error executing Splunk query: {str(e)}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Full traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing Splunk query: {str(e)}")
+        logger.debug(traceback.format_exc())
         return {"error": _format_tool_error(e)}
     except BaseException as e:
-        print(f"DEBUG: Error executing Splunk query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error executing Splunk query (base): {str(e)}")
         return {"error": _format_tool_error(e)}
 
 
@@ -910,13 +905,12 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
     Returns:
         dict: Rack location result
     """
-    import sys
-    print(f"DEBUG: Starting rack location query for device: {device_name}, format: {format_type}, intent: {intent}", file=sys.stderr, flush=True)
+    logger.debug(f"Starting rack location query for device: {device_name}, format: {format_type}, intent: {intent}")
 
     try:
-        print(f"DEBUG: Connecting to MCP server for rack location query...", file=sys.stderr, flush=True)
+        logger.debug("Connecting to MCP server for rack location query...")
         async for client_or_session in get_mcp_session():
-            print(f"DEBUG: Session initialized for rack location query", file=sys.stderr, flush=True)
+            logger.debug("Session initialized for rack location query")
             
             tool_arguments = {"device_name": device_name}
             if format_type:
@@ -928,7 +922,7 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
             if conversation_history:
                 tool_arguments["conversation_history"] = conversation_history
 
-            print(f"DEBUG: Calling get_device_rack_location with arguments: {tool_arguments}", file=sys.stderr, flush=True)
+            logger.debug(f"Calling get_device_rack_location with arguments: {tool_arguments}")
             
             # Detect client type and call appropriately
             is_fastmcp = False
@@ -939,22 +933,22 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
                     module_name = type(client_or_session).__module__
                     is_fastmcp = 'fastmcp' in module_name.lower() if module_name else False
             
-            print(f"DEBUG: Client type for rack location: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}", file=sys.stderr, flush=True)
+            logger.debug(f"Client type for rack location: FastMCP={is_fastmcp}, type: {type(client_or_session).__name__}, module: {type(client_or_session).__module__}")
             
             # Try standard format first (safest), then FastMCP format if needed
             try:
                 # Standard MCP ClientSession format: pass arguments as a dictionary
-                print(f"DEBUG: Trying standard format (arguments=dict) for get_device_rack_location...", file=sys.stderr, flush=True)
+                logger.debug("Trying standard format (arguments=dict) for get_device_rack_location...")
                 tool_result = await asyncio.wait_for(
                     client_or_session.call_tool("get_device_rack_location", arguments=tool_arguments),
                     timeout=60.0
                 )
-                print(f"DEBUG: Standard format succeeded for get_device_rack_location", file=sys.stderr, flush=True)
+                logger.debug("Standard format succeeded for get_device_rack_location")
             except TypeError as type_err:
                 error_str = str(type_err)
                 # If standard format fails with "unexpected keyword argument 'arguments'", try FastMCP format
                 if "unexpected keyword argument 'arguments'" in error_str and is_fastmcp:
-                    print(f"DEBUG: Standard format failed, trying FastMCP format (keyword args) for get_device_rack_location...", file=sys.stderr, flush=True)
+                    logger.debug("Standard format failed, trying FastMCP format (keyword args) for get_device_rack_location...")
                     tool_result_list = await asyncio.wait_for(
                         client_or_session.call_tool("get_device_rack_location", **tool_arguments),
                         timeout=60.0
@@ -968,26 +962,26 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
                                     text = r.text if hasattr(r, 'text') else str(r)
                                     self.content.append(type('Content', (), {'text': text})())
                         tool_result = FastMCPToolResult(tool_result_list)
-                        print(f"DEBUG: FastMCP format succeeded for get_device_rack_location", file=sys.stderr, flush=True)
+                        logger.debug("FastMCP format succeeded for get_device_rack_location")
                     else:
                         tool_result = None
                 else:
                     # Re-raise if it's a different error
-                    print(f"DEBUG: Error calling get_device_rack_location: {error_str}", file=sys.stderr, flush=True)
+                    logger.debug(f"Error calling get_device_rack_location: {error_str}")
                     raise
             
             if tool_result and tool_result.content:
                 result_text = tool_result.content[0].text
-                print(f"DEBUG: Raw result text length: {len(result_text)}", file=sys.stderr, flush=True)
-                print(f"DEBUG: Raw result text preview: {result_text[:500]}", file=sys.stderr, flush=True)
+                logger.debug(f"Raw result text length: {len(result_text)}")
+                logger.debug(f"Raw result text preview: {result_text[:500]}")
                 try:
                     result = json.loads(result_text)
-                    print(f"DEBUG: Rack location result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}", file=sys.stderr, flush=True)
+                    logger.debug(f"Rack location result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
                     if isinstance(result, dict) and "ai_analysis" in result:
-                        print(f"DEBUG: AI analysis found in result!", file=sys.stderr, flush=True)
-                        print(f"DEBUG: AI analysis type: {type(result['ai_analysis'])}, content: {str(result['ai_analysis'])[:500]}", file=sys.stderr, flush=True)
+                        logger.debug("AI analysis found in result!")
+                        logger.debug(f"AI analysis type: {type(result['ai_analysis'])}, content: {str(result['ai_analysis'])[:500]}")
                     else:
-                        print(f"DEBUG: No AI analysis in result. Available keys: {list(result.keys())}", file=sys.stderr, flush=True)
+                        logger.debug(f"No AI analysis in result. Available keys: {list(result.keys())}")
                     return result
                 except json.JSONDecodeError:
                     return {"result": result_text}
@@ -996,9 +990,9 @@ async def execute_rack_location_query(device_name, format_type=None, conversatio
         return {"error": "Rack location lookup timed out. Please try again."}
     except Exception as e:
         import traceback
-        print(f"DEBUG: Error in execute_rack_location_query: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        print(f"DEBUG: Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in execute_rack_location_query: {type(e).__name__}: {e}")
+        logger.debug(traceback.format_exc())
         return {"error": _format_tool_error(e, "Error executing rack location lookup")}
     except BaseException as e:
-        print(f"DEBUG: Error in execute_rack_location_query (base): {str(e)}", file=sys.stderr, flush=True)
+        logger.debug(f"Error in execute_rack_location_query (base): {str(e)}")
         return {"error": _format_tool_error(e, "Error executing rack location lookup")}

@@ -4,9 +4,11 @@ Uses MCP client and tool selection from mcp_client / mcp_client_tool_selection.
 """
 import asyncio
 import json
+import logging
 import re
-import sys
 from typing import Any, Dict
+
+logger = logging.getLogger("netbrain.chat_service")
 
 # Lazy imports to avoid circular deps and heavy Streamlit import at module load
 def _get_mcp_client():
@@ -152,14 +154,14 @@ def _parse_rack_details_query(prompt: str) -> dict[str, Any] | None:
 
             if len(sites_found) >= 2:
                 # Multiple site names detected - return None to let LLM ask for clarification
-                print(f"⚠ Multiple sites detected in '{site_name}': {sites_found} - deferring to LLM", file=sys.stderr, flush=True)
+                logger.debug(f"Multiple sites detected in '{site_name}': {sites_found} - deferring to LLM")
                 return None
 
             # Also check word count as fallback (e.g., "leander round rock" = 3 words is unusual)
             site_words = site_name.split()
             if len(site_words) >= 3 and "dc" not in site_lower:
                 # 3+ words without "DC" suggests multiple sites - let LLM handle it
-                print(f"⚠ Ambiguous site name detected: '{site_name}' (3+ words) - deferring to LLM", file=sys.stderr, flush=True)
+                logger.debug(f"Ambiguous site name detected: '{site_name}' (3+ words) - deferring to LLM")
                 return None
 
             return {"rack_name": rack_name, "site_name": site_name}
@@ -289,21 +291,72 @@ def _extract_ip_or_cidr_from_prompt(text: str) -> str | None:
     return m.group(0) if m else None
 
 
+def _is_obviously_in_scope(prompt: str) -> bool:
+    """Fast keyword check: return True if query clearly matches known tool patterns.
+
+    This avoids sending obvious network-infra queries through the LLM scope check
+    which can misclassify valid queries (e.g. "object group" vs "address group").
+    """
+    lower = (prompt or "").lower()
+    # Has an IP address or CIDR?
+    has_ip = bool(_IP_OR_CIDR_RE.search(prompt or ""))
+
+    # Panorama / firewall keywords
+    panorama_kw = any(k in lower for k in (
+        "object group", "address group", "panorama", "palo alto",
+        "firewall rule", "security rule", "security policy",
+        "device group", "address object", "ip group",
+    ))
+    # NetBrain / path keywords
+    netbrain_kw = any(k in lower for k in (
+        "network path", "path from", "path to", "traffic allowed",
+        "path allowed", "can reach", "connectivity", "netbrain",
+    ))
+    # NetBox / rack keywords
+    netbox_kw = any(k in lower for k in (
+        "rack", "netbox", "racked", "device location",
+    ))
+    # Splunk keywords
+    splunk_kw = any(k in lower for k in (
+        "splunk", "deny", "denied", "denies", "firewall log",
+        "recent deny", "deny event",
+    ))
+
+    # IP + any domain keyword → clearly in scope
+    if has_ip and (panorama_kw or netbrain_kw or splunk_kw):
+        return True
+    # Domain keyword alone (no IP needed for racks, path queries, etc.)
+    if panorama_kw or netbrain_kw or netbox_kw or splunk_kw:
+        return True
+    # Two IPs likely means path/traffic query
+    ips = _IP_OR_CIDR_RE.findall(prompt or "")
+    if len(ips) >= 2:
+        return True
+    return False
+
+
 async def is_query_in_scope(prompt: str) -> Dict[str, Any]:
     """
     Use LLM to quickly check if the query is related to network infrastructure tools.
     Returns: {"in_scope": True/False, "reason": str}
     """
+    # Fast path: skip LLM if query obviously matches known tool patterns
+    if _is_obviously_in_scope(prompt):
+        logger.debug("Scope check: keyword match → IN_SCOPE (skipped LLM)")
+        return {"in_scope": True, "reason": "Keyword match - clearly in scope"}
+
     try:
         from langchain_ollama import ChatOllama
 
         scope_check_prompt = f"""You are a scope classifier for a network infrastructure assistant.
 
 The assistant can ONLY handle queries related to:
-• Network device locations and rack details (NetBox)
-• Network path queries and traffic allowed checks (NetBrain)
-• Panorama address group lookups (Palo Alto)
-• Splunk deny event searches (firewall logs)
+• Network device locations and rack details (NetBox) — e.g. "where is device X racked", "rack A4", "list racks"
+• Network path queries and traffic allowed checks (NetBrain) — e.g. "path from A to B", "is traffic allowed"
+• Panorama / Palo Alto firewall lookups — e.g. "what object group is IP in", "address group members", "IP object group", "which group contains IP"
+• Splunk deny event searches (firewall logs) — e.g. "recent denies for IP", "firewall deny events"
+
+Any query mentioning IP addresses, firewalls, network paths, racks, Panorama, Splunk, object groups, address groups, or network devices is IN SCOPE.
 
 Determine if the following query is IN SCOPE or OUT OF SCOPE.
 
@@ -332,10 +385,10 @@ RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
             return {"in_scope": True, "reason": "Query is related to network infrastructure"}
 
     except asyncio.TimeoutError:
-        print(f"⚠ Scope check timed out, assuming in-scope", file=sys.stderr, flush=True)
+        logger.warning("Scope check timed out, assuming in-scope")
         return {"in_scope": True, "reason": "Timeout - assuming in scope"}
     except Exception as e:
-        print(f"⚠ Scope check failed ({e}), assuming in-scope", file=sys.stderr, flush=True)
+        logger.warning(f"Scope check failed ({e}), assuming in-scope")
         return {"in_scope": True, "reason": f"Error during scope check: {e}"}
 
 
@@ -420,7 +473,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                 name = _tool_name(t)
                 if name in ("check_path_allowed", "query_panorama_ip_object_group", "get_device_rack_location"):
                     desc = _tool_description_concise(t)
-                    print(f"DEBUG concise description for {name}: {desc}", file=sys.stderr, flush=True)
+                    logger.debug(f"Concise description for {name}: {desc}")
 
             # Format as a clean numbered list (easier for LLM to parse)
             tools_description = "\n".join([
@@ -432,7 +485,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
             # If user is answering "which site?" for a rack query, handle it immediately
             rack_follow_up_params = _parse_rack_follow_up_site(conversation_history, prompt)
             if rack_follow_up_params and "get_rack_details" in tool_names_list:
-                print(f"✓ RACK FOLLOW-UP DETECTED: get_rack_details with {rack_follow_up_params}", file=sys.stderr, flush=True)
+                logger.debug(f"RACK FOLLOW-UP DETECTED: get_rack_details with {rack_follow_up_params}")
                 return {
                     "success": True,
                     "tool_name": "get_rack_details",
@@ -445,7 +498,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
             # Use LLM to classify scope - scalable approach that catches any out-of-scope query
             scope_result = await is_query_in_scope(prompt)
             if not scope_result.get("in_scope"):
-                print(f"🚫 OUT-OF-SCOPE DETECTED: {scope_result.get('reason')}", file=sys.stderr, flush=True)
+                logger.debug(f"OUT-OF-SCOPE DETECTED: {scope_result.get('reason')}")
                 return {
                     "success": False,
                     "needs_clarification": True,
@@ -496,7 +549,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 # If regex override matched, skip LLM and return immediately
                 if tool_name_override:
-                    print(f"⚡ REGEX FAST-PATH: {tool_name_override} with params {tool_params_override}", file=sys.stderr, flush=True)
+                    logger.debug(f"REGEX FAST-PATH: {tool_name_override} with params {tool_params_override}")
                     return {
                         "success": True,
                         "tool_name": tool_name_override,
@@ -519,12 +572,12 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
             if tool_name is None and not needs_clarification:
                 # LLM failed to select a tool - try regex patterns as safety net
-                print(f"⚠ LLM returned tool_name=None, trying regex safety net...", file=sys.stderr, flush=True)
+                logger.warning("LLM returned tool_name=None, trying regex safety net...")
 
                 # Try all regex patterns as fallback
                 device_rack_params = _parse_device_rack_query(prompt)
                 if device_rack_params and "get_device_rack_location" in tool_names_list:
-                    print(f"✓ REGEX SAFETY NET: get_device_rack_location", file=sys.stderr, flush=True)
+                    logger.debug("REGEX SAFETY NET: get_device_rack_location")
                     return {
                         "success": True,
                         "tool_name": "get_device_rack_location",
@@ -535,7 +588,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 path_allowed_params = _parse_path_allowed_query(prompt)
                 if path_allowed_params and "check_path_allowed" in tool_names_list:
-                    print(f"✓ REGEX SAFETY NET: check_path_allowed", file=sys.stderr, flush=True)
+                    logger.debug("REGEX SAFETY NET: check_path_allowed")
                     return {
                         "success": True,
                         "tool_name": "check_path_allowed",
@@ -546,7 +599,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 rack_details_params = _parse_rack_follow_up_site(conversation_history, prompt) or _parse_rack_details_query(prompt)
                 if rack_details_params and "get_rack_details" in tool_names_list:
-                    print(f"✓ REGEX SAFETY NET: get_rack_details", file=sys.stderr, flush=True)
+                    logger.debug("REGEX SAFETY NET: get_rack_details")
                     return {
                         "success": True,
                         "tool_name": "get_rack_details",
@@ -557,7 +610,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 list_racks_params = _parse_list_racks_query(prompt)
                 if list_racks_params and "list_racks" in tool_names_list:
-                    print(f"✓ REGEX SAFETY NET: list_racks", file=sys.stderr, flush=True)
+                    logger.debug("REGEX SAFETY NET: list_racks")
                     return {
                         "success": True,
                         "tool_name": "list_racks",
@@ -567,7 +620,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                     }
 
                 # No regex match either
-                print(f"❌ REGEX SAFETY NET: No pattern matched", file=sys.stderr, flush=True)
+                logger.debug("REGEX SAFETY NET: No pattern matched")
 
                 clarification_msg = tool_selection_result.get("clarification_question") or (
                     "I'm sorry, but this system is not equipped to process that type of query."
@@ -582,12 +635,12 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                 }
             if needs_clarification:
                 # LLM wants clarification - but check regex fallback first in case LLM is wrong
-                print(f"⚠ LLM asked for clarification, checking regex fallback...", file=sys.stderr, flush=True)
+                logger.debug("LLM asked for clarification, checking regex fallback...")
 
                 # Try all regex patterns as fallback
                 device_rack_params = _parse_device_rack_query(prompt)
                 if device_rack_params and "get_device_rack_location" in tool_names_list:
-                    print(f"✓ REGEX FALLBACK: Overriding LLM → get_device_rack_location", file=sys.stderr, flush=True)
+                    logger.debug("REGEX FALLBACK: Overriding LLM -> get_device_rack_location")
                     return {
                         "success": True,
                         "tool_name": "get_device_rack_location",
@@ -598,7 +651,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 path_allowed_params = _parse_path_allowed_query(prompt)
                 if path_allowed_params and "check_path_allowed" in tool_names_list:
-                    print(f"✓ REGEX FALLBACK: Overriding LLM → check_path_allowed", file=sys.stderr, flush=True)
+                    logger.debug("REGEX FALLBACK: Overriding LLM -> check_path_allowed")
                     return {
                         "success": True,
                         "tool_name": "check_path_allowed",
@@ -609,7 +662,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 list_racks_params = _parse_list_racks_query(prompt)
                 if list_racks_params and "list_racks" in tool_names_list:
-                    print(f"✓ REGEX FALLBACK: Overriding LLM → list_racks", file=sys.stderr, flush=True)
+                    logger.debug("REGEX FALLBACK: Overriding LLM -> list_racks")
                     return {
                         "success": True,
                         "tool_name": "list_racks",
@@ -620,7 +673,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
 
                 rack_details_params = _parse_rack_follow_up_site(conversation_history, prompt) or _parse_rack_details_query(prompt)
                 if rack_details_params and "get_rack_details" in tool_names_list:
-                    print(f"✓ REGEX FALLBACK: Overriding LLM → get_rack_details", file=sys.stderr, flush=True)
+                    logger.debug("REGEX FALLBACK: Overriding LLM -> get_rack_details")
                     return {
                         "success": True,
                         "tool_name": "get_rack_details",
@@ -630,7 +683,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                     }
 
                 # No regex match - use LLM's clarification
-                print(f"❌ REGEX FALLBACK: No pattern matched, using LLM clarification", file=sys.stderr, flush=True)
+                logger.debug("REGEX FALLBACK: No pattern matched, using LLM clarification")
                 return {
                     "success": False,
                     "needs_clarification": True,
@@ -643,9 +696,9 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                 tool_params = {k: v for k, v in tool_params.items() if k != "intent"}
 
             # Log successful LLM selection
-            print(f"✓ LLM successfully selected tool: {tool_name} with params {tool_params}", file=sys.stderr, flush=True)
+            logger.debug(f"LLM successfully selected tool: {tool_name} with params {tool_params}")
             if "expected_rack" in tool_params:
-                print(f"  → expected_rack extracted: {repr(tool_params.get('expected_rack'))}", file=sys.stderr, flush=True)
+                logger.debug(f"expected_rack extracted: {repr(tool_params.get('expected_rack'))}")
 
             return {
                 "success": True,
@@ -875,7 +928,7 @@ def _apply_tool_param_fixes(
         if limit_match:
             try:
                 tool_params["limit"] = int(limit_match.group(1))
-                print(f"  → limit extracted from prompt via regex: {tool_params['limit']}", file=sys.stderr, flush=True)
+                logger.debug(f"limit extracted from prompt via regex: {tool_params['limit']}")
             except ValueError:
                 pass
 
