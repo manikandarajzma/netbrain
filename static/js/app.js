@@ -1119,6 +1119,7 @@ function createStatusMessage(text) {
     var el = document.createElement('div');
     el.className = 'msg status-msg';
     var span = document.createElement('span');
+    span.className = 'status-text';
     span.textContent = text;
     el.appendChild(span);
     var dots = document.createElement('span');
@@ -1126,6 +1127,18 @@ function createStatusMessage(text) {
     dots.innerHTML = '<span></span><span></span><span></span>';
     el.appendChild(dots);
     return el;
+}
+
+function updateStatusMessage(el, text) {
+    if (!el) return;
+    var span = el.querySelector('.status-text');
+    if (span) {
+        span.classList.add('status-fade');
+        setTimeout(function() {
+            span.textContent = text;
+            span.classList.remove('status-fade');
+        }, 200);
+    }
 }
 
 // --- File attachment flow ---
@@ -1247,20 +1260,55 @@ async function send(e) {
     showStopBtn();
     appendMessage('user', text);
     conversationHistory.push({ role: 'user', content: text });
-    var statusEl = createStatusMessage('Processing');
+    var statusEl = createStatusMessage('Identifying query');
     messagesEl.appendChild(statusEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
     activeAbort = new AbortController();
+    var historySlice = conversationHistory.slice(-20);
+    var requestBody = JSON.stringify({ message: text, conversation_history: historySlice });
 
     try {
+        // Phase 1: Discover which tool will be used
+        var toolDisplayName = null;
+        try {
+            var discoverRes = await fetch('/api/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: requestBody,
+                signal: activeAbort.signal,
+            });
+            if (discoverRes.ok) {
+                var discoverData = await discoverRes.json().catch(function() { return {}; });
+                toolDisplayName = discoverData.tool_display_name;
+                if (toolDisplayName) {
+                    updateStatusMessage(statusEl, 'Querying ' + toolDisplayName);
+                } else {
+                    updateStatusMessage(statusEl, 'Processing');
+                }
+            }
+        } catch (discoverErr) {
+            if (discoverErr && discoverErr.name === 'AbortError') throw discoverErr;
+            // Discovery failed — continue with generic status
+            updateStatusMessage(statusEl, 'Processing');
+        }
+
+        // Phase 2: Execute the full chat request
         var res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, conversation_history: conversationHistory.slice(-20) }),
+            body: requestBody,
             signal: activeAbort.signal,
         });
+
+        if (toolDisplayName) {
+            updateStatusMessage(statusEl, 'Processing results from ' + toolDisplayName);
+        }
+
+        // Small delay so the user sees the final status before it disappears
+        await new Promise(function(r) { setTimeout(r, 400); });
         statusEl.remove();
+
         var data = await res.json().catch(function() { return {}; });
         var assistantContent = !res.ok ? (data.detail || data.message || 'Request failed') : (data.content ?? data.message ?? 'No response');
         if (assistantContent === undefined || assistantContent === null) assistantContent = 'No response received.';

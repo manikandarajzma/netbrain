@@ -119,6 +119,19 @@ header > span {
     align-items: center;
     gap: 0.375rem;
 }
+.user-info {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 0.25rem 0.625rem;
+    border-right: 1px solid var(--border);
+    margin-right: 0.25rem;
+}
+.user-role {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    font-weight: 400;
+}
 
 header a {
     color: var(--text-muted);
@@ -1070,6 +1083,12 @@ header a:hover {
     gap: 0.5rem;
     font-size: 0.875rem;
     padding-left: 0.25rem;
+}
+.status-text {
+    transition: opacity 0.2s ease;
+}
+.status-text.status-fade {
+    opacity: 0;
 }
 
 .typing-dots {

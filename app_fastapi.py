@@ -1,6 +1,6 @@
 """
-FastAPI application with local authentication.
-Replace Streamlit as the main web entry point; SAML can be added later.
+FastAPI application with local + Microsoft OIDC authentication.
+Set AUTH_MODE=oidc in .env to use Microsoft Entra ID login.
 """
 from pathlib import Path
 
@@ -17,9 +17,18 @@ except ImportError:
     from starlette.templating import Jinja2Templates
 
 from netbrain.auth import (
+    AUTH_MODE,
+    AZURE_AUTHORITY,
+    AZURE_CLIENT_ID,
+    AZURE_CLIENT_SECRET,
+    AZURE_TENANT_ID,
+    OIDC_SESSION_TTL,
     create_session,
     destroy_session,
+    extract_role_from_token,
+    extract_username_from_token,
     get_allowed_categories,
+    get_role_for_session,
     get_user_role,
     get_username_for_session,
     verify_local_user,
@@ -46,6 +55,39 @@ app.add_middleware(
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# ---------------------------------------------------------------------------
+# OIDC setup (authlib)
+# ---------------------------------------------------------------------------
+oauth = None
+if AUTH_MODE == "oidc" and AZURE_CLIENT_ID and AZURE_TENANT_ID:
+    from authlib.integrations.starlette_client import OAuth
+    oauth = OAuth()
+    oauth.register(
+        name="microsoft",
+        client_id=AZURE_CLIENT_ID,
+        client_secret=AZURE_CLIENT_SECRET,
+        server_metadata_url=(
+            f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0"
+            "/.well-known/openid-configuration"
+        ),
+        client_kwargs={
+            "scope": "openid profile email offline_access",
+        },
+    )
+
+# ---------------------------------------------------------------------------
+# Middleware: add session secret for authlib state parameter
+# ---------------------------------------------------------------------------
+if AUTH_MODE == "oidc":
+    from starlette.middleware.sessions import SessionMiddleware
+    import secrets as _secrets
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_secrets.token_urlsafe(32),
+        session_cookie="netbrain_oauth_state",
+        max_age=600,  # 10 min for OAuth state
+    )
+
 
 @app.exception_handler(Exception)
 async def catch_all(request: Request, exc: Exception):
@@ -61,7 +103,8 @@ async def catch_all(request: Request, exc: Exception):
 
 # Session cookie name and settings
 SESSION_COOKIE = "netbrain_session"
-SESSION_MAX_AGE = 86400 * 7  # 7 days
+SESSION_MAX_AGE_LOCAL = 86400 * 7  # 7 days for local auth
+SESSION_MAX_AGE_OIDC = OIDC_SESSION_TTL  # 30 min for OIDC
 
 
 def get_session_id(request: Request) -> str | None:
@@ -74,10 +117,10 @@ def get_current_username(request: Request) -> str | None:
 
 
 def require_auth(request: Request) -> str:
-    """Dependency: returns username if authenticated. For redirect, return from route instead of raising."""
+    """Dependency: returns username if authenticated."""
     username = get_current_username(request)
     if not username:
-        raise RedirectResponse(url="/login", status_code=302)  # FastAPI handles this
+        raise RedirectResponse(url="/login", status_code=302)
     return username
 
 
@@ -89,10 +132,16 @@ async def login_page(request: Request):
     """Serve login page."""
     if get_current_username(request):
         return RedirectResponse(url="/", status_code=302)
-    error_invalid = request.query_params.get("error") == "invalid"
+    error_param = request.query_params.get("error", "")
     return templates.TemplateResponse(
         "login.html",
-        {"request": request, "error_invalid": error_invalid},
+        {
+            "request": request,
+            "error_invalid": error_param == "invalid",
+            "error_oidc": error_param == "oidc",
+            "error_norole": error_param == "norole",
+            "auth_mode": AUTH_MODE,
+        },
     )
 
 
@@ -102,18 +151,89 @@ async def login_post(
     username: str = Form(...),
     password: str = Form(...),
 ):
-    """Validate credentials and set session cookie."""
+    """Validate local credentials and set session cookie."""
     if not verify_local_user(username, password):
         return RedirectResponse(
             url="/login?error=invalid",
             status_code=302,
         )
-    session_id = create_session(username)
+    role = get_user_role(username)
+    session_id = create_session(username, role=role, auth_mode="local")
     r = RedirectResponse(url="/", status_code=302)
     r.set_cookie(
         key=SESSION_COOKIE,
         value=session_id,
-        max_age=SESSION_MAX_AGE,
+        max_age=SESSION_MAX_AGE_LOCAL,
+        httponly=True,
+        samesite="lax",
+    )
+    return r
+
+
+# --- OIDC routes ---
+
+@app.get("/auth/microsoft")
+async def auth_microsoft(request: Request):
+    """Redirect to Microsoft login."""
+    if oauth is None:
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
+    # Build callback URL, ensuring we use "localhost" (must match Azure portal)
+    redirect_uri = str(request.url_for("auth_callback")).replace("://127.0.0.1", "://localhost")
+    return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    """Handle Microsoft OIDC callback."""
+    if oauth is None:
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
+
+    try:
+        token = await oauth.microsoft.authorize_access_token(request)
+    except Exception as exc:
+        print(f"OIDC token error: {exc}", flush=True)
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
+
+    # Extract user info from the ID token claims
+    userinfo = token.get("userinfo") or {}
+    if not userinfo:
+        # Try to parse the id_token manually
+        id_token = token.get("id_token")
+        if id_token:
+            try:
+                import json, base64
+                # Decode the payload (second segment) of the JWT
+                payload = id_token.split(".")[1]
+                # Add padding
+                payload += "=" * (4 - len(payload) % 4)
+                userinfo = json.loads(base64.urlsafe_b64decode(payload))
+            except Exception:
+                pass
+
+    if not userinfo:
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
+
+    username = extract_username_from_token(userinfo)
+    role = extract_role_from_token(userinfo)
+    if role is None:
+        return RedirectResponse(url="/login?error=norole", status_code=302)
+
+    session_id = create_session(
+        username,
+        role=role,
+        auth_mode="oidc",
+        tokens={
+            "access_token": token.get("access_token"),
+            "refresh_token": token.get("refresh_token"),
+            "id_token": token.get("id_token"),
+        },
+    )
+
+    r = RedirectResponse(url="/", status_code=302)
+    r.set_cookie(
+        key=SESSION_COOKIE,
+        value=session_id,
+        max_age=SESSION_MAX_AGE_OIDC,
         httponly=True,
         samesite="lax",
     )
@@ -122,7 +242,7 @@ async def login_post(
 
 @app.get("/logout")
 async def logout(request: Request, response: Response):
-    """Clear session and redirect to login."""
+    """Clear session and redirect to login (or Microsoft logout)."""
     sid = get_session_id(request)
     destroy_session(sid)
     r = RedirectResponse(url="/login", status_code=302)
@@ -136,7 +256,8 @@ async def index(request: Request):
     username = get_current_username(request)
     if not username:
         return RedirectResponse(url="/login", status_code=302)
-    role = get_user_role(username)
+    sid = get_session_id(request)
+    role = get_role_for_session(sid)
     categories = get_allowed_categories(role)
     return templates.TemplateResponse("index.html", {
         "request": request,
@@ -170,6 +291,7 @@ async def health_check():
         mcp_status = "unreachable"
     return {
         "status": "ok",
+        "auth_mode": AUTH_MODE,
         "mcp_server": mcp_status,
         "mcp_tools_registered": mcp_tools,
     }
@@ -178,7 +300,7 @@ async def health_check():
 # --- Chat API ---
 class ChatRequest(BaseModel):
     message: str
-    conversation_history: list[dict[str, Any]] = []  # content may be str or dict (e.g. requires_site)
+    conversation_history: list[dict[str, Any]] = []
 
 
 def _strip_l2_noise(d: dict) -> dict:
@@ -189,6 +311,23 @@ def _strip_l2_noise(d: dict) -> dict:
         if isinstance(val, str) and any(p in val.lower() for p in noise):
             d[key] = ""
     return d
+
+
+@app.post("/api/discover")
+async def api_discover(request: Request, body: ChatRequest):
+    """Lightweight tool discovery — returns tool name without executing."""
+    username = get_current_username(request)
+    if not username:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    from netbrain.chat_service import process_message
+    result = await process_message(
+        body.message.strip(),
+        body.conversation_history or [],
+        discover_only=True,
+        username=username,
+    )
+    return result
 
 
 @app.post("/api/chat")
@@ -238,12 +377,10 @@ def _match_columns(columns: list[str]) -> dict[str, str]:
 def _detect_batch_tool(message: str) -> str:
     """Determine which MCP tool to run based on the user's natural language message."""
     msg = message.lower()
-    # Path query keywords → query_network_path (hop-by-hop trace)
     path_kw = ("network path", "trace", "hop", "route", "show path", "find path",
                "path between", "traceroute", "path map", "path query", "path from")
     if any(kw in msg for kw in path_kw):
         return "query_network_path"
-    # Default → check_path_allowed (firewall allow/deny check)
     return "check_path_allowed"
 
 
@@ -331,7 +468,6 @@ async def batch_upload(
                         "policy_details": content.get("policy_details", ""),
                     })
                 else:
-                    # query_network_path – extract hop summary
                     hops = content.get("path_hops", [])
                     hop_names = []
                     if hops:
@@ -342,8 +478,6 @@ async def batch_upload(
                             td = h.get("to_device")
                             if td and td not in hop_names:
                                 hop_names.append(td)
-                    # If hops were found, path was resolved → "success"
-                    # NetBrain may report "Failed" for L2/policy reasons even when hops exist
                     raw_status = (content.get("path_status") or "unknown").lower()
                     effective_status = "success" if hops else raw_status
                     row_result = {
@@ -354,7 +488,6 @@ async def batch_upload(
                         "status": effective_status,
                         "reason": content.get("path_status_description", ""),
                         "path_summary": " → ".join(hop_names) if hop_names else "",
-                        # Include full path data for graphic rendering
                         "path_hops": hops,
                         "path_status": raw_status,
                         "path_failure_reason": content.get("path_failure_reason", ""),
@@ -386,7 +519,6 @@ if ICONS_DIR.exists():
 
 def main():
     import uvicorn
-    # reload=True: watch source files and restart on change (development)
     uvicorn.run(
         "netbrain.app_fastapi:app",
         host="0.0.0.0",
