@@ -19,6 +19,8 @@ except ImportError:
 from netbrain.auth import (
     create_session,
     destroy_session,
+    get_allowed_categories,
+    get_user_role,
     get_username_for_session,
     verify_local_user,
 )
@@ -131,9 +133,17 @@ async def logout(request: Request, response: Response):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve main chat app (protected)."""
-    if not get_current_username(request):
+    username = get_current_username(request)
+    if not username:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request})
+    role = get_user_role(username)
+    categories = get_allowed_categories(role)
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "username": username,
+        "role": role,
+        "allowed_categories": categories,
+    })
 
 
 # --- Health check ---
@@ -184,7 +194,8 @@ def _strip_l2_noise(d: dict) -> dict:
 @app.post("/api/chat")
 async def api_chat(request: Request, body: ChatRequest):
     """Process a chat message and return assistant response."""
-    if not get_current_username(request):
+    username = get_current_username(request)
+    if not username:
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
     from netbrain.chat_service import process_message
@@ -192,6 +203,7 @@ async def api_chat(request: Request, body: ChatRequest):
         body.message.strip(),
         body.conversation_history or [],
         default_live=True,
+        username=username,
     )
     # Strip noisy L2 messages before sending to frontend
     if isinstance(result, dict):
@@ -244,7 +256,8 @@ async def batch_upload(
     """Parse an uploaded spreadsheet and run the appropriate tool for each row."""
     from fastapi.responses import JSONResponse
 
-    if not get_current_username(request):
+    username = get_current_username(request)
+    if not username:
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
     filename = file.filename or ""
@@ -301,6 +314,7 @@ async def batch_upload(
                 [],
                 tool_name=tool_name,
                 parameters={"source": src, "destination": dst, "protocol": proto, "port": port_str},
+                username=username,
             )
             content = result.get("content", {}) if isinstance(result, dict) else {}
             if isinstance(content, dict):

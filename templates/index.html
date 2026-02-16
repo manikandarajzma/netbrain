@@ -27,7 +27,8 @@
         <aside id="sidebar">
             <div id="example-queries">
                 <h2>📋 Example Queries</h2>
-                <div class="example-category">
+                {% if allowed_categories is none or "netbrain" in allowed_categories %}
+                <div class="example-category" data-category="netbrain">
                     <div class="example-category-label">🌐 NetBrain</div>
                     <div class="example-chips">
                         <button type="button" class="example-chip" data-query="Find path from 10.0.0.1 to 10.0.1.1">Find path from 10.0.0.1 to 10.0.1.1</button>
@@ -37,7 +38,9 @@
                         <button type="button" class="example-chip" data-query="What is the path between 11.0.0.1 and 11.0.0.250?">What is the path between 11.0.0.1 and 11.0.0.250?</button>
                     </div>
                 </div>
-                <div class="example-category">
+                {% endif %}
+                {% if allowed_categories is none or "netbox" in allowed_categories %}
+                <div class="example-category" data-category="netbox">
                     <div class="example-category-label">🔧 NetBox</div>
                     <div class="example-chips">
                         <button type="button" class="example-chip" data-query="Where is leander-dc-border-leaf1 racked?">Where is leander-dc-border-leaf1 racked?</button>
@@ -45,19 +48,24 @@
                         <button type="button" class="example-chip" data-query="List racks at Leander">List racks at Leander</button>
                     </div>
                 </div>
-                <div class="example-category">
+                {% endif %}
+                {% if allowed_categories is none or "panorama" in allowed_categories %}
+                <div class="example-category" data-category="panorama">
                     <div class="example-category-label">🔥 Panorama</div>
                     <div class="example-chips">
                         <button type="button" class="example-chip" data-query="What address group is 11.0.0.1 part of?">What address group is 11.0.0.1 part of?</button>
                         <button type="button" class="example-chip" data-query="What IPs are in address group leander_web?">What IPs are in address group leander_web?</button>
                     </div>
                 </div>
-                <div class="example-category">
+                {% endif %}
+                {% if allowed_categories is none or "splunk" in allowed_categories %}
+                <div class="example-category" data-category="splunk">
                     <div class="example-category-label">📊 Splunk</div>
                     <div class="example-chips">
                         <button type="button" class="example-chip" data-query="Recent deny events for 10.0.0.250">Recent deny events for 10.0.0.250</button>
                     </div>
                 </div>
+                {% endif %}
             </div>
         </aside>
         <div id="chat-main">

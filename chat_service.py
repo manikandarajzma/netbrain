@@ -1072,6 +1072,19 @@ def _normalize_result(
     return result
 
 
+def _check_tool_access(username: str | None, tool_name: str) -> str | None:
+    """Return an error message if the user's role forbids *tool_name*, else None."""
+    if username is None:
+        return None
+    from netbrain.auth import get_user_role, get_allowed_tools
+    role = get_user_role(username)
+    allowed = get_allowed_tools(role)
+    if allowed is not None and tool_name not in allowed:
+        display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+        return f"Your role ({role}) does not have access to {display} queries."
+    return None
+
+
 async def process_message(
     prompt: str,
     conversation_history: list[dict[str, str]],
@@ -1081,6 +1094,7 @@ async def process_message(
     tool_name: str | None = None,
     parameters: dict[str, Any] | None = None,
     max_iterations: int | None = None,
+    username: str | None = None,
 ) -> dict[str, Any]:
     """
     Process one user message: discover tool, optionally execute, return assistant response.
@@ -1095,6 +1109,10 @@ async def process_message(
 
     # Pre-filled tool: single execution, then synthesize on error
     if tool_name and parameters is not None:
+        # RBAC check
+        access_err = _check_tool_access(username, tool_name)
+        if access_err:
+            return {"role": "assistant", "content": access_err}
         selection = {"success": True, "tool_name": tool_name, "parameters": parameters}
         tool_params = dict(parameters)
         _apply_tool_param_fixes(tool_name, tool_params, selection, prompt)
@@ -1151,6 +1169,10 @@ async def process_message(
             continue
 
         tool_name = selection.get("tool_name")
+        # RBAC check
+        access_err = _check_tool_access(username, tool_name)
+        if access_err:
+            return {"role": "assistant", "content": access_err}
         tool_params = dict(selection.get("parameters") or {})
         _apply_tool_param_fixes(tool_name, tool_params, selection, prompt)
         result = await execute_tool(tool_name, tool_params, default_live=default_live)
