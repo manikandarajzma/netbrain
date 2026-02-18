@@ -1,0 +1,64 @@
+.tableWithControls { overflow-x: auto; margin: 0.75rem 0; }
+.tableToolbar { margin-bottom: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.filterInput {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  min-width: 160px;
+  font-family: inherit;
+  font-size: 0.8125rem;
+}
+.filterInput:focus { outline: none; border-color: var(--border-strong); box-shadow: 0 0 0 2px var(--focus-ring); }
+.exportCsv {
+  padding: 0.375rem 0.75rem;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.exportCsv:hover { background: var(--bg-active); }
+.table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-body);
+  box-shadow: var(--shadow-sm);
+}
+.table th, .table td { border-bottom: 1px solid var(--border); padding: 0.625rem 0.875rem; text-align: left; white-space: nowrap; }
+.table th {
+  background: var(--bg-card);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.table tbody tr:hover { background: var(--bg-hover); }
+.table tbody tr:last-child td { border-bottom: none; }
+.table td { color: var(--text-secondary); }
+.tablePagination { margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted); }
+.tablePagination button {
+  padding: 0.25rem 0.625rem;
+  margin-left: 0.375rem;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.75rem;
+  transition: background 0.15s;
+}
+.tablePagination button:hover { background: var(--bg-active); }
+.tablePagination button:disabled { opacity: 0.4; cursor: default; }

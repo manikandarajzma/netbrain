@@ -1,0 +1,56 @@
+.fwSection {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: rgba(30, 30, 46, 0.4);
+  border-radius: 8px;
+  border: 1px solid rgba(137, 180, 250, 0.15);
+  overflow-x: auto;
+}
+.fwToolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.fwTitle { margin: 0; color: #cba6f7; font-size: 1rem; font-weight: 600; }
+.fwExport {
+  padding: 0.4rem 0.875rem;
+  background: rgba(137, 180, 250, 0.15);
+  color: #89b4fa;
+  border: 1px solid rgba(137, 180, 250, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.fwExport:hover { background: rgba(137, 180, 250, 0.25); }
+.fwTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.9rem;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(30, 30, 46, 0.5);
+}
+.fwTable th {
+  text-align: left;
+  padding: 0.875rem 1rem;
+  border-bottom: 2px solid rgba(137, 180, 250, 0.25);
+  background: rgba(137, 180, 250, 0.12);
+  color: #89b4fa;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+}
+.fwTable td {
+  padding: 0.875rem 1rem;
+  color: #cdd6f4;
+  font-size: 0.9rem;
+}
+.fwTable tbody tr { border-bottom: 1px solid rgba(69, 71, 90, 0.3); transition: all 0.2s ease; }
+.fwTable tbody tr.even { background: rgba(49, 50, 68, 0.2); }
+.fwTable tbody tr:hover { background: rgba(137, 180, 250, 0.15); }
+.fwTable tbody tr:last-child { border-bottom: none; }

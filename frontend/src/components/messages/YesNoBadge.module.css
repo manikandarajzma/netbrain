@@ -1,0 +1,9 @@
+.yesNoAnswer {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(137, 180, 250, 0.1) 0%, rgba(203, 166, 247, 0.1) 100%);
+  border: 1px solid rgba(137, 180, 250, 0.3);
+}

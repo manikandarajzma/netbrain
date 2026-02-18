@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ───────── Theme variables ───────── */
+
+:root {
+    --bg-body: #1a1a1e;
+    --bg-body-subtle: linear-gradient(180deg, #1e1e24 0%, #1a1a1e 100%);
+    --bg-sidebar: #141418;
+    --bg-surface: #25252b;
+    --bg-card: #222228;
+    --bg-input: #26262c;
+    --bg-hover: #2c2c34;
+    --bg-active: #353540;
+    --border: #2e2e36;
+    --border-strong: #3e3e48;
+    --text-primary: #f0f0f4;
+    --text-secondary: #c8c8d4;
+    --text-muted: #9090a0;
+    --text-dim: #606074;
+    --accent-blue: #7ab7ff;
+    --accent-blue-focus: #5ba3f5;
+    --accent-green: #6bd16b;
+    --accent-green-bg: #10a37f;
+    --accent-green-hover: #0d8c6c;
+    --accent-red: #f07178;
+    --accent-yellow: #ffcb6b;
+    --accent-purple: #c792ea;
+    --accent-cyan: #89ddff;
+    --focus-ring: rgba(122, 183, 255, 0.2);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+    --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4);
+    --scrollbar-thumb: #404050;
+    --scrollbar-hover: #505064;
+    --user-msg-bg: #2a2a32;
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 18px;
+    --radius-xl: 22px;
+    color-scheme: dark;
+}
+
+[data-theme="light"] {
+    --bg-body: #fafafa;
+    --bg-body-subtle: linear-gradient(180deg, #ffffff 0%, #f5f5f7 100%);
+    --bg-sidebar: #f0f0f4;
+    --bg-surface: #efefef;
+    --bg-card: #f0f0f0;
+    --bg-input: #f0f0f0;
+    --bg-hover: #e8e8e8;
+    --bg-active: #dedede;
+    --border: #d9d9d9;
+    --border-strong: #c0c0c0;
+    --text-primary: #0d0d0d;
+    --text-secondary: #2d2d2d;
+    --text-muted: #4a4a4a;
+    --text-dim: #707070;
+    --accent-blue: #2563eb;
+    --accent-blue-focus: #1d4ed8;
+    --accent-green: #16a34a;
+    --accent-green-bg: #10a37f;
+    --accent-green-hover: #0d8c6c;
+    --accent-red: #dc2626;
+    --accent-yellow: #ca8a04;
+    --accent-purple: #7c3aed;
+    --focus-ring: rgba(37, 99, 235, 0.15);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+    --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.1);
+    --scrollbar-thumb: #c0c0c0;
+    --scrollbar-hover: #a0a0a0;
+    --user-msg-bg: #f0f0f0;
+    color-scheme: light;
+}

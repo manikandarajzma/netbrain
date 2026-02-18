@@ -24,16 +24,16 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Web Browser                             │
-│                  (React-style UI + WebSocket)                   │
+│              (React 18 SPA + Zustand + Vite)                    │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP/WebSocket
+                             │ HTTP (fetch)
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    FastAPI Web Server                           │
 │                   (app_fastapi.py)                              │
-│  • Authentication (auth.py)                                     │
-│  • Chat API endpoint (/api/chat)                                │
-│  • Static file serving (HTML, CSS, JS)                          │
+│  • Authentication (auth.py, OIDC or local)                      │
+│  • Chat API (/api/chat, /api/discover, /api/me)                 │
+│  • Serves React build (frontend/dist/) in production            │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
@@ -79,10 +79,17 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 ### Key Components
 
 1. **FastAPI Web Server** (`app_fastapi.py`)
-   - Serves the web UI (HTML/JS/CSS)
-   - Handles authentication
-   - Provides `/api/chat` endpoint for user queries
+   - Serves the React build from `frontend/dist/` in production
+   - Handles authentication (local or Microsoft OIDC)
+   - Provides `/api/chat`, `/api/discover`, `/api/me` endpoints
+   - RBAC: role-based access to tool categories
    - Auto-reloads on code changes (development mode)
+
+7. **React Frontend** (`frontend/`)
+   - React 18 SPA with Zustand state management
+   - Vite dev server with API proxying for development
+   - Component-based architecture with CSS Modules
+   - See [frontend/frontend.md](frontend/frontend.md) for full details
 
 2. **Chat Service** (`chat_service.py`)
    - Orchestrates tool discovery and execution
@@ -121,29 +128,46 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 palo-netbrain/
 └── netbrain/                          # Main application directory
     ├── app_fastapi.py                 # FastAPI web server (port 8000)
-    ├── auth.py                        # Local authentication
+    ├── auth.py                        # Authentication (local + OIDC)
     ├── chat_service.py                # Tool orchestration & execution
     ├── mcp_client.py                  # MCP client library
     ├── mcp_client_tool_selection.py   # LLM-based tool selection
     ├── mcp_server.py                  # MCP server (port 8765)
     ├── netbrainauth.py                # NetBrain API credentials
     ├── panoramaauth.py                # Panorama API credentials
-    ├── main.py                        # Legacy CLI entry point
-    ├── pyproject.toml                 # Project dependencies
+    ├── pyproject.toml                 # Python dependencies
     ├── uv.lock                        # Dependency lock file
     ├── README.md                      # This file
     │
-    ├── templates/                     # Jinja2 HTML templates
-    │   ├── index.html                 # Main chat UI
+    ├── frontend/                      # React 18 SPA (Vite + Zustand)
+    │   ├── package.json               # Node dependencies
+    │   ├── vite.config.js             # Vite config + API proxy
+    │   ├── index.html                 # Vite entry
+    │   ├── frontend.md                # Frontend documentation
+    │   ├── dist/                      # Production build (git-ignored)
+    │   └── src/
+    │       ├── main.jsx               # React entry point
+    │       ├── App.jsx                # Root component
+    │       ├── stores/                # Zustand stores (user, chat)
+    │       ├── hooks/                 # Custom hooks (theme, health)
+    │       ├── components/            # React components
+    │       │   ├── layout/            # Header, Sidebar, ChatLayout
+    │       │   ├── chat/              # Input, Messages, Status
+    │       │   ├── messages/          # AssistantMessage, badges
+    │       │   ├── path/              # Path visualization
+    │       │   ├── tables/            # DataTable, BatchResults
+    │       │   └── particles/         # Background particles
+    │       └── utils/                 # API, formatters, classifiers
+    │
+    ├── templates/                     # Jinja2 templates
+    │   ├── index.html                 # Fallback UI (if no React build)
     │   └── login.html                 # Login page
     │
-    ├── static/                        # Static assets
-    │   └── (CSS, JS, images)
+    ├── static/                        # Static assets (login page CSS)
     │
-    ├── icons/                         # Device type icons (SVG)
-    │   ├── firewall.svg
-    │   ├── switch.svg
-    │   ├── router.svg
+    ├── icons/                         # Device type icons (PNG)
+    │   ├── paloalto_firewall.png
+    │   ├── arista_switch.png
     │   └── ...
     │
     └── test_*.py                      # Test scripts
@@ -156,8 +180,9 @@ palo-netbrain/
 | Requirement | Version | Purpose |
 |------------|---------|---------|
 | **Python** | 3.13+ | Runtime environment |
+| **Node.js** | 18+ | Frontend build tooling |
 | **Ollama** | Latest | LLM for tool selection (runs locally) |
-| **uv** or **pip** | Latest | Package management |
+| **uv** or **pip** | Latest | Python package management |
 | **NetBrain** | N/A | Network path calculation API (optional) |
 | **NetBox** | N/A | Device/rack management API (optional) |
 | **Panorama** | N/A | Palo Alto address group API (optional) |
@@ -192,6 +217,16 @@ uv sync
 cd netbrain
 pip install -e .
 ```
+
+### 3. Build the Frontend
+
+```bash
+cd netbrain/frontend
+npm install
+npm run build
+```
+
+This creates `frontend/dist/` which FastAPI serves automatically.
 
 ---
 
@@ -269,7 +304,7 @@ Default credentials: `admin` / `admin`
 
 ## Running the Application
 
-You need **two terminal windows** running simultaneously:
+You need **two terminal windows** running simultaneously (three for frontend development):
 
 ### Terminal 1: Start the MCP Server
 
@@ -307,8 +342,23 @@ INFO: Uvicorn running on http://0.0.0.0:8000
 
 **Features:**
 - Web UI available at **http://localhost:8000**
+- Serves the React build from `frontend/dist/` (run `npm run build` first)
 - **Auto-reload enabled**: changes to Python files are picked up automatically
 - No need to restart when editing `chat_service.py`, `app_fastapi.py`, etc.
+
+### Terminal 3 (Optional): Frontend Development
+
+For frontend hot-reload during development:
+
+```bash
+cd netbrain/frontend
+npm run dev
+```
+
+- Use the app at **http://localhost:5173** (proxies API calls to port 8000)
+- Login at `http://localhost:8000/login` first (session cookie is shared)
+- Changes to `.jsx` and `.module.css` files are reflected instantly
+- See [frontend/frontend.md](frontend/frontend.md) for full frontend documentation
 
 ### Alternative: Custom Host/Port
 
@@ -542,7 +592,8 @@ uv sync  # or: pip install -e .
 
 - **FastAPI auto-reload:** The web client (`app_fastapi.py`) automatically reloads when you edit Python files. No need to restart Terminal 2.
 - **MCP server does NOT auto-reload:** If you change `mcp_server.py`, you must restart Terminal 1.
-- **Frontend changes (HTML/CSS/JS):** Hard refresh your browser to see changes.
+- **Frontend development:** Run `npm run dev` in `frontend/` for hot-reload at `:5173`. For production, run `npm run build` and access via `:8000`.
+- **Frontend architecture:** React 18 + Zustand + CSS Modules. See [frontend/frontend.md](frontend/frontend.md).
 - **Logs:** Check `mcp_server.log` for detailed MCP server logs.
 - **LLM prompts:** Edit `mcp_client_tool_selection.py` to customize tool selection behavior.
 

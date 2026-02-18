@@ -1,0 +1,8 @@
+.appMain { display: flex; flex: 1; min-height: 0; }
+.chatMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-body);
+}

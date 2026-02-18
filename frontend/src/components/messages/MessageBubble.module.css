@@ -1,0 +1,32 @@
+.msg {
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  max-width: 100%;
+  transition: box-shadow 0.2s ease;
+}
+.user {
+  background: var(--user-msg-bg);
+  margin-left: auto;
+  margin-right: 0;
+  max-width: 85%;
+  color: var(--text-primary);
+  border-radius: var(--radius-lg) var(--radius-lg) 6px var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+}
+.user:hover { box-shadow: var(--shadow-md); }
+.assistant {
+  background: var(--bg-card);
+  margin-right: auto;
+  margin-left: 0;
+  color: var(--text-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-blue);
+  box-shadow: var(--shadow-sm);
+}
+.assistant:hover { box-shadow: var(--shadow-md); }

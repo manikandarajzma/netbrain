@@ -1,0 +1,12 @@
+.pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8125rem;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  background: var(--bg-card);
+  padding: 0.875rem;
+  border-radius: 10px;
+  border: none;
+  margin: 0.5rem 0;
+  color: var(--text-primary);
+}

@@ -1,0 +1,117 @@
+.form {
+  padding: 0.75rem 1rem 1.25rem 1rem;
+  background: var(--bg-body);
+  flex-shrink: 0;
+}
+.formInner {
+  max-width: 768px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: var(--bg-input);
+  border-radius: 28px;
+  border: 1px solid var(--border);
+  padding: 0.375rem 0.375rem 0.375rem 1.25rem;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.formInner:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  background: var(--bg-surface);
+}
+.textInput {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  font-family: inherit;
+  outline: none;
+}
+.textInput::placeholder { color: var(--text-dim); }
+.sendBtn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: var(--accent-blue);
+  color: #0d0d12;
+  border: none;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 1.125rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(122, 183, 255, 0.25);
+}
+.sendBtn:hover {
+  background: var(--accent-blue-focus);
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(122, 183, 255, 0.35);
+}
+.sendBtn:active { transform: scale(0.98); }
+.stopBtn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: var(--bg-active);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.stopBtn:hover { background: var(--accent-red); color: #fff; border-color: var(--accent-red); }
+.stopBtn:active { transform: scale(0.95); }
+.uploadBtn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 50%;
+  font-size: 1.125rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.uploadBtn:hover { background: var(--bg-active); color: var(--text-primary); }
+.attachIndicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 768px;
+  margin: 0 auto 0.375rem auto;
+  padding: 0.375rem 0.75rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.75rem;
+  color: var(--accent-blue);
+}
+.attachName { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachRemove {
+  background: none;
+  border: none;
+  color: var(--accent-red);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+.attachRemove:hover { opacity: 0.7; }

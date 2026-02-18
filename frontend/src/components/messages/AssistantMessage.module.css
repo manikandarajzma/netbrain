@@ -1,0 +1,12 @@
+.clarificationPrompt { font-weight: 500; margin-top: 0.5rem; color: #89b4fa; }
+.pathVisual {
+  margin: 1rem 0;
+  padding: 1.5rem;
+  background: var(--bg-card);
+  border-radius: 12px;
+}
+.pathStatus { color: var(--text-primary); font-weight: 500; }
+.pathNote { margin-top: 0.5rem; font-size: 0.9rem; color: #a6adc8; }
+.denyText { margin-top: 0.5rem; color: #f38ba8; font-size: 0.9rem; }
+.policyText { margin-top: 0.25rem; color: #a6adc8; font-size: 0.9rem; }
+.summaryHeading { font-weight: 600; margin: 1.25rem 0 0.5rem 0; color: var(--text-primary); font-size: 0.9375rem; }

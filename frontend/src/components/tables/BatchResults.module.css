@@ -1,0 +1,80 @@
+.batchSummary {
+  margin-bottom: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: 10px;
+  background: var(--bg-card);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.batchStat { display: inline-block; margin-right: 1rem; font-weight: 600; }
+.batchStat.allowed { color: var(--accent-green); }
+.batchStat.denied { color: var(--accent-red); }
+.batchStat.unknown { color: var(--text-muted); }
+.batchStat.error { color: var(--accent-yellow); }
+.batchTotal { color: #a6adc8; }
+.batchTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-body);
+}
+.batchTable th {
+  background: var(--bg-card);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  padding: 0.625rem 0.875rem;
+  text-align: left;
+}
+.batchTable td { padding: 0.5rem 0.875rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.batchTable tbody tr:last-child td { border-bottom: none; }
+.batchTable tbody tr:hover { background: var(--bg-hover); }
+.statusCell { font-weight: 600; text-transform: uppercase; font-size: 0.6875rem; letter-spacing: 0.03em; }
+.statusCell.allowed { color: var(--accent-green); }
+.statusCell.denied { color: var(--accent-red); }
+.statusCell.unknown { color: var(--text-muted); }
+.statusCell.error { color: var(--accent-yellow); }
+.wrapCell { white-space: normal; max-width: 200px; }
+.exportCsv {
+  margin-top: 0.75rem;
+  padding: 0.375rem 0.75rem;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+.exportCsv:hover { background: var(--bg-active); }
+.batchPathSection {
+  margin-top: 1.5rem;
+  padding: 1.25rem;
+  background: rgba(30, 30, 46, 0.5);
+  border-radius: 8px;
+  border: 1px solid rgba(137, 180, 250, 0.15);
+}
+.batchPathHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.batchPathTitle { margin: 0; color: #89b4fa; font-size: 0.95rem; font-weight: 600; }
+.batchStatusBadge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.batchStatusBadge.allowed { background: rgba(166, 227, 161, 0.15); color: #a6e3a1; }
+.batchStatusBadge.denied { background: rgba(243, 139, 168, 0.15); color: #f38ba8; }

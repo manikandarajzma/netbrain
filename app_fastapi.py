@@ -250,12 +250,36 @@ async def logout(request: Request, response: Response):
     return r
 
 
+@app.get("/api/me")
+async def api_me(request: Request):
+    """Return current user context for the Vue SPA."""
+    username = get_current_username(request)
+    if not username:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    sid = get_session_id(request)
+    role = get_role_for_session(sid)
+    categories = get_allowed_categories(role)
+    return {
+        "username": username,
+        "role": role,
+        "allowed_categories": categories,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Serve main chat app (protected)."""
+    """Serve main chat app — Vue SPA if built, else Jinja2 fallback."""
     username = get_current_username(request)
     if not username:
         return RedirectResponse(url="/login", status_code=302)
+
+    # Serve Vue build if available
+    vue_index = APP_DIR / "frontend" / "dist" / "index.html"
+    if vue_index.exists():
+        return HTMLResponse(vue_index.read_text(encoding="utf-8"))
+
+    # Fallback to Jinja2 template
     sid = get_session_id(request)
     role = get_role_for_session(sid)
     categories = get_allowed_categories(role)
@@ -506,6 +530,12 @@ async def batch_upload(
 
     return {"role": "assistant", "content": {"batch_results": results, "tool": tool_name}}
 
+
+# Mount Vue build assets (must come before /static to take priority)
+VUE_DIST = APP_DIR / "frontend" / "dist"
+VUE_ASSETS = VUE_DIST / "assets"
+if VUE_ASSETS.exists():
+    app.mount("/assets", StaticFiles(directory=str(VUE_ASSETS)), name="vue-assets")
 
 # Mount static files (CSS/JS) if present
 if STATIC_DIR.exists():

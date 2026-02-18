@@ -1,0 +1,71 @@
+.pathVisual {
+  margin: 1rem 0;
+  padding: 1.5rem;
+  background: var(--bg-card);
+  border-radius: 12px;
+  border: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  position: relative;
+}
+.pathStatusBar {
+  margin-bottom: 1.5rem;
+  color: #f38ba8;
+  font-size: 1.05rem;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  background: rgba(243, 139, 168, 0.1);
+  border-left: 3px solid #f38ba8;
+  border-radius: 4px;
+}
+.pathDenyDetails {
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  padding: 0.75rem 1rem;
+  background: rgba(243, 139, 168, 0.1);
+  border-left: 3px solid #f38ba8;
+  border-radius: 4px;
+}
+.denyFw { margin: 0.2rem 0; color: #f38ba8; font-weight: 600; }
+.denyPolicy { margin: 0.2rem 0; color: #a6adc8; }
+.pathExpandBtn {
+  position: absolute;
+  top: 0.625rem;
+  right: 0.625rem;
+  background: var(--bg-active);
+  border: none;
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.6875rem;
+  font-family: inherit;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+  z-index: 5;
+}
+.pathExpandBtn:hover { background: var(--border-strong); color: var(--text-primary); }
+.pathVisualRowWrap {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 1.5rem 0;
+}
+.pathHorizontal {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2.5rem;
+  min-height: 140px;
+  width: max-content;
+  padding: 0 0.5rem;
+}
+.pathVisualClone { padding: 2rem; }
+.fullscreenPath { gap: 4rem; }
+.fullscreenPath :global(.path-item) { min-width: 180px; max-width: 260px; padding: 1.5rem; }

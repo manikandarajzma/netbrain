@@ -424,6 +424,11 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
             # No term matching: use tool list order from server; selection is LLM + docstrings only
             def _tool_name(t):
                 return t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
+
+            # Hide check_path_allowed from LLM — query_network_path covers path
+            # queries and the LLM inconsistently picks between the two
+            tools = [t for t in tools if _tool_name(t) != "check_path_allowed"]
+
             tool_names_list = [_tool_name(t) for t in tools]
             def _params(t):
                 schema = getattr(t, "inputSchema", None)
