@@ -46,4 +46,7 @@ dependencies = [
     # Azure Key Vault — load NETBOX_TOKEN etc. when not in env
     "azure-identity>=1.15.0",
     "azure-keyvault-secrets>=4.7.0",
+
+    # Optional: encrypt chat history at rest
+    "cryptography>=42.0.0",
 ]

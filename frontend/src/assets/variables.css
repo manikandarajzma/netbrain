@@ -5,20 +5,20 @@
 /* ───────── Theme variables ───────── */
 
 :root {
-    --bg-body: #1a1a1e;
-    --bg-body-subtle: linear-gradient(180deg, #1e1e24 0%, #1a1a1e 100%);
-    --bg-sidebar: #141418;
-    --bg-surface: #25252b;
-    --bg-card: #222228;
-    --bg-input: #26262c;
-    --bg-hover: #2c2c34;
-    --bg-active: #353540;
-    --border: #2e2e36;
-    --border-strong: #3e3e48;
-    --text-primary: #f0f0f4;
-    --text-secondary: #c8c8d4;
-    --text-muted: #9090a0;
-    --text-dim: #606074;
+    --bg-body: #0d0d0d;
+    --bg-body-subtle: linear-gradient(180deg, #0f0f0f 0%, #0d0d0d 100%);
+    --bg-sidebar: #111111;
+    --bg-surface: #1a1a1a;
+    --bg-card: #181818;
+    --bg-input: #1c1c1c;
+    --bg-hover: #1e1e1e;
+    --bg-active: #282828;
+    --border: #242424;
+    --border-strong: #333333;
+    --text-primary: #f9f9f9;
+    --text-secondary: #e0e0e0;
+    --text-muted: #ababab;
+    --text-dim: #6e6e6e;
     --accent-blue: #7ab7ff;
     --accent-blue-focus: #5ba3f5;
     --accent-green: #6bd16b;
@@ -29,12 +29,12 @@
     --accent-purple: #c792ea;
     --accent-cyan: #89ddff;
     --focus-ring: rgba(122, 183, 255, 0.2);
-    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
-    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
-    --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4);
-    --scrollbar-thumb: #404050;
-    --scrollbar-hover: #505064;
-    --user-msg-bg: #2a2a32;
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.6);
+    --scrollbar-thumb: #333333;
+    --scrollbar-hover: #444444;
+    --user-msg-bg: #1a1a1a;
     --radius-sm: 10px;
     --radius-md: 14px;
     --radius-lg: 18px;

@@ -282,7 +282,7 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Return app status and MCP server reachability."""
+    """Return app status, MCP server reachability, and Ollama status."""
     import os, aiohttp
     host = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
     port = os.getenv("MCP_SERVER_PORT", "8765")
@@ -300,11 +300,42 @@ async def health_check():
                     mcp_status = f"error ({resp.status})"
     except Exception:
         mcp_status = "unreachable"
+
+    # Ollama status: check reachability and whether the configured model is available
+    from netbrain.tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL
+    ollama_status = "unknown"
+    ollama_model_available = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{OLLAMA_BASE_URL}/api/tags",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    models = [m.get("name", "") for m in data.get("models", [])]
+                    # Ollama model names may include a tag (e.g. "llama3.1:8b")
+                    ollama_model_available = any(
+                        m == OLLAMA_MODEL or m.split(":")[0] == OLLAMA_MODEL.split(":")[0]
+                        for m in models
+                    )
+                    ollama_status = "ok" if ollama_model_available else "model_not_found"
+                else:
+                    ollama_status = f"error ({resp.status})"
+    except Exception:
+        ollama_status = "unreachable"
+
     return {
         "status": "ok",
         "auth_mode": AUTH_MODE,
         "mcp_server": mcp_status,
         "mcp_tools_registered": mcp_tools,
+        "ollama": {
+            "status": ollama_status,
+            "url": OLLAMA_BASE_URL,
+            "model": OLLAMA_MODEL,
+            "model_available": ollama_model_available,
+        },
     }
 
 

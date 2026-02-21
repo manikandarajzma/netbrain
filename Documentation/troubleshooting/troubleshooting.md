@@ -37,7 +37,7 @@ cd frontend
 npm run dev
 ```
 
-Open **http://localhost:5173** (log in at http://localhost:8000/login first so the session cookie is set). Edits to `.jsx` and `.module.css` will hot-reload; no `npm run build` needed until you want to update what’s served at port 8000.
+Open **http://localhost:5173** (log in at http://localhost:8000/login first so the session cookie is set). Edits to `.jsx` and `.module.css` will hot-reload; no `npm run build` needed until you want to update what's served at port 8000.
 
 ---
 

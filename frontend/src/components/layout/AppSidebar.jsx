@@ -11,7 +11,6 @@ export default function AppSidebar({ onFillInput }) {
   const newChat = useChatStore(s => s.newChat)
   const clearChat = useChatStore(s => s.clearChat)
   const clearAllChats = useChatStore(s => s.clearHistory)
-  const startFollowUp = useChatStore(s => s.startFollowUp)
   const selectConversation = useChatStore(s => s.selectConversation)
   const [collapsed, setCollapsed] = useState(() => {
     const init = {}
@@ -29,8 +28,18 @@ export default function AppSidebar({ onFillInput }) {
 
   return (
     <aside className={styles.sidebar}>
+
+      {/* New Chat */}
+      <div className={styles.navSection}>
+        <button type="button" className={styles.newChatNavBtn} onClick={newChat}>
+          <span className={styles.newChatNavIcon}>✎</span>
+          New Chat
+        </button>
+      </div>
+
+      {/* Example Queries */}
       <div className={styles.exampleQueries}>
-        <h2 className={styles.heading}>{'\uD83D\uDCCB'} Example Queries</h2>
+        <p className={styles.sectionLabel}>📋 Example Queries</p>
         {exampleQueries.map(cat => (
           isCategoryAllowed(cat.category) && (
             <div
@@ -56,21 +65,13 @@ export default function AppSidebar({ onFillInput }) {
           )
         ))}
       </div>
-      <div className={styles.yourChats}>
-        <h2 className={styles.heading}>Your chats</h2>
-        <div className={styles.newChatRow}>
-          <button type="button" className={styles.newChatBtn} onClick={newChat}>
-            <span className={styles.newChatIcon}>+</span> New chat
-          </button>
-          <button type="button" className={styles.clearChatBtn} onClick={clearChat} title="Clear current chat and remove from list">
-            Clear
-          </button>
-          {activeConversationId && (
-            <button type="button" className={styles.followUpBtn} onClick={startFollowUp} title="Start a follow-up under this chat">
-              Follow-up
-            </button>
-          )}
+
+      {/* History */}
+      <div className={styles.history}>
+        <div className={styles.historyHeader}>
+          <p className={styles.sectionLabel}>History</p>
         </div>
+
         <div className={styles.conversationList}>
           {(conversations || []).map((c) => (
             <button
@@ -80,14 +81,21 @@ export default function AppSidebar({ onFillInput }) {
               onClick={() => selectConversation(c.id)}
               title={c.title}
             >
-              <span className={styles.conversationTitle}>{c.title || 'New chat'}</span>
+              {c.title || 'New chat'}
             </button>
           ))}
         </div>
-        <button type="button" className={styles.clearAllChatsBtn} onClick={clearAllChats} title="Delete all past chats">
-          Clear all past chats
-        </button>
+
+        <div className={styles.historyFooter}>
+          <button type="button" className={styles.footerBtn} onClick={clearChat}>
+            Clear current chat
+          </button>
+          <button type="button" className={`${styles.footerBtn} ${styles.footerBtnDanger}`} onClick={clearAllChats}>
+            Clear all history
+          </button>
+        </div>
       </div>
+
     </aside>
   )
 }

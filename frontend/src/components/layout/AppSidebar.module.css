@@ -1,144 +1,68 @@
+/* ── Sidebar shell ── */
 .sidebar {
-  width: 280px;
+  width: 260px;
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
-  box-shadow: 2px 0 24px rgba(0, 0, 0, 0.2);
   overflow-y: auto;
-}
-
-.yourChats {
-  padding: 1.25rem 1.25rem 0;
-  border-top: 1px solid var(--border);
-}
-.newChatRow {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-.newChatBtn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 1;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font-size: 0.875rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.newChatBtn:hover {
-  background: var(--bg-active);
-}
-.followUpBtn {
-  padding: 0.5rem 0.75rem;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.followUpBtn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.newChatIcon {
-  font-size: 1rem;
-  line-height: 1;
-}
-.conversationList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 0.75rem;
-}
-.clearChatBtn {
-  padding: 0.5rem 0.75rem;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.clearChatBtn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.clearAllChatsBtn {
-  width: 100%;
-  padding: 0.4rem 0.75rem;
-  margin-top: 0.25rem;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: var(--text-dim);
-  font-size: 0.75rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  text-align: left;
-}
-.clearAllChatsBtn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.conversationItem {
-  width: 100%;
-  padding: 0.5rem 0.75rem;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 0.8125rem;
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.conversationItem:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.conversationItem.active {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.conversationItem.child {
-  padding-left: 1.25rem;
-}
-.conversationTitle {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.exampleQueries { padding: 1.25rem; }
-.heading {
+/* ── Shared section label ── */
+.sectionLabel {
   font-size: 0.6875rem;
   font-weight: 700;
   color: var(--text-dim);
-  margin: 0 0 1rem 0;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.09em;
+  margin: 0;
+  padding: 0 0.25rem;
 }
-.category { margin-bottom: 0.25rem; }
+
+/* ── New Chat nav button ── */
+.navSection {
+  padding: 0.75rem 0.75rem 0;
+}
+
+.newChatNavBtn {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-align: left;
+}
+.newChatNavBtn:hover {
+  background: var(--bg-hover);
+}
+.newChatNavIcon {
+  font-size: 1.125rem;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+/* ── Example Queries ── */
+.exampleQueries {
+  padding: 1rem 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.category { margin-bottom: 0.125rem; }
 .category:last-child { margin-bottom: 0; }
+
 .categoryLabel {
-  font-size: 0.8125rem;
-  font-weight: 600;
+  font-size: 0.875rem;
+  font-weight: 500;
   color: var(--text-muted);
   padding: 0.5rem 0.625rem;
   cursor: pointer;
@@ -155,8 +79,8 @@
 }
 .categoryLabel::after {
   content: '';
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-right: 1.5px solid var(--text-dim);
   border-bottom: 1.5px solid var(--text-dim);
   transform: rotate(45deg);
@@ -164,27 +88,23 @@
   flex-shrink: 0;
   margin-left: 0.5rem;
 }
-.collapsed .categoryLabel::after {
-  transform: rotate(-45deg);
-}
+.collapsed .categoryLabel::after { transform: rotate(-45deg); }
+
 .chips {
   display: flex;
   flex-direction: column;
   gap: 1px;
   overflow: hidden;
-  max-height: 500px;
+  max-height: 600px;
   transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.2s ease;
   opacity: 1;
-  margin-top: 0.25rem;
+  margin-top: 0.125rem;
 }
-.collapsed .chips {
-  max-height: 0;
-  opacity: 0;
-  margin-top: 0;
-}
+.collapsed .chips { max-height: 0; opacity: 0; margin-top: 0; }
+
 .chip {
   width: 100%;
-  padding: 0.5rem 0.75rem 0.5rem 1.25rem;
+  padding: 0.4rem 0.75rem 0.4rem 1.25rem;
   background: transparent;
   border: none;
   border-radius: 8px;
@@ -196,8 +116,110 @@
   text-align: left;
   line-height: 1.5;
 }
-.chip:hover {
+.chip:hover { background: var(--bg-hover); color: var(--text-primary); }
+.chip:active { background: var(--bg-active); }
+
+/* ── History ── */
+.history {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0.75rem 0.75rem;
+  min-height: 0;
+}
+
+.historyHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.composeBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0.2rem 0.35rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.composeBtn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
-.chip:active { background: var(--bg-active); }
+
+/* ── Conversation list ── */
+.conversationList {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conversationItem {
+  width: 100%;
+  padding: 0.45rem 0.625rem;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversationItem:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.conversationItem.active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.conversationItem.child {
+  padding-left: 1.25rem;
+  color: var(--text-dim);
+  font-size: 0.8125rem;
+}
+.conversationItem.child.active {
+  color: var(--text-muted);
+}
+
+/* ── History footer actions ── */
+.historyFooter {
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.footerBtn {
+  width: 100%;
+  padding: 0.375rem 0.625rem;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  text-align: left;
+}
+.footerBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.footerBtnDanger:hover {
+  color: var(--accent-red, #f38ba8);
+}

@@ -12,6 +12,7 @@ export default function ChatLayout() {
   const inputRef = useRef(null)
   const loadConversations = useChatStore(s => s.loadConversations)
   const selectConversation = useChatStore(s => s.selectConversation)
+  const stopGeneration = useChatStore(s => s.stopGeneration)
   const activeConversationId = useChatStore(s => s.activeConversationId)
 
   useEffect(() => {
@@ -19,6 +20,10 @@ export default function ChatLayout() {
     const lastId = typeof localStorage !== 'undefined' ? localStorage.getItem(LAST_CHAT_KEY) : null
     if (lastId) selectConversation(lastId)
   }, [loadConversations, selectConversation])
+
+  useEffect(() => {
+    return () => { stopGeneration() }
+  }, [stopGeneration])
 
   useEffect(() => {
     if (activeConversationId && typeof localStorage !== 'undefined') {
