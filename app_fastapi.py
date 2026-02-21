@@ -1,12 +1,13 @@
 """
-FastAPI application with local + Microsoft OIDC authentication.
-Set AUTH_MODE=oidc in .env to use Microsoft Entra ID login.
+FastAPI application with Microsoft Entra ID (OIDC) authentication.
+All credentials are in Azure Key Vault; no local passwords.
 """
+import os
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Any
@@ -31,7 +32,6 @@ from netbrain.auth import (
     get_role_for_session,
     get_user_role,
     get_username_for_session,
-    verify_local_user,
 )
 
 # Paths
@@ -45,9 +45,12 @@ STATIC_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="NetAssist", version="0.1.0")
 
+# CORS: require CORS_ALLOWED_ORIGINS (no default "*"). Set to your origin(s), e.g. https://netassist.company.com or localhost for dev.
+_cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] if _cors_origins_env else []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,9 +84,11 @@ if AUTH_MODE == "oidc" and AZURE_CLIENT_ID and AZURE_TENANT_ID:
 if AUTH_MODE == "oidc":
     from starlette.middleware.sessions import SessionMiddleware
     import secrets as _secrets
+    # Use fixed secret from env so multiple instances share it; else random per process (single-instance only).
+    _oauth_secret = os.getenv("OAUTH_STATE_SECRET", "").strip() or _secrets.token_urlsafe(32)
     app.add_middleware(
         SessionMiddleware,
-        secret_key=_secrets.token_urlsafe(32),
+        secret_key=_oauth_secret,
         session_cookie="netbrain_oauth_state",
         max_age=600,  # 10 min for OAuth state
     )
@@ -91,24 +96,33 @@ if AUTH_MODE == "oidc":
 
 @app.exception_handler(Exception)
 async def catch_all(request: Request, exc: Exception):
-    """Log and return a simple 500 page so we can see the error."""
-    import traceback
-    tb = traceback.format_exc()
-    print(tb, flush=True)
-    from fastapi.responses import HTMLResponse
+    """Log traceback server-side only; return generic error to client (no info disclosure)."""
+    import logging
+    logging.exception("Unhandled exception")
     return HTMLResponse(
-        content=f"<h1>Internal Server Error</h1><pre>{tb}</pre>",
+        content="<h1>Internal Server Error</h1><p>Something went wrong. Please try again.</p>",
         status_code=500,
     )
 
 # Session cookie name and settings
 SESSION_COOKIE = "netbrain_session"
-SESSION_MAX_AGE_LOCAL = 86400 * 7  # 7 days for local auth
-SESSION_MAX_AGE_OIDC = OIDC_SESSION_TTL  # 30 min for OIDC
+SESSION_MAX_AGE_OIDC = OIDC_SESSION_TTL  # 30 min
 
 
 def get_session_id(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
+
+
+def response_401_clear_session(request: Request):
+    """Return 401 with redirect to /login; clear server session and cookie so user can sign in again."""
+    sid = get_session_id(request)
+    destroy_session(sid)
+    r = JSONResponse(
+        {"detail": "Not authenticated", "redirect": "/login"},
+        status_code=401,
+    )
+    r.delete_cookie(SESSION_COOKIE)
+    return r
 
 
 def get_current_username(request: Request) -> str | None:
@@ -137,37 +151,11 @@ async def login_page(request: Request):
         "login.html",
         {
             "request": request,
-            "error_invalid": error_param == "invalid",
             "error_oidc": error_param == "oidc",
             "error_norole": error_param == "norole",
-            "auth_mode": AUTH_MODE,
+            "oidc_configured": AUTH_MODE == "oidc" and bool(AZURE_CLIENT_ID and AZURE_TENANT_ID),
         },
     )
-
-
-@app.post("/login")
-async def login_post(
-    response: Response,
-    username: str = Form(...),
-    password: str = Form(...),
-):
-    """Validate local credentials and set session cookie."""
-    if not verify_local_user(username, password):
-        return RedirectResponse(
-            url="/login?error=invalid",
-            status_code=302,
-        )
-    role = get_user_role(username)
-    session_id = create_session(username, role=role, auth_mode="local")
-    r = RedirectResponse(url="/", status_code=302)
-    r.set_cookie(
-        key=SESSION_COOKIE,
-        value=session_id,
-        max_age=SESSION_MAX_AGE_LOCAL,
-        httponly=True,
-        samesite="lax",
-    )
-    return r
 
 
 # --- OIDC routes ---
@@ -252,11 +240,10 @@ async def logout(request: Request, response: Response):
 
 @app.get("/api/me")
 async def api_me(request: Request):
-    """Return current user context for the Vue SPA."""
+    """Return current user context for the React SPA."""
     username = get_current_username(request)
     if not username:
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return response_401_clear_session(request)
     sid = get_session_id(request)
     role = get_role_for_session(sid)
     categories = get_allowed_categories(role)
@@ -269,15 +256,15 @@ async def api_me(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Serve main chat app — Vue SPA if built, else Jinja2 fallback."""
+    """Serve main chat app — React SPA if built, else Jinja2 fallback."""
     username = get_current_username(request)
     if not username:
         return RedirectResponse(url="/login", status_code=302)
 
-    # Serve Vue build if available
-    vue_index = APP_DIR / "frontend" / "dist" / "index.html"
-    if vue_index.exists():
-        return HTMLResponse(vue_index.read_text(encoding="utf-8"))
+    # Serve React build if available
+    react_index = APP_DIR / "frontend" / "dist" / "index.html"
+    if react_index.exists():
+        return HTMLResponse(react_index.read_text(encoding="utf-8"))
 
     # Fallback to Jinja2 template
     sid = get_session_id(request)
@@ -325,6 +312,8 @@ async def health_check():
 class ChatRequest(BaseModel):
     message: str
     conversation_history: list[dict[str, Any]] = []
+    conversation_id: str | None = None
+    parent_conversation_id: str | None = None
 
 
 def _strip_l2_noise(d: dict) -> dict:
@@ -342,37 +331,124 @@ async def api_discover(request: Request, body: ChatRequest):
     """Lightweight tool discovery — returns tool name without executing."""
     username = get_current_username(request)
     if not username:
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return response_401_clear_session(request)
     from netbrain.chat_service import process_message
     result = await process_message(
         body.message.strip(),
         body.conversation_history or [],
         discover_only=True,
         username=username,
+        session_id=get_session_id(request),
     )
     return result
 
 
-@app.post("/api/chat")
-async def api_chat(request: Request, body: ChatRequest):
-    """Process a chat message and return assistant response."""
+@app.get("/api/chat/history")
+async def api_chat_history(request: Request):
+    """Return messages from the most recent conversation (backward compat)."""
     username = get_current_username(request)
     if not username:
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return response_401_clear_session(request)
+    from netbrain.chat_history import load_history
+    messages = load_history(APP_DIR, username)
+    return {"messages": messages}
+
+
+@app.delete("/api/chat/history")
+async def api_chat_history_clear(request: Request):
+    """Clear all conversations for the current user (backward compat)."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    from netbrain.chat_history import clear_history
+    clear_history(APP_DIR, username)
+    return {"ok": True}
+
+
+@app.get("/api/chat/conversations")
+async def api_chat_conversations(request: Request):
+    """List conversations for the current user (id, title, created_at), newest first."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    from netbrain.chat_history import list_conversations
+    convs = list_conversations(APP_DIR, username)
+    return {"conversations": convs}
+
+
+@app.get("/api/chat/conversations/{conversation_id}")
+async def api_chat_conversation(request: Request, conversation_id: str):
+    """Get messages for a single conversation."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    from netbrain.chat_history import get_conversation
+    messages = get_conversation(APP_DIR, username, conversation_id)
+    if messages is None:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    return {"messages": messages}
+
+
+@app.delete("/api/chat/conversations/{conversation_id}")
+async def api_chat_conversation_delete(request: Request, conversation_id: str):
+    """Delete a conversation."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    from netbrain.chat_history import delete_conversation
+    delete_conversation(APP_DIR, username, conversation_id)
+    return {"ok": True}
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request, body: ChatRequest):
+    """Process a chat message and return assistant response. Uses conversation_id when provided."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
     from netbrain.chat_service import process_message
+    from netbrain.chat_history import (
+        create_conversation,
+        append_to_conversation,
+        list_conversations,
+        get_conversation,
+    )
+    conversation_id = (body.conversation_id or "").strip() or None
+    history = body.conversation_history or []
     result = await process_message(
         body.message.strip(),
-        body.conversation_history or [],
+        history,
         default_live=True,
         username=username,
+        session_id=get_session_id(request),
     )
     # Strip noisy L2 messages before sending to frontend
     if isinstance(result, dict):
         content = result.get("content")
         if isinstance(content, dict) and content.get("path_hops"):
             _strip_l2_noise(content)
+    assistant_content = result.get("content") if isinstance(result, dict) else None
+    if assistant_content is None and isinstance(result, dict):
+        assistant_content = result.get("message") or "No response"
+    elif assistant_content is None:
+        assistant_content = "No response"
+    user_msg = body.message.strip()
+    if conversation_id:
+        # Append to existing conversation
+        append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
+        if isinstance(result, dict):
+            result["conversation_id"] = conversation_id
+    else:
+        # New conversation: create and append (optionally as follow-up under parent)
+        parent_id = (body.parent_conversation_id or "").strip() or None
+        title = (user_msg[:60] + "…") if len(user_msg) > 60 else user_msg or "New chat"
+        conv_id = create_conversation(APP_DIR, username, title, parent_id=parent_id)
+        append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
+        if isinstance(result, dict):
+            result["conversation_id"] = conv_id
+            result["conversation_title"] = title
+            if parent_id:
+                result["parent_id"] = parent_id
     return result
 
 
@@ -415,11 +491,9 @@ async def batch_upload(
     message: str = Form(""),
 ):
     """Parse an uploaded spreadsheet and run the appropriate tool for each row."""
-    from fastapi.responses import JSONResponse
-
     username = get_current_username(request)
     if not username:
-        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return response_401_clear_session(request)
 
     filename = file.filename or ""
     if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
@@ -476,6 +550,7 @@ async def batch_upload(
                 tool_name=tool_name,
                 parameters={"source": src, "destination": dst, "protocol": proto, "port": port_str},
                 username=username,
+                session_id=get_session_id(request),
             )
             content = result.get("content", {}) if isinstance(result, dict) else {}
             if isinstance(content, dict):
@@ -531,11 +606,11 @@ async def batch_upload(
     return {"role": "assistant", "content": {"batch_results": results, "tool": tool_name}}
 
 
-# Mount Vue build assets (must come before /static to take priority)
-VUE_DIST = APP_DIR / "frontend" / "dist"
-VUE_ASSETS = VUE_DIST / "assets"
-if VUE_ASSETS.exists():
-    app.mount("/assets", StaticFiles(directory=str(VUE_ASSETS)), name="vue-assets")
+# Mount React build assets (must come before /static to take priority)
+REACT_DIST = APP_DIR / "frontend" / "dist"
+REACT_ASSETS = REACT_DIST / "assets"
+if REACT_ASSETS.exists():
+    app.mount("/assets", StaticFiles(directory=str(REACT_ASSETS)), name="react-assets")
 
 # Mount static files (CSS/JS) if present
 if STATIC_DIR.exists():

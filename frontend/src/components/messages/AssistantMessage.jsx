@@ -147,7 +147,7 @@ export default function AssistantMessage({ content }) {
 
       {classified.type === 'structured' && (
         <>
-          {structuredText && <p style={{ marginBottom: '0.75rem' }}>{structuredText}</p>}
+          {structuredText && tableGroups.length === 0 && <p style={{ marginBottom: '0.75rem' }}>{structuredText}</p>}
           {tableGroups.map((group, gi) => (
             <div key={gi}>
               {group.heading && <p className={styles.summaryHeading}>{group.heading}</p>}

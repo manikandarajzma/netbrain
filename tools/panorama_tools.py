@@ -343,7 +343,7 @@ async def query_panorama_ip_object_group(
     if not api_key:
         return {
             "ip_address": ip_address,
-            "error": "Failed to authenticate with Panorama. Check credentials in panoramaauth.py"
+            "error": "Failed to authenticate with Panorama. Ensure PANORAMA_USERNAME and PANORAMA_PASSWORD are set (or in Azure Key Vault as PANORAMA-USERNAME / PANORAMA-PASSWORD) and the MCP server was started with access to them."
         }
 
     # Create SSL context that doesn't verify certificates
@@ -1163,7 +1163,7 @@ async def query_panorama_address_group_members(
     if not api_key:
         return {
             "address_group_name": address_group_name,
-            "error": "Failed to authenticate with Panorama. Check credentials in panoramaauth.py"
+            "error": "Failed to authenticate with Panorama. Ensure PANORAMA_USERNAME and PANORAMA_PASSWORD are set (or in Azure Key Vault as PANORAMA-USERNAME / PANORAMA-PASSWORD) and the MCP server was started with access to them."
         }
 
     # Create SSL context that doesn't verify certificates

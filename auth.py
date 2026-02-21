@@ -1,22 +1,30 @@
 """
 Authentication for FastAPI app.
-Supports local username/password and Microsoft Entra ID (OIDC).
+Uses Microsoft Entra ID (OIDC) only. No local passwords; credentials are in Azure Key Vault.
+Sessions are stored in signed cookies (no server-side store), so they survive restarts and work across instances.
 """
 import os
 import secrets
 import time
 from typing import Optional
 
-# Load .env file if available
+from itsdangerous import BadSignature, URLSafeTimedSerializer
+
+# Load .env from netbrain/, project root, then cwd (first file wins per variable)
 from dotenv import load_dotenv
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-if os.path.isfile(_env_path):
-    load_dotenv(_env_path)
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+for _path in (
+    os.path.join(_this_dir, ".env"),
+    os.path.join(os.path.dirname(_this_dir), ".env"),
+    os.path.join(os.getcwd(), ".env"),
+):
+    if os.path.isfile(_path):
+        load_dotenv(_path)
 
 # ---------------------------------------------------------------------------
-# Auth mode
+# Auth mode (OIDC only; no local password auth)
 # ---------------------------------------------------------------------------
-AUTH_MODE = os.getenv("AUTH_MODE", "local").strip().lower()  # "local" or "oidc"
+AUTH_MODE = os.getenv("AUTH_MODE", "oidc").strip().lower()
 
 # ---------------------------------------------------------------------------
 # Microsoft OIDC configuration
@@ -26,34 +34,19 @@ AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
 AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0"
 
-# Session TTL for OIDC (30 minutes); local sessions last 7 days
+# Session TTL for OIDC (30 minutes)
 OIDC_SESSION_TTL = 1800
 
-# ---------------------------------------------------------------------------
-# In-memory session store: session_id -> {username, role, ...}
-# ---------------------------------------------------------------------------
-_sessions: dict[str, dict] = {}
-
-# ---------------------------------------------------------------------------
-# Local users (used when AUTH_MODE == "local")
-# ---------------------------------------------------------------------------
-_default_users_env = os.getenv("NETBRAIN_USERS", "admin:admin:admin")
-LOCAL_USERS: dict[str, dict[str, str]] = {}
-for part in _default_users_env.strip().split(","):
-    part = part.strip()
-    if ":" in part:
-        pieces = part.split(":")
-        u = pieces[0].strip()
-        p = pieces[1].strip() if len(pieces) > 1 else ""
-        r = pieces[2].strip() if len(pieces) > 2 else "admin"
-        LOCAL_USERS[u] = {"password": p, "role": r}
-
+# Signed cookie sessions: same secret across instances so sessions work after restart and with multiple app instances
+_SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or secrets.token_urlsafe(32)
+_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
 
 # ---------------------------------------------------------------------------
 # Role-based access control
 # ---------------------------------------------------------------------------
 
 # Maps role -> set of allowed MCP tool names.  None = all tools allowed.
+# "guest" = no tools (used for unknown/invalid users; do not default to admin).
 ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
     "admin": None,
     "netadmin": {
@@ -62,12 +55,14 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
         "query_panorama_ip_object_group",
         "query_panorama_address_group_members",
     },
+    "guest": set(),  # least privilege: no tool access
 }
 
 # Maps role -> list of sidebar category slugs shown in the UI.  None = all.
 ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
     "netadmin": ["netbrain", "panorama"],
+    "guest": [],
 }
 
 # ---------------------------------------------------------------------------
@@ -95,31 +90,9 @@ for _part in _oidc_group_map_env.strip().split(","):
         OIDC_GROUP_ROLE_MAP[_gid.strip().lower()] = _role.strip().lower()
 
 
-def verify_local_user(username: str, password: str) -> bool:
-    """Verify username/password against local user store."""
-    if not username or not password:
-        return False
-    entry = LOCAL_USERS.get(username)
-    if entry is None:
-        return False
-    return entry["password"] == password
-
-
 def get_user_role(username: str) -> str:
-    """Return the role for *username*.
-
-    For OIDC users the role is stored in the session, so we check there first.
-    For local users we look up LOCAL_USERS.  Defaults to 'admin'.
-    """
-    # Check if any active session has this username with a stored role
-    for sess in _sessions.values():
-        if sess.get("username") == username and "role" in sess:
-            return sess["role"]
-    # Fall back to local users dict
-    entry = LOCAL_USERS.get(username)
-    if entry is None:
-        return "admin"
-    return entry.get("role", "admin")
+    """Return the role for *username*. With signed-cookie sessions there is no server-side store; use get_role_for_session(session_id) when you have the session. This returns 'guest' for any username."""
+    return "guest"
 
 
 def get_allowed_tools(role: str) -> set[str] | None:
@@ -137,34 +110,29 @@ def get_allowed_categories(role: str) -> list[str] | None:
 # ---------------------------------------------------------------------------
 
 def create_session(username: str, *, role: str = "admin",
-                   auth_mode: str = "local",
+                   auth_mode: str = "oidc",
                    tokens: dict | None = None) -> str:
-    """Create a new session; returns session_id."""
-    session_id = secrets.token_urlsafe(32)
-    _sessions[session_id] = {
+    """Create a session; returns signed cookie value (no server-side store). tokens are not stored (signed cookie size limit)."""
+    payload = {
         "username": username,
         "role": role,
         "auth_mode": auth_mode,
         "created_at": time.time(),
-        "tokens": tokens,  # OIDC tokens for refresh
     }
-    return session_id
+    return _session_serializer.dumps(payload)
 
 
 def get_session(session_id: Optional[str]) -> Optional[dict]:
-    """Return full session dict, or None."""
+    """Return session dict from signed cookie value, or None if invalid/expired."""
     if not session_id:
         return None
-    sess = _sessions.get(session_id)
-    if sess is None:
-        return None
-    # Check OIDC session expiry
-    if sess.get("auth_mode") == "oidc":
-        elapsed = time.time() - sess.get("created_at", 0)
-        if elapsed > OIDC_SESSION_TTL:
-            del _sessions[session_id]
-            return None
-    return sess
+    try:
+        payload = _session_serializer.loads(session_id, max_age=OIDC_SESSION_TTL)
+        if isinstance(payload, dict):
+            return payload
+    except (BadSignature, Exception):
+        pass
+    return None
 
 
 def get_username_for_session(session_id: Optional[str]) -> Optional[str]:
@@ -176,17 +144,16 @@ def get_username_for_session(session_id: Optional[str]) -> Optional[str]:
 
 
 def get_role_for_session(session_id: Optional[str]) -> str:
-    """Return role for session_id, defaulting to 'admin'."""
+    """Return role for session_id. Invalid/missing session returns 'guest' (no access)."""
     sess = get_session(session_id)
     if sess is None:
-        return "admin"
-    return sess.get("role", "admin")
+        return "guest"
+    return sess.get("role", "guest")
 
 
 def destroy_session(session_id: Optional[str]) -> None:
-    """Remove session."""
-    if session_id and session_id in _sessions:
-        del _sessions[session_id]
+    """No-op: sessions are in the cookie; logout clears the cookie in the response."""
+    pass
 
 
 # ---------------------------------------------------------------------------

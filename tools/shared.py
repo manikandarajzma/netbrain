@@ -17,13 +17,16 @@ if _parent_dir not in sys.path:
 
 # ---------------------------------------------------------------------------
 # Load .env file (must happen before any os.getenv calls)
+# Look in netbrain/, project root, then cwd so one .env works everywhere.
 # ---------------------------------------------------------------------------
 from dotenv import load_dotenv
-
-# Look for .env in the netbrain/ directory (parent of tools/)
-_env_path = os.path.join(_parent_dir, ".env")
-if os.path.exists(_env_path):
-    load_dotenv(_env_path)
+for _env_path in (
+    os.path.join(_parent_dir, ".env"),
+    os.path.join(os.path.dirname(_parent_dir), ".env"),
+    os.path.join(os.getcwd(), ".env"),
+):
+    if os.path.isfile(_env_path):
+        load_dotenv(_env_path)
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -76,7 +79,7 @@ from langchain_core.prompts import ChatPromptTemplate  # re-exported for conveni
 
 # LLM configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 
 
 def _get_llm():
@@ -120,6 +123,32 @@ NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 # NetBox
 NETBOX_URL = os.getenv("NETBOX_URL", "http://192.168.15.109:8080").rstrip("/")
 NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "")
+if not NETBOX_TOKEN:
+    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
+    if _vault_url:
+        _secret_name = os.getenv("NETBOX_TOKEN_KEYVAULT_SECRET_NAME", "NETBOX-TOKEN")
+        for _name in (_secret_name, "netbox-token", "NetBoxToken"):
+            try:
+                from azure.identity import DefaultAzureCredential
+                from azure.keyvault.secrets import SecretClient
+                _credential = DefaultAzureCredential()
+                _client = SecretClient(vault_url=_vault_url, credential=_credential)
+                _secret = _client.get_secret(_name)
+                if _secret and _secret.value:
+                    NETBOX_TOKEN = _secret.value
+                    logger.info("Loaded NETBOX_TOKEN from Azure Key Vault secret '%s'", _name)
+                    break
+            except Exception as e:
+                if _name == _secret_name:
+                    logger.warning(
+                        "Key Vault: could not load secret '%s' from %s: %s. "
+                        "Ensure this process has AZURE_CLIENT_ID/SECRET/TENANT_ID (or managed identity) and the app has 'Get' on secrets.",
+                        _name, _vault_url, e,
+                    )
+                continue
+        else:
+            if not NETBOX_TOKEN:
+                logger.warning("NETBOX_TOKEN not in env and not found in Key Vault (tried %s). NetBox tools will fail.", _secret_name)
 NETBOX_VERIFY_SSL = os.getenv("NETBOX_VERIFY_SSL", "true").lower() in ["1", "true", "yes"]
 
 # Splunk

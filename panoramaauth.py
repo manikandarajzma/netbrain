@@ -32,11 +32,16 @@ import xml.etree.ElementTree as ET
 # Import Optional type hint from typing module
 from typing import Optional, Dict, Any, List
 
-# Load .env file if available
+# Load .env from this dir, project root, and cwd (same as tools/shared)
 from dotenv import load_dotenv
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-if os.path.exists(_env_path):
-    load_dotenv(_env_path)
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+for _p in (
+    os.path.join(_this_dir, ".env"),
+    os.path.join(os.path.dirname(_this_dir), ".env"),
+    os.path.join(os.getcwd(), ".env"),
+):
+    if os.path.isfile(_p):
+        load_dotenv(_p)
 
 # Configure module logger
 logger = logging.getLogger("netbrain.panoramaauth")
@@ -44,11 +49,29 @@ logger = logging.getLogger("netbrain.panoramaauth")
 # Panorama API configuration
 PANORAMA_URL = os.getenv("PANORAMA_URL", "https://192.168.15.247")
 
-# Panorama username for authentication
+# Panorama username and password (env, then Azure Key Vault if not set)
 PANORAMA_USERNAME = os.getenv("PANORAMA_USERNAME", "")
-
-# Panorama password for authentication
 PANORAMA_PASSWORD = os.getenv("PANORAMA_PASSWORD", "")
+if not PANORAMA_USERNAME or not PANORAMA_PASSWORD:
+    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
+    if _vault_url:
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.keyvault.secrets import SecretClient
+            _cred = DefaultAzureCredential()
+            _client = SecretClient(vault_url=_vault_url, credential=_cred)
+            if not PANORAMA_USERNAME:
+                _s = _client.get_secret(os.getenv("PANORAMA_USERNAME_KEYVAULT_SECRET_NAME", "PANORAMA-USERNAME"))
+                if _s and _s.value:
+                    PANORAMA_USERNAME = _s.value
+                    logger.info("Loaded PANORAMA_USERNAME from Azure Key Vault")
+            if not PANORAMA_PASSWORD:
+                _s = _client.get_secret(os.getenv("PANORAMA_PASSWORD_KEYVAULT_SECRET_NAME", "PANORAMA-PASSWORD"))
+                if _s and _s.value:
+                    PANORAMA_PASSWORD = _s.value
+                    logger.info("Loaded PANORAMA_PASSWORD from Azure Key Vault")
+        except Exception as e:
+            logger.warning("Could not load Panorama credentials from Key Vault: %s", e)
 
 # Cache for API key
 # Module-level variable to store the cached API key

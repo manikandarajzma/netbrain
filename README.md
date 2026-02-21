@@ -201,7 +201,7 @@ Download and install Ollama from [https://ollama.ai](https://ollama.ai)
 ollama serve
 
 # Pull the required model (in a separate terminal)
-ollama pull qwen2.5:14b
+ollama pull llama3.1:8b
 ```
 
 ### 2. Install Python Dependencies
@@ -220,13 +220,15 @@ pip install -e .
 
 ### 3. Build the Frontend
 
+After cloning the repo or whenever you don't have `node_modules` yet, run:
+
 ```bash
 cd netbrain/frontend
 npm install
 npm run build
 ```
 
-This creates `frontend/dist/` which FastAPI serves automatically.
+This installs dependencies (including Vite) and creates `frontend/dist/`, which FastAPI serves automatically.
 
 ---
 
@@ -286,19 +288,14 @@ SPLUNK_USERNAME = "your_username"
 SPLUNK_PASSWORD = "your_password"
 ```
 
-### 5. Web UI Authentication (Optional)
+### 5. Web UI Authentication
 
-Set custom login users via environment variable:
+Sign-in uses **Microsoft Entra ID (OIDC)** only. There are no local passwords. Configure Azure App Registration and set in your environment (typically from **Azure Key Vault** in production):
 
-```bash
-# Linux/Mac
-export NETBRAIN_USERS="admin:secret,operator:pass"
+- `AUTH_MODE=oidc`
+- `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`
 
-# Windows PowerShell
-$env:NETBRAIN_USERS="admin:secret,operator:pass"
-```
-
-Default credentials: `admin` / `admin`
+See [Documentation/auth-rbac.md](Documentation/auth-rbac.md) for setup.
 
 ---
 
@@ -549,7 +546,7 @@ Recent deny events for 192.168.1.1 in the last 24 hours
 ollama serve
 
 # Pull the model (if not already pulled)
-ollama pull qwen2.5:14b
+ollama pull llama3.1:8b
 ```
 
 ---

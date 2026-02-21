@@ -3,6 +3,134 @@ const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const exampleQueriesEl = document.getElementById('example-queries');
 let conversationHistory = [];
+var currentConversationId = null;
+var conversationsList = [];
+var LAST_CONVERSATION_KEY = 'netbrain_last_conversation_id';
+
+// On 401, redirect to login so user can sign in again (session expired or invalid).
+function redirectIfUnauthorized(res) {
+    if (res && res.status === 401) {
+        window.location.href = '/login';
+        return true;
+    }
+    return false;
+}
+
+// Load list of conversations and render sidebar; optionally restore last conversation.
+function loadConversations() {
+    fetch('/api/chat/conversations', { credentials: 'same-origin' })
+        .then(function(res) {
+            if (redirectIfUnauthorized(res)) return;
+            if (!res.ok) return Promise.reject();
+            return res.json();
+        })
+        .then(function(data) {
+            conversationsList = (data && data.conversations) ? data.conversations : [];
+            renderConversationList();
+            var lastId = (typeof localStorage !== 'undefined' && localStorage.getItem(LAST_CONVERSATION_KEY)) || null;
+            if (lastId && conversationsList.some(function(c) { return c.id === lastId; })) {
+                selectConversation(lastId);
+            }
+        })
+        .catch(function() { renderConversationList(); });
+}
+
+function renderConversationList() {
+    var container = document.getElementById('conversation-list');
+    if (!container) return;
+    container.innerHTML = '';
+    (conversationsList || []).forEach(function(c) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'conversation-item' + (c.id === currentConversationId ? ' active' : '');
+        btn.textContent = (c.title || 'New chat').slice(0, 80) + ((c.title || '').length > 80 ? '\u2026' : '');
+        btn.title = c.title || 'New chat';
+        btn.addEventListener('click', function() { selectConversation(c.id); });
+        container.appendChild(btn);
+    });
+}
+
+function selectConversation(id) {
+    currentConversationId = id || null;
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_CONVERSATION_KEY, id || '');
+    renderConversationList();
+    if (!id) {
+        clearMessagesToWelcome();
+        conversationHistory = [];
+        return;
+    }
+    fetch('/api/chat/conversations/' + encodeURIComponent(id), { credentials: 'same-origin' })
+        .then(function(res) {
+            if (redirectIfUnauthorized(res)) return;
+            if (!res.ok) return Promise.reject();
+            return res.json();
+        })
+        .then(function(data) {
+            var saved = (data && data.messages) ? data.messages : [];
+            clearMessagesToWelcome();
+            conversationHistory = [];
+            saved.forEach(function(m) {
+                var content = m.content;
+                if (typeof content === 'string' && content.match(/^\{/)) {
+                    try { content = JSON.parse(content); } catch (e) { /* keep string */ }
+                }
+                appendMessage(m.role, content);
+                conversationHistory.push({ role: m.role, content: typeof content === 'string' ? content : JSON.stringify(content) });
+            });
+            if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+        })
+        .catch(function() {
+            clearMessagesToWelcome();
+            conversationHistory = [];
+        });
+}
+
+function clearMessagesToWelcome() {
+    if (!messagesEl) return;
+    var welcome = document.getElementById('welcomeState');
+    while (messagesEl.firstChild) messagesEl.removeChild(messagesEl.firstChild);
+    var w = document.createElement('div');
+    w.className = 'welcome-state';
+    w.id = 'welcomeState';
+    w.innerHTML = '<div class="welcome-title">What can I help with?</div><div class="welcome-subtitle">Ask about network paths, device racks, Panorama groups, or Splunk logs.</div>';
+    messagesEl.appendChild(w);
+}
+
+function newChat() {
+    currentConversationId = null;
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_CONVERSATION_KEY, '');
+    renderConversationList();
+    clearMessagesToWelcome();
+    conversationHistory = [];
+}
+
+function clearChat() {
+    if (currentConversationId) {
+        fetch('/api/chat/conversations/' + encodeURIComponent(currentConversationId), {
+            method: 'DELETE',
+            credentials: 'same-origin',
+        }).then(function(res) {
+            if (redirectIfUnauthorized(res)) return;
+            conversationsList = conversationsList.filter(function(c) { return c.id !== currentConversationId; });
+            renderConversationList();
+        }).catch(function() {});
+    }
+    newChat();
+}
+
+function clearAllChats() {
+    fetch('/api/chat/history', { method: 'DELETE', credentials: 'same-origin' })
+        .then(function(res) {
+            if (redirectIfUnauthorized(res)) return;
+            conversationsList = [];
+            currentConversationId = null;
+            if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_CONVERSATION_KEY, '');
+            renderConversationList();
+            clearMessagesToWelcome();
+            conversationHistory = [];
+        })
+        .catch(function() {});
+}
 
 // --- Welcome empty state ---
 (function createWelcomeState() {
@@ -1209,6 +1337,7 @@ async function sendBatchUpload(file, message) {
             body: formData,
             signal: activeAbort.signal,
         });
+        if (redirectIfUnauthorized(res)) return;
         statusEl.remove();
 
         var data = await res.json().catch(function() { return {}; });
@@ -1266,7 +1395,9 @@ async function send(e) {
 
     activeAbort = new AbortController();
     var historySlice = conversationHistory.slice(-20);
-    var requestBody = JSON.stringify({ message: text, conversation_history: historySlice });
+    var payload = { message: text, conversation_history: historySlice };
+    if (currentConversationId) payload.conversation_id = currentConversationId;
+    var requestBody = JSON.stringify(payload);
 
     try {
         // Phase 1: Discover which tool will be used
@@ -1278,6 +1409,7 @@ async function send(e) {
                 body: requestBody,
                 signal: activeAbort.signal,
             });
+            if (redirectIfUnauthorized(discoverRes)) return false;
             if (discoverRes.ok) {
                 var discoverData = await discoverRes.json().catch(function() { return {}; });
                 toolDisplayName = discoverData.tool_display_name;
@@ -1300,6 +1432,7 @@ async function send(e) {
             body: requestBody,
             signal: activeAbort.signal,
         });
+        if (redirectIfUnauthorized(res)) return false;
 
         if (toolDisplayName) {
             updateStatusMessage(statusEl, 'Processing results from ' + toolDisplayName);
@@ -1315,6 +1448,16 @@ async function send(e) {
         appendMessage('assistant', assistantContent);
         var forHistory = typeof assistantContent === 'string' ? assistantContent : JSON.stringify(assistantContent);
         conversationHistory.push({ role: 'assistant', content: forHistory });
+        if (data.conversation_id) {
+            currentConversationId = data.conversation_id;
+            if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_CONVERSATION_KEY, currentConversationId);
+            if (data.conversation_title && !conversationsList.some(function(c) { return c.id === data.conversation_id; })) {
+                conversationsList.unshift({ id: data.conversation_id, title: data.conversation_title, created_at: new Date().toISOString() });
+                renderConversationList();
+            } else {
+                renderConversationList();
+            }
+        }
     } catch (err) {
         statusEl.remove();
         if (err && err.name === 'AbortError') {
@@ -1392,4 +1535,19 @@ async function send(e) {
 
     poll();
     setInterval(poll, 30000);
+})();
+
+// Load conversations and restore last chat (or show new chat).
+loadConversations();
+(function initNewChatBtn() {
+    var btn = document.getElementById('new-chat-btn');
+    if (btn) btn.addEventListener('click', newChat);
+})();
+(function initClearChatBtn() {
+    var btn = document.getElementById('clear-chat-btn');
+    if (btn) btn.addEventListener('click', clearChat);
+})();
+(function initClearAllChatsBtn() {
+    var btn = document.getElementById('clear-all-chats-btn');
+    if (btn) btn.addEventListener('click', clearAllChats);
 })();

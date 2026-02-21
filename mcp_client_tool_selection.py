@@ -17,6 +17,12 @@ from typing import Optional, Dict, Any, List
 logger = logging.getLogger("netbrain.tool_selection")
 from langchain_ollama import ChatOllama
 
+# Single source for LLM config: .env (loaded by tools.shared)
+try:
+    from netbrain.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+except ImportError:
+    from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+
 try:
     from pydantic import BaseModel, Field
     PYDANTIC_AVAILABLE = True
@@ -213,17 +219,16 @@ async def select_tool_with_llm(
         prompt: User query
         tools_description: Formatted tool descriptions
         conversation_history: Previous conversation messages
-        llm_model: LLM model name (default from OLLAMA_MODEL env var)
+        llm_model: LLM model name (default from shared config / .env OLLAMA_MODEL)
         llm_base_url: LLM base URL
     
     Returns:
         Dict with keys: success, tool_name, parameters, format, intent, needs_clarification, clarification_question, error
     """
-    import os
     if llm_model is None:
-        llm_model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        llm_model = OLLAMA_MODEL
     if llm_base_url is None:
-        llm_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        llm_base_url = OLLAMA_BASE_URL
 
     try:
         # Check if Ollama is accessible before creating LLM instance
@@ -369,11 +374,10 @@ async def synthesize_final_answer(
     Use the LLM to synthesize a short, user-friendly final answer after a failed tool call (or to summarize a raw error).
     Forces a coherent response instead of returning only the raw error message.
     """
-    import os
     if llm_model is None:
-        llm_model = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+        llm_model = OLLAMA_MODEL
     if llm_base_url is None:
-        llm_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        llm_base_url = OLLAMA_BASE_URL
 
     if isinstance(error_or_result, dict):
         err_msg = error_or_result.get("error") or error_or_result.get("message") or str(error_or_result)[:500]

@@ -2,6 +2,22 @@
 
 This guide covers how to set up Microsoft Entra ID (OIDC) authentication with Privileged Identity Management (PIM) and role-based access control (RBAC) for NetAssist.
 
+**No local passwords.** Authentication is OIDC only. All credentials (Azure app registration, NetBrain API, Panorama, NetBox, Splunk, etc.) should be sourced from **Azure Key Vault** (or equivalent) and injected into the environment; do not store secrets in `.env` in production.
+
+---
+
+## "Sign-in is not configured" — Quick fix
+
+1. Create a `.env` file (copy from `.env.example`) in the **project root** or in the **netbrain/** directory.
+2. Set these (get values from Azure App Registration or Key Vault):
+   - `AUTH_MODE=oidc`
+   - `AZURE_CLIENT_ID=<your-app-client-id>`
+   - `AZURE_TENANT_ID=<your-tenant-id>`
+   - `AZURE_CLIENT_SECRET=<your-client-secret>`
+3. Restart the app. The **Sign in with Microsoft** button should appear.
+
+The app loads `.env` from `netbrain/`, then the project root, then the current working directory.
+
 ---
 
 ## 10-Step OIDC + PIM Setup
@@ -20,7 +36,7 @@ This guide covers how to set up Microsoft Entra ID (OIDC) authentication with Pr
 1. In the App Registration, go to **Certificates & secrets > Client secrets > New client secret**
 2. Add a description (e.g., `netassist-secret`) and set an expiry
 3. Copy the secret **Value** immediately (it won't be shown again)
-4. Add all three values to `.env`:
+4. Store the client secret in **Azure Key Vault** and inject into the app (e.g. via env or Key Vault references). For local dev you can use `.env`:
 
 ```env
 AZURE_CLIENT_ID=<application-client-id>
@@ -97,17 +113,18 @@ When a user needs access, they activate their PIM membership:
 
 **Important:** The self-service activation view is under **My roles > Groups**. The admin management view (which shows Remove/Update/Extend) is a different page.
 
-### Step 9: Configure the `.env` File
+### Step 9: Configure OIDC
+
+Provide these in the environment (from **Azure Key Vault** in production, or in `.env` for local development):
 
 ```env
-# Auth mode: "local" for dev, "oidc" for production
 AUTH_MODE=oidc
-
-# Microsoft OIDC
 AZURE_CLIENT_ID=<your-client-id>
 AZURE_CLIENT_SECRET=<your-client-secret>
 AZURE_TENANT_ID=<your-tenant-id>
 ```
+
+If any of these are missing, the login page will show “Sign-in is not configured” until they are set.
 
 #### Optional: Fallback Role Resolution
 
@@ -140,12 +157,15 @@ Open `http://localhost:8000`. The login page will show a **Sign in with Microsof
 
 ### Roles
 
-Two roles are defined in `auth.py`:
+Three roles are defined in `auth.py`:
 
 | Role       | Tools Allowed                          | Sidebar Categories         |
 |------------|----------------------------------------|----------------------------|
 | `admin`    | All tools                              | All categories             |
 | `netadmin` | NetBrain (path, allow) + Panorama only | NetBrain, Panorama         |
+| `guest`    | None (no access)                       | None                       |
+
+The `guest` role is used internally for unknown usernames or invalid/expired sessions; users with this role have no tool access and see no sidebar categories.
 
 ### Role Definition (auth.py)
 
@@ -159,12 +179,14 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
         "query_panorama_ip_object_group",
         "query_panorama_address_group_members",
     },
+    "guest": set(),  # least privilege: no tool access
 }
 
-# Maps role -> list of sidebar category slugs shown in the UI.  None = all.
+# Maps role -> list of sidebar categories shown in the UI.  None = all.
 ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
     "netadmin": ["netbrain", "panorama"],
+    "guest": [],
 }
 ```
 
@@ -268,27 +290,20 @@ The header shows the logged-in user's email and role:
 
 ---
 
-## Local Auth (Development)
-
-For local development without Azure, set `AUTH_MODE=local` and define users in `.env`:
-
-```env
-AUTH_MODE=local
-NETBRAIN_USERS=admin:admin:admin,netadmin:netadmin:netadmin
-```
-
-Format: `USERNAME:PASSWORD:ROLE` (comma-separated, role defaults to `admin` if omitted).
-
----
-
 ## Environment Variable Reference
 
-| Variable              | Required | Description                                                  |
-|-----------------------|----------|--------------------------------------------------------------|
-| `AUTH_MODE`           | Yes      | `local` or `oidc`                                            |
-| `AZURE_CLIENT_ID`     | OIDC     | App Registration client ID                                   |
-| `AZURE_CLIENT_SECRET`  | OIDC     | App Registration client secret                               |
-| `AZURE_TENANT_ID`     | OIDC     | Azure tenant ID                                              |
-| `NETBRAIN_USERS`       | Local    | Local users in `USER:PASS:ROLE` format                       |
-| `OIDC_ROLE_MAP`        | No       | Per-email role override: `user@co.com:admin,user2@co.com:netadmin` |
-| `OIDC_GROUP_ROLE_MAP`  | No       | Group ID to role: `<object-id>:admin,<object-id>:netadmin`   |
+| Variable              | Required | Description                                                                 |
+|-----------------------|----------|-----------------------------------------------------------------------------|
+| `AUTH_MODE`           | Yes      | `oidc` (only supported mode; default)                                      |
+| `AZURE_CLIENT_ID`     | OIDC     | App Registration client ID (from Key Vault in production)                  |
+| `AZURE_CLIENT_SECRET` | OIDC     | App Registration client secret (from Key Vault in production)               |
+| `AZURE_TENANT_ID`     | OIDC     | Azure tenant ID                                                             |
+| `OIDC_GROUP_ROLE_MAP` | No       | Group ID to role: `<object-id>:admin,<object-id>:netadmin`                  |
+| `OAUTH_STATE_SECRET`  | No       | Fixed secret for OAuth state cookie. Set when running multiple app instances so they share the same secret; otherwise a random per-process secret is used. |
+| `SESSION_SECRET`      | No       | Secret used to sign session cookies. Set to a fixed value so sessions survive restarts and work across multiple app instances; otherwise a random per-process secret is used (sessions then only valid for that process). |
+
+Sessions are stored in **signed cookies** (no server-side store), so they survive app restarts and work across multiple instances when `SESSION_SECRET` is set.
+
+Backend credentials (NetBrain, Panorama, NetBox, Splunk, etc.) are also typically sourced from Azure Key Vault. **NetBox:** if `NETBOX_TOKEN` is not set in the environment but `AZURE_KEYVAULT_URL` is set, the app loads the token from Key Vault (default secret name `NETBOX-TOKEN`; override with `NETBOX_TOKEN_KEYVAULT_SECRET_NAME`). The same Azure identity (e.g. `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`) is used for Key Vault access.
+
+**If it used to work and stopped:** NetBox tools run in the **MCP server** process (separate from the FastAPI app). That process must have the same environment: ensure `AZURE_KEYVAULT_URL` and the Azure app credentials are available when the MCP server starts (e.g. same `.env` in its working directory, or the same env injection you use for the web app). Check MCP server logs for `Key Vault: could not load secret` — the message will show the underlying error (e.g. permission, wrong secret name, or credential failure).

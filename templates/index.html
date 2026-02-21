@@ -26,6 +26,15 @@
     </header>
     <div id="app-main">
         <aside id="sidebar">
+            <div id="your-chats">
+                <h2>Your chats</h2>
+                <div class="your-chats-row">
+                    <button type="button" id="new-chat-btn" class="new-chat-btn">+ New chat</button>
+                    <button type="button" id="clear-chat-btn" class="clear-chat-btn" title="Clear current chat and remove from list">Clear</button>
+                </div>
+                <div id="conversation-list" class="conversation-list"></div>
+                <button type="button" id="clear-all-chats-btn" class="clear-all-chats-btn" title="Delete all past chats">Clear all past chats</button>
+            </div>
             <div id="example-queries">
                 <h2>📋 Example Queries</h2>
                 {% if allowed_categories is none or "netbrain" in allowed_categories %}

@@ -82,56 +82,11 @@ Cookie: session=<session_id>
 
 ### Step 2 — Authentication
 
-There are two auth modes, controlled by the `AUTH_MODE` environment variable. Both produce the same end result: a `session_id` cookie that maps to a `{username, role}` entry in the in-memory session store (`auth.py`).
+Authentication is **OIDC only** (Microsoft Entra ID). Credentials are sourced from **Azure Key Vault**; there are no local passwords. The result is a `session_id` cookie that maps to a `{username, role}` entry in the in-memory session store (`auth.py`).
 
 ---
 
-#### Auth Mode A — Local (`AUTH_MODE=local`)
-
-Used for development or environments without Azure. Credentials are defined in `.env` as `NETBRAIN_USERS=admin:secret:admin,viewer:pass:netadmin`.
-
-```python
-# auth.py (lines 40-49)
-_default_users_env = os.getenv("NETBRAIN_USERS", "admin:admin:admin")
-LOCAL_USERS = {}
-for part in _default_users_env.strip().split(","):
-    u, p, r = part.split(":")
-    LOCAL_USERS[u] = {"password": p, "role": r}
-```
-
-Login flow:
-
-```python
-# app_fastapi.py (lines 148-170)
-
-@app.post("/login")
-async def login_post(username: str = Form(...), password: str = Form(...)):
-
-    # 1. Compare plaintext password against LOCAL_USERS dict
-    if not verify_local_user(username, password):
-        return RedirectResponse(url="/login?error=invalid", status_code=302)
-
-    # 2. Look up role from LOCAL_USERS
-    role = get_user_role(username)           # e.g. "admin"
-
-    # 3. Create server-side session (random 32-byte token)
-    session_id = create_session(username, role=role, auth_mode="local")
-
-    # 4. Set httponly session cookie (7-day TTL for local auth)
-    r = RedirectResponse(url="/", status_code=302)
-    r.set_cookie(
-        key="netbrain_session",
-        value=session_id,
-        max_age=86400 * 7,
-        httponly=True,
-        samesite="lax",
-    )
-    return r
-```
-
----
-
-#### Auth Mode B — Microsoft OIDC (`AUTH_MODE=oidc`)
+#### Microsoft OIDC (`AUTH_MODE=oidc`)
 
 Uses Microsoft Entra ID (Azure AD) via the **Authlib** library. Requires `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID` in `.env`.
 
@@ -830,11 +785,10 @@ return {"role": "assistant", "content": msg}
 | Step | Component | File | Technology |
 |------|-----------|------|------------|
 | 1 | HTTP transport | — | Browser fetch / axios |
-| 2 (local) | Credential check | `app_fastapi.py` → `auth.py` | `verify_local_user()`, plaintext compare against `LOCAL_USERS` dict |
 | 2 (OIDC) | OAuth redirect | `app_fastapi.py` | Authlib `authorize_redirect` → Microsoft Entra ID |
 | 2 (OIDC) | Auth code exchange | `app_fastapi.py` | Authlib `authorize_access_token`, JWT decode, `extract_role_from_token` |
-| 2 (both) | Session creation | `auth.py` | `create_session()`, `secrets.token_urlsafe(32)`, httponly cookie |
-| 2 (both) | Session validation per request | `app_fastapi.py` → `auth.py` | `get_session()`, OIDC 30-min TTL check, session dict lookup |
+| 2 | Session creation | `auth.py` | `create_session()`, `secrets.token_urlsafe(32)`, httponly cookie |
+| 2 | Session validation per request | `app_fastapi.py` → `auth.py` | `get_session()`, OIDC 30-min TTL check, session dict lookup |
 | 3 | Agent loop orchestration | `chat_service.py` | Python asyncio |
 | 4a | Keyword scope pre-check | `chat_service.py` | Regex (`re`) |
 | 4b | LLM scope classification | `chat_service.py` | LangChain `ChatOllama.ainvoke`, Ollama |

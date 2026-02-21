@@ -8,7 +8,7 @@ This document covers what FastAPI does in this codebase, how the application is 
 
 FastAPI is the **HTTP entry point** for the entire application. It runs on port `8000` and is responsible for:
 
-- Serving the login UI (Jinja2 or Vue SPA)
+- Serving the login UI (Jinja2 or React SPA)
 - Handling local username/password authentication and Microsoft OIDC login
 - Protecting every API endpoint with session-cookie authentication
 - Delegating all AI/chat work to `chat_service.process_message()`
@@ -39,7 +39,7 @@ app.add_middleware(
 
 The `title` and `version` appear in the auto-generated OpenAPI docs at `/docs`.
 
-CORS is configured to **allow all origins** — appropriate for an internal tool where the Vue frontend may be served from a different port during development.
+CORS is configured to **allow all origins** — appropriate for an internal tool where the React frontend may be served from a different port during development.
 
 ---
 
@@ -49,7 +49,7 @@ Two middleware layers are registered, depending on `AUTH_MODE`.
 
 ### 3.1 CORS Middleware (always active)
 
-Always registered. Allows cross-origin requests from any origin so that a Vue dev server on `localhost:5173` can call the FastAPI backend on `localhost:8000`.
+Always registered. Allows cross-origin requests from any origin so that a React dev server on `localhost:5173` can call the FastAPI backend on `localhost:8000`.
 
 ### 3.2 Session Middleware (OIDC only)
 
@@ -157,8 +157,8 @@ def require_auth(request: Request) -> str:
 | `GET` | `/auth/microsoft` | No | Redirect to Microsoft OAuth2 login |
 | `GET` | `/auth/callback` | No | Handle OAuth2 callback, create session |
 | `GET` | `/logout` | No | Destroy session, redirect to `/login` |
-| `GET` | `/api/me` | Yes | Return current user info (for Vue SPA) |
-| `GET` | `/` | Yes | Serve main chat UI (Vue SPA or Jinja2) |
+| `GET` | `/api/me` | Yes | Return current user info (for React SPA) |
+| `GET` | `/` | Yes | Serve main chat UI (React SPA or Jinja2) |
 | `GET` | `/health` | No | App + MCP server health check |
 | `POST` | `/api/discover` | Yes | Tool discovery only (no execution) |
 | `POST` | `/api/chat` | Yes | Full chat query — tool selection + execution |
@@ -172,45 +172,21 @@ Serves `templates/login.html` via Jinja2. Passes three boolean flags derived fro
 
 | `?error=` value | Template variable | Meaning |
 |---|---|---|
-| `invalid` | `error_invalid=True` | Wrong username or password |
-| `oidc` | `error_oidc=True` | OIDC redirect or token exchange failed |
+| `oidc` | `error_oidc=True` | OIDC redirect or token exchange failed, or OIDC not configured |
 | `norole` | `error_norole=True` | OIDC login succeeded but no role assigned |
 
-Also passes `auth_mode` so the template can conditionally show/hide the "Sign in with Microsoft" button.
+Also passes `oidc_configured` so the template shows "Sign in with Microsoft" only when Azure is configured. There is no local password auth; all credentials are in Azure Key Vault.
 
 If the user is already logged in, immediately redirects to `/`.
 
 ---
 
-### 7.2 `POST /login`
-
-Handles local username/password form submission:
-
-```python
-# app_fastapi.py (lines 148-170)
-@app.post("/login")
-async def login_post(response: Response, username: str = Form(...), password: str = Form(...)):
-    if not verify_local_user(username, password):
-        return RedirectResponse(url="/login?error=invalid", status_code=302)
-    role = get_user_role(username)
-    session_id = create_session(username, role=role, auth_mode="local")
-    r = RedirectResponse(url="/", status_code=302)
-    r.set_cookie(key=SESSION_COOKIE, value=session_id,
-                 max_age=SESSION_MAX_AGE_LOCAL,   # 7 days
-                 httponly=True, samesite="lax")
-    return r
-```
-
-`verify_local_user()` does a plain-text password comparison against the `NETBRAIN_USERS` env var. On success, a session entry is created in `auth._sessions` and its ID is written to the cookie.
-
----
-
-### 7.3 `GET /auth/microsoft`
+### 7.2 `GET /auth/microsoft`
 
 Initiates the Microsoft OIDC flow:
 
 ```python
-# app_fastapi.py (lines 175-182)
+# app_fastapi.py
 @app.get("/auth/microsoft")
 async def auth_microsoft(request: Request):
     redirect_uri = str(request.url_for("auth_callback")).replace("://127.0.0.1", "://localhost")
@@ -225,7 +201,7 @@ The `127.0.0.1` → `localhost` replacement ensures the callback URL matches the
 
 ---
 
-### 7.4 `GET /auth/callback`
+### 7.3 `GET /auth/callback`
 
 Handles the token exchange after Microsoft redirects back:
 
@@ -266,7 +242,7 @@ If none match → `role=None` → user is redirected to `/login?error=norole`.
 
 ---
 
-### 7.5 `GET /logout`
+### 7.4 `GET /logout`
 
 ```python
 @app.get("/logout")
@@ -282,9 +258,9 @@ Destroys the server-side session and deletes the browser cookie. Does **not** hi
 
 ---
 
-### 7.6 `GET /api/me`
+### 7.5 `GET /api/me`
 
-Returns the current user's context as JSON, consumed by the Vue SPA on load:
+Returns the current user's context as JSON, consumed by the React SPA on load:
 
 ```python
 @app.get("/api/me")
@@ -302,11 +278,11 @@ async def api_me(request: Request):
     }
 ```
 
-The Vue SPA calls this on startup to decide which sidebar categories to render. `allowed_categories` comes from `auth.ROLE_ALLOWED_CATEGORIES` — `None` means all categories are visible (admin), a list like `["netbrain", "panorama"]` restricts the UI for `netadmin`.
+The React SPA calls this on startup to decide which sidebar categories to render. `allowed_categories` comes from `auth.ROLE_ALLOWED_CATEGORIES` — `None` means all categories are visible (admin), a list like `["netbrain", "panorama"]` restricts the UI for `netadmin`.
 
 ---
 
-### 7.7 `GET /` — Main Chat UI
+### 7.6 `GET /` — Main Chat UI
 
 ```python
 @app.get("/", response_class=HTMLResponse)
@@ -315,9 +291,9 @@ async def index(request: Request):
     if not username:
         return RedirectResponse(url="/login", status_code=302)
 
-    vue_index = APP_DIR / "frontend" / "dist" / "index.html"
-    if vue_index.exists():
-        return HTMLResponse(vue_index.read_text(encoding="utf-8"))  # Vue SPA
+    react_index = APP_DIR / "frontend" / "dist" / "index.html"
+    if react_index.exists():
+        return HTMLResponse(react_index.read_text(encoding="utf-8"))  # React SPA
 
     # Fallback to Jinja2 server-rendered template
     sid = get_session_id(request)
@@ -330,12 +306,12 @@ async def index(request: Request):
 ```
 
 **Two rendering modes:**
-1. **Vue SPA** (production) — if `frontend/dist/index.html` exists, FastAPI serves it as a raw HTML string. The Vue app then calls `/api/me` to get user context and manages its own routing.
+1. **React SPA** (production) — if `frontend/dist/index.html` exists, FastAPI serves it as a raw HTML string. The React app then calls `/api/me` to get user context and manages its own routing.
 2. **Jinja2 fallback** (development / no frontend build) — FastAPI renders `templates/index.html` server-side, injecting `username`, `role`, and `allowed_categories` directly into the template context.
 
 ---
 
-### 7.8 `GET /health`
+### 7.7 `GET /health`
 
 ```python
 @app.get("/health")
@@ -360,7 +336,7 @@ Probes the MCP server's `/health` endpoint via `aiohttp` with a 3-second timeout
 
 ---
 
-### 7.9 `POST /api/discover`
+### 7.8 `POST /api/discover`
 
 ```python
 @app.post("/api/discover")
@@ -377,11 +353,11 @@ async def api_discover(request: Request, body: ChatRequest):
     return result
 ```
 
-Calls `process_message()` with `discover_only=True`. Tool selection (LLM + regex) runs, but the selected tool is **not executed** against NetBrain/NetBox/Panorama. Returns the tool name and extracted parameters only — used by the Vue frontend to show a "preview" before committing to a full query.
+Calls `process_message()` with `discover_only=True`. Tool selection (LLM + regex) runs, but the selected tool is **not executed** against NetBrain/NetBox/Panorama. Returns the tool name and extracted parameters only — used by the React frontend to show a "preview" before committing to a full query.
 
 ---
 
-### 7.10 `POST /api/chat`
+### 7.9 `POST /api/chat`
 
 ```python
 @app.post("/api/chat")
@@ -426,7 +402,7 @@ NetBrain sometimes populates `path_status_description` with L2 discovery warning
 
 ---
 
-### 7.11 `POST /api/batch-upload`
+### 7.10 `POST /api/batch-upload`
 
 Accepts a multipart form upload (`.csv`, `.xlsx`, `.xls`) plus an optional natural language `message` describing the intent:
 
@@ -559,7 +535,7 @@ Each element in `conversation_history` is a dict with `{"role": "user"|"assistan
 
 VUE_ASSETS = APP_DIR / "frontend" / "dist" / "assets"
 if VUE_ASSETS.exists():
-    app.mount("/assets", StaticFiles(directory=str(VUE_ASSETS)), name="vue-assets")
+    app.mount("/assets", StaticFiles(directory=str(REACT_ASSETS)), name="react-assets")
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -571,11 +547,11 @@ if ICONS_DIR.exists():
 
 | Mount | Directory | Purpose |
 |---|---|---|
-| `/assets` | `frontend/dist/assets/` | Vue SPA compiled JS/CSS chunks |
+| `/assets` | `frontend/dist/assets/` | React SPA compiled JS/CSS chunks |
 | `/static` | `static/` | Shared CSS/JS for Jinja2 fallback templates |
 | `/icons` | `icons/` | Device type icons for path visualisation |
 
-Mounts are conditional — they are only registered if the directories exist, so the app starts cleanly even without a Vue build.
+Mounts are conditional — they are only registered if the directories exist, so the app starts cleanly even without a React build.
 
 ---
 

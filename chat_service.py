@@ -364,11 +364,10 @@ Query: "{prompt}"
 
 RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
 """
-
-        import os
+        from netbrain.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
         llm = ChatOllama(
-            model=os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_BASE_URL,
             temperature=0.0,
         )
 
@@ -1077,12 +1076,12 @@ def _normalize_result(
     return result
 
 
-def _check_tool_access(username: str | None, tool_name: str) -> str | None:
-    """Return an error message if the user's role forbids *tool_name*, else None."""
+def _check_tool_access(username: str | None, tool_name: str, session_id: str | None = None) -> str | None:
+    """Return an error message if the user's role forbids *tool_name*, else None. Uses session_id for role when provided."""
     if username is None:
         return None
-    from netbrain.auth import get_user_role, get_allowed_tools
-    role = get_user_role(username)
+    from netbrain.auth import get_role_for_session, get_user_role, get_allowed_tools
+    role = get_role_for_session(session_id) if session_id else get_user_role(username)
     allowed = get_allowed_tools(role)
     if allowed is not None and tool_name not in allowed:
         display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
@@ -1100,6 +1099,7 @@ async def process_message(
     parameters: dict[str, Any] | None = None,
     max_iterations: int | None = None,
     username: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Process one user message: discover tool, optionally execute, return assistant response.
@@ -1175,7 +1175,7 @@ async def process_message(
 
         tool_name = selection.get("tool_name")
         # RBAC check
-        access_err = _check_tool_access(username, tool_name)
+        access_err = _check_tool_access(username, tool_name, session_id)
         if access_err:
             return {"role": "assistant", "content": access_err}
         tool_params = dict(selection.get("parameters") or {})

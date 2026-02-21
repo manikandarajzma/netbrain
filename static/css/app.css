@@ -223,6 +223,105 @@ header a:hover {
     box-shadow: 2px 0 24px rgba(0, 0, 0, 0.2);
 }
 
+#your-chats {
+    padding: 1.25rem 1.25rem 0;
+    border-bottom: 1px solid var(--border);
+}
+#your-chats h2 {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    margin: 0 0 1rem 0;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+.your-chats-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.new-chat-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.new-chat-btn:hover {
+    background: var(--bg-active);
+}
+.conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 240px;
+    overflow-y: auto;
+    margin-bottom: 1rem;
+}
+.conversation-item {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.conversation-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.conversation-item.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.clear-chat-btn {
+    padding: 0.5rem 0.75rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.clear-chat-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.clear-all-chats-btn {
+    width: 100%;
+    padding: 0.4rem 0.75rem;
+    margin-top: 0.25rem;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    text-align: left;
+}
+.clear-all-chats-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
 #chat-main {
     flex: 1;
     min-width: 0;

@@ -150,18 +150,14 @@
         <div class="login-card">
             <h1>NetAssist</h1>
             <p class="subtitle">Sign in to continue</p>
-            {% if error_invalid %}
-            <p class="error">Invalid username or password.</p>
-            {% endif %}
             {% if error_oidc %}
-            <p class="error">Microsoft sign-in failed. Please try again.</p>
+            <p class="error">Microsoft sign-in failed or OIDC is not configured. Please try again or contact your administrator.</p>
             {% endif %}
             {% if error_norole %}
             <p class="error">Your account does not have an assigned role. Contact your administrator.</p>
             {% endif %}
 
-            {% if auth_mode == "oidc" %}
-            <!-- Microsoft OIDC login -->
+            {% if oidc_configured %}
             <a href="/auth/microsoft" class="ms-btn">
                 <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" viewBox="0 0 21 21">
                     <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
@@ -172,14 +168,8 @@
                 Sign in with Microsoft
             </a>
             {% else %}
-            <!-- Local login form -->
-            <form method="post" action="/login">
-                <label for="username">Username</label>
-                <input id="username" name="username" type="text" required autocomplete="username" placeholder="Enter your username">
-                <label for="password">Password</label>
-                <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="Enter your password">
-                <button type="submit">Sign in</button>
-            </form>
+            <p class="error">Sign-in is not configured.</p>
+            <p class="subtitle" style="margin-top: 0.5rem;">Set <code>AUTH_MODE=oidc</code> and provide <code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code>, and <code>AZURE_CLIENT_SECRET</code> in the environment (from Azure Key Vault in production, or in <code>.env</code> for local dev). See <strong>Documentation/auth-rbac.md</strong> for setup.</p>
             {% endif %}
         </div>
     </div>

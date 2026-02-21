@@ -12,6 +12,9 @@ wheels/
 # Environment variables (contains secrets)
 .env
 
-# Vue frontend build artifacts
+# Persisted chat history (per-user data)
+data/
+
+# React frontend build artifacts
 frontend/node_modules/
 frontend/dist/

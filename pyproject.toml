@@ -42,4 +42,8 @@ dependencies = [
     "itsdangerous>=2.1.0",
     "python-dotenv>=1.0.0",
     "python-multipart>=0.0.7",
+
+    # Azure Key Vault — load NETBOX_TOKEN etc. when not in env
+    "azure-identity>=1.15.0",
+    "azure-keyvault-secrets>=4.7.0",
 ]
