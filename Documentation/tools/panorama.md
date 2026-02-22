@@ -367,7 +367,7 @@ Panorama API keys have no built-in expiry. A key remains valid indefinitely unti
 
 Yes. A stolen key works directly against Panorama's XML API regardless of Atlas. Client-side TTLs in Atlas do not help here because they only control when Atlas re-fetches a key — they do not invalidate the old key on Panorama. The real mitigations are on the Panorama side:
 
-- **Read-only role** — create a dedicated Atlas admin account with `XML API` + `Read` permissions only. A stolen key can query but cannot change config, commit, or push policies.
+- **Read-only service account** — create a dedicated Panorama service account for Atlas with a custom role that grants `XML API` access with `Read`-only permissions. A stolen key can query but cannot change config, commit, or push policies.
 - **Allowed IP restriction** — in Panorama under `Device > Administrators > [account] > Allowed IP Addresses`, restrict the account to only accept API calls from the Atlas server's IP. Requests from any other IP are rejected even with a valid key.
 - **Password rotation** — rotating the Panorama account password immediately invalidates all existing keys for that account. Atlas re-fetches a fresh key automatically on the next query since credentials are always pulled from Azure Key Vault.
 
