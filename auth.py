@@ -69,16 +69,7 @@ ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
 # OIDC role resolution fallbacks (when Azure app roles aren't in the token)
 # ---------------------------------------------------------------------------
 
-# 1. Per-user email override: OIDC_ROLE_MAP=user@example.com:netadmin
-OIDC_ROLE_MAP: dict[str, str] = {}
-_oidc_role_map_env = os.getenv("OIDC_ROLE_MAP", "")
-for _part in _oidc_role_map_env.strip().split(","):
-    _part = _part.strip()
-    if ":" in _part:
-        _email, _role = _part.rsplit(":", 1)
-        OIDC_ROLE_MAP[_email.strip().lower()] = _role.strip().lower()
-
-# 2. Azure security group -> role mapping (scalable):
+# Azure security group -> role mapping (scalable):
 #    OIDC_GROUP_ROLE_MAP=<group-object-id>:netadmin,<group-object-id>:admin
 #    Requires: App Registration > Token configuration > Add groups claim
 OIDC_GROUP_ROLE_MAP: dict[str, str] = {}
@@ -166,7 +157,6 @@ def extract_role_from_token(token_claims: dict) -> Optional[str]:
     Priority order:
     1. Azure 'roles' claim (app roles assigned via Enterprise Application)
     2. OIDC_GROUP_ROLE_MAP (Azure security group -> role)
-    3. OIDC_ROLE_MAP (per-email override)
 
     Returns None if no role could be resolved (user has no access).
     """
@@ -184,13 +174,6 @@ def extract_role_from_token(token_claims: dict) -> Optional[str]:
             role = OIDC_GROUP_ROLE_MAP.get(str(gid).lower())
             if role and role in ROLE_ALLOWED_TOOLS:
                 return role
-
-    # 3. Check per-email override
-    if OIDC_ROLE_MAP:
-        for key in ("preferred_username", "email", "upn"):
-            email = token_claims.get(key, "").strip().lower()
-            if email and email in OIDC_ROLE_MAP:
-                return OIDC_ROLE_MAP[email]
 
     # No role found — user has no access
     return None

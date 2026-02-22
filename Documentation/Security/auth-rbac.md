@@ -128,14 +128,8 @@ If any of these are missing, the login page will show “Sign-in is not configur
 
 #### Optional: Fallback Role Resolution
 
-If you cannot use App Roles (Step 4-6), you can use these fallback mechanisms:
+If you cannot use App Roles (Step 4-6), you can use Azure security group to role mapping:
 
-**Option A — Per-user email mapping:**
-```env
-OIDC_ROLE_MAP=user@company.com:admin,other@company.com:netadmin
-```
-
-**Option B — Azure security group to role mapping:**
 ```env
 # Get group Object IDs from Entra ID > Groups
 OIDC_GROUP_ROLE_MAP=<group-object-id>:admin,<group-object-id>:netadmin
@@ -210,13 +204,6 @@ def extract_role_from_token(token_claims: dict) -> Optional[str]:
             role = OIDC_GROUP_ROLE_MAP.get(str(gid).lower())
             if role and role in ROLE_ALLOWED_TOOLS:
                 return role
-
-    # 3. OIDC_ROLE_MAP (per-email override from env)
-    if OIDC_ROLE_MAP:
-        for key in ("preferred_username", "email", "upn"):
-            email = token_claims.get(key, "").strip().lower()
-            if email and email in OIDC_ROLE_MAP:
-                return OIDC_ROLE_MAP[email]
 
     # No role found — user denied access
     return None

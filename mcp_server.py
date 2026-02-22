@@ -74,5 +74,12 @@ if __name__ == "__main__":
 
     logger.info("MCP server starting; logs written to %s", log_file_path)
 
+    # Patch uvicorn's default LOGGING_CONFIG before mcp.run() so that the
+    # uvicorn.access logger (which produces "GET /health" lines) has no console
+    # handler and propagates to root, where our FileHandler writes to mcp_server.log.
+    import uvicorn.config as _uvicorn_config
+    _uvicorn_config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["handlers"] = []
+    _uvicorn_config.LOGGING_CONFIG["loggers"]["uvicorn.access"]["propagate"] = True
+
     # Run the MCP server using streamable-http transport
     mcp.run(transport="streamable-http", port=MCP_SERVER_PORT, host=MCP_SERVER_HOST)

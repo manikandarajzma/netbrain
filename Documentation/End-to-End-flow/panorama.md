@@ -122,7 +122,6 @@ When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login pag
 2. `extract_role_from_token(userinfo)` in [auth.py](../../auth.py) checks, in priority order:
    - **Azure app roles** — `roles` claim in the token (e.g. `"admin"`, `"netadmin"`).
    - **Azure security group → role map** — `OIDC_GROUP_ROLE_MAP` env var (group object ID → role).
-   - **Per-email override** — `OIDC_ROLE_MAP` env var (`user@company.com:netadmin`).
 3. If no role resolves → 302 redirect to `/login?error=norole`.
 4. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL).
 
@@ -316,7 +315,7 @@ api_key = await panoramaauth.get_api_key()
 
 `get_api_key()` checks for a module-level cached key first. If none:
 
-1. Loads `PANORAMA_USERNAME` and `PANORAMA_PASSWORD` — from `.env` or, if missing, from **Azure Key Vault** using `DefaultAzureCredential`:
+1. Loads `PANORAMA_USERNAME` and `PANORAMA_PASSWORD` exclusively from **Azure Key Vault** using `DefaultAzureCredential`:
    ```python
    from azure.identity import DefaultAzureCredential
    from azure.keyvault.secrets import SecretClient
@@ -324,12 +323,14 @@ api_key = await panoramaauth.get_api_key()
    PANORAMA_USERNAME = _client.get_secret("PANORAMA-USERNAME").value
    PANORAMA_PASSWORD = _client.get_secret("PANORAMA-PASSWORD").value
    ```
+   If `AZURE_KEYVAULT_URL` is not set, credentials are unavailable and authentication fails.
 
 2. Calls the Panorama XML API keygen endpoint:
    ```
    GET https://192.168.15.247/api/?type=keygen&user=<user>&password=<encoded>
    ```
    SSL certificate verification is disabled (`ssl.CERT_NONE`) because Panorama uses a self-signed certificate.
+   > **Production note:** `PANORAMA_VERIFY_SSL=false` should be validated before production deployment. If Panorama has a valid CA-signed certificate, remove the SSL bypass (`ssl.CERT_NONE` / `check_hostname=False`) in `panoramaauth.py` and set `PANORAMA_VERIFY_SSL=true` in `.env`.
 
 3. Parses the XML response:
    ```xml
@@ -573,3 +574,5 @@ User          Browser           FastAPI          chat_service       MCP Server  
  │              │ render tables    │                   │                 │                │              │
  │◄─────────────│                  │                   │                 │                │              │
 ```
+
+---
