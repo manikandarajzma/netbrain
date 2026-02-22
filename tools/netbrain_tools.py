@@ -1593,32 +1593,15 @@ async def query_network_path(
     continue_on_policy_denial: bool = True
 ):
     """
-    Get the network path (hop-by-hop) between source and destination using NetBrain.
+    Trace the hop-by-hop network path between two IP addresses using NetBrain.
 
-    Use this tool when the user wants to see the path or route between two IPs (which devices/hops traffic takes).
-    Typical phrases: "find path from X to Y", "show path from X to Y", "network path between X and Y", "trace path".
-    Input: source (IP), destination (IP); optionally protocol and port.
-    Do NOT use for: "is path allowed" or "is traffic allowed" (use check_path_allowed). Do NOT use for rack or device lookups (use get_rack_details or get_device_rack_location).
+    Use for: queries asking to SEE the path/route/hops between two IPs — "find path from X to Y", "show path", "trace path", "network path between X and Y".
+    Do NOT use for: "is path allowed?" / "is traffic allowed?" (use check_path_allowed), device/rack lookups.
 
-    Examples: "find path from 10.0.0.1 to 10.0.1.1", "network path between 192.168.1.1 and 192.168.2.1"
-
-    **Query variations (all → query_network_path; need source and destination IPs; do NOT use for "is path allowed" → use check_path_allowed):**
-    - "find path from 10.0.0.1 to 10.0.1.1" / "show path from 10.0.0.1 to 10.0.1.1"
-    - "network path between 10.0.0.1 and 10.0.1.1" / "path from 10.0.0.1 to 10.0.1.1"
-    - "trace path 10.0.0.1 to 10.0.1.1" / "get path from 10.0.0.1 to 10.0.1.1"
-    - "how does traffic get from 10.0.0.1 to 10.0.1.1?" / "route from 10.0.0.1 to 10.0.1.1"
-    - "show me the path/hops from 10.0.0.1 to 10.0.1.1" / "path hops from X to Y"
-
-    **HANDLING FOLLOW-UP RESPONSES:**
-    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - AND the current query is just "4" or "four" → this means the user selected option 4 (Query network path)
-    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "4" and the question lists "4) Query network path", use this tool**
-    - Note: Network path queries require both source and destination IPs, so you may need to ask for the destination IP if only one IP is in the conversation history
-
-    This function follows the three-step process from NetBrain API documentation:
-    1. Resolve device gateway (GET /V1/CMDB/Path/Gateways)
-    2. Calculate path (POST /V1/CMDB/Path/Calculation)
-    3. Get path details (GET /V1/CMDB/Path/Calculation/{taskID}/OverView)
+    Examples:
+    - "find path from 10.0.0.1 to 10.0.1.1" → source="10.0.0.1", destination="10.0.1.1"
+    - "network path between 192.168.1.1 and 192.168.2.1" → source="192.168.1.1", destination="192.168.2.1"
+    - "trace path from 10.1.0.5 to 10.2.0.10" → source="10.1.0.5", destination="10.2.0.10"
 
     Args:
         source: Source IP address or hostname (e.g., "192.168.1.1")
@@ -1652,25 +1635,15 @@ async def check_path_allowed(
     is_live: int = 1
 ):
     """
-    check_path_allowed: Use ONLY for "is path allowed", "traffic allowed", or "check if traffic from A to B is allowed" — two IPs in the query; set source=first IP, destination=second IP; never use Panorama or rack tools for these.
+    Check if traffic between two IP addresses is allowed or denied by firewall policy using NetBrain.
 
-    Check if traffic from source IP to destination IP is allowed or denied by policy (NetBrain). Parameters: source, destination, protocol (e.g. TCP), port (e.g. 443). Do not use for: which group contains an IP (query_panorama_ip_object_group), list IPs in a group (query_panorama_address_group_members), rack (get_rack_details), device (get_device_rack_location), path hops (query_network_path).
+    Use for: queries asking for a yes/no policy verdict — "is path/traffic from X to Y allowed?", "can X reach Y?", "is connectivity allowed from X to Y?".
+    Do NOT use for: tracing path hops (use query_network_path), device/rack lookups.
 
     Examples:
-    - "Is path allowed from 10.0.0.1 to 10.0.1.1?" → source="10.0.0.1", destination="10.0.1.1"
-    - "Check if traffic from 10.0.0.1 to 10.0.1.1 on TCP 443 is allowed" → source="10.0.0.1", destination="10.0.1.1", protocol="TCP", port="443"
-
-    **Query variations (all → check_path_allowed; need TWO IPs; do NOT use for device/rack lookups):**
-    - "is path allowed from 10.0.0.1 to 10.0.1.1?" / "is traffic allowed from 10.0.0.1 to 10.0.1.1?"
-    - "check if traffic from X to Y is allowed" / "can traffic from X reach Y?"
-    - "path allowed 10.0.0.1 to 10.0.1.1" / "traffic allowed 10.0.0.1 10.0.1.1"
-    - "does path exist from 10.0.0.1 to 10.0.1.1?" / "is connectivity allowed from X to Y?"
-    - "check path allowed from 10.0.0.1 to 10.0.1.1 on TCP 443"
-
-    This function uses NetBrain Path Calculation API with policy enforcement enabled:
-    - Sets continue_on_policy_denial=False to stop calculation when policy denies the path
-    - Analyzes the result to determine if the path is allowed or denied
-    - Returns a clear status: "allowed", "denied", or "unknown"
+    - "is path allowed from 10.0.0.1 to 10.0.1.1?" → source="10.0.0.1", destination="10.0.1.1"
+    - "can 192.168.1.1 reach 192.168.2.1 on TCP 443?" → source="192.168.1.1", destination="192.168.2.1", protocol="TCP", port="443"
+    - "is traffic from 10.0.0.5 to 10.0.1.5 allowed?" → source="10.0.0.5", destination="10.0.1.5"
 
     Args:
         source: Source IP address or hostname (e.g., "192.168.1.1")

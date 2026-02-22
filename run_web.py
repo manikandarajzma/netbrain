@@ -32,6 +32,13 @@ for _name, _logr in logging.Logger.manager.loggerDict.items():
 
 from atlas.app import app  # noqa: E402
 
+# Remove StreamHandlers from loggers created during import (e.g. tools.shared) so all logs go to file only
+for _name, _logr in logging.Logger.manager.loggerDict.items():
+    if isinstance(_logr, logging.Logger):
+        for _h in _logr.handlers[:]:
+            if isinstance(_h, logging.StreamHandler):
+                _logr.removeHandler(_h)
+
 __all__ = ["app"]
 
 # Run with reload and log config built in (no CLI flags needed)
@@ -52,11 +59,20 @@ if __name__ == "__main__":
         "Server runs in foreground; press Ctrl+C to stop. If the prompt returns, check atlas_web.log for errors.",
         flush=True,
     )
+    import socket as _socket
+    _sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    _sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    try:
+        _sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        pass  # not available on Windows
+    _sock.bind((_host, _port))
+    _sock.set_inheritable(True)
+
     try:
         uvicorn.run(
             "run_web:app",
-            host=_host,
-            port=_port,
+            fd=_sock.fileno(),
             reload=True,
             log_config=_log_cfg,
         )

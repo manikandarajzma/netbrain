@@ -85,9 +85,7 @@ def build_tool_selection_prompt(
     tools_description: str,
     conversation_history: Optional[List[Dict[str, str]]] = None
 ) -> str:
-    """
-    Build prompt for tool selection using only tool descriptions (no rules or examples).
-    """
+    """Build prompt for tool selection — relies on tool docstrings for routing logic."""
     conversation_context = ""
     if conversation_history and len(conversation_history) > 0:
         conv_lines = []
@@ -95,108 +93,39 @@ def build_tool_selection_prompt(
             role = msg.get('role', 'unknown').title()
             content = str(msg.get('content', ''))
             conv_lines.append(f"{i}. {role}: {content}")
-        conversation_context = "\n\nPrevious conversation (most recent first):\n" + "\n".join(conv_lines)
+        conversation_context = "\n\nPrevious conversation:\n" + "\n".join(conv_lines)
 
-    prompt_text = f"""You are a tool selection expert for network infrastructure queries. Your job is to select the MOST APPROPRIATE tool based on the user's query.
+    return f"""Select the most appropriate tool for this network infrastructure query and extract the required parameters.
 
-DECISION RULES (apply in order):
-
-1. IDENTIFY THE ENTITY TYPE IN THE QUERY:
-   - Contains DOTS (.)? → It's an IP address (e.g., "11.0.0.1", "192.168.1.1")
-   - Contains DASHES (-) and is long (15+ chars)? → It's a DEVICE NAME (e.g., "leander-dc-border-leaf1", "roundrock-dc-leaf1")
-   - Short alphanumeric (1-4 chars, no dots/dashes)? → It's a RACK NAME (e.g., "A4", "B12")
-   - Multiple words without dots/dashes? → Might be a SITE NAME (e.g., "Leander", "Round Rock DC")
-
-2. MATCH ENTITY TYPE TO TOOL:
-   - DEVICE NAME (has dashes) + "where/rack/location" → get_device_rack_location
-   - DEVICE NAME + "is in rack X?" (yes/no question) → get_device_rack_location, extract expected_rack from the question
-   - "LIST" + "racks" (plural) + site → list_racks (shows ALL racks at a site)
-   - RACK NAME (short, no dashes) + "rack/details/utilization" → get_rack_details (even if multiple sites mentioned)
-   - RACK NAME + multiple sites (e.g., "rack A4 in leander round rock") → get_rack_details with rack_name="A4", site_name=null (server will ask which site)
-   - IP ADDRESS + "address group/panorama/object" → query_panorama_ip_object_group
-   - TWO IP ADDRESSES + "path/traffic/allowed" → check_path_allowed or query_network_path
-
-CRITICAL DISTINCTION:
-   - "List racks at Leander" → list_racks (PLURAL - shows ALL racks)
-   - "Rack A4" or "Rack A4 at Leander" → get_rack_details (SINGULAR - shows ONE rack)
-
-3. NEVER ASK FOR CLARIFICATION IF:
-   - The query clearly matches a pattern above
-   - You can extract all required parameters
-   - The entity type is unambiguous (e.g., has dashes = device name, has dots = IP)
-
-4. ONLY ASK FOR CLARIFICATION IF:
-   - The query is genuinely ambiguous
-   - Required parameters are missing AND cannot be inferred
-
-EXAMPLES:
-- "where is leander-dc-border-leaf1 racked?" → DEVICE NAME (has dashes) → get_device_rack_location, device_name="leander-dc-border-leaf1", expected_rack=null
-- "leander-dc-border-leaf1 is in A1?" → DEVICE NAME (has dashes) + yes/no question → get_device_rack_location, device_name="leander-dc-border-leaf1", expected_rack="A1" (extract the rack name "A1" from the question)
-- "is roundrock-dc-leaf1 in rack B4?" → DEVICE NAME + yes/no question → get_device_rack_location, device_name="roundrock-dc-leaf1", expected_rack="B4" (extract the rack name "B4" from the question)
-- "rack A4" → SINGULAR "rack" + specific name → get_rack_details, rack_name="A4", site_name=null
-- "rack A4 in leander round rock" → SINGULAR "rack" + specific name + multiple sites → get_rack_details, rack_name="A4", site_name=null (server will ask which site)
-- "rack A4 in Leander" → SINGULAR "rack" + specific name + single site → get_rack_details, rack_name="A4", site_name="Leander"
-- "list racks at Leander" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Leander" (shows ALL racks at Leander)
-- "what racks are in Leander" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Leander" (shows ALL racks)
-- "show all racks at Round Rock" → PLURAL "racks" + NO specific rack name → list_racks, site_name="Round Rock"
-- "list all racks" → PLURAL "racks" + NO site → list_racks, site_name=null (shows ALL racks everywhere)
-- "what address group is 11.0.0.1 part of?" → IP ADDRESS (has dots) → query_panorama_ip_object_group, ip_address="11.0.0.1"
-- "latest 10 events for 10.0.0.250" → IP ADDRESS + "latest N" → get_splunk_recent_denies, ip_address="10.0.0.250", limit=10
-- "recent 5 deny events for 192.168.1.1" → IP ADDRESS + "recent N" → get_splunk_recent_denies, ip_address="192.168.1.1", limit=5
-- "last 20 denies for 10.0.0.1" → IP ADDRESS + "last N" → get_splunk_recent_denies, ip_address="10.0.0.1", limit=20
-- "denies for 10.0.0.250" → IP ADDRESS + no number → get_splunk_recent_denies, ip_address="10.0.0.250", limit=null (uses default)
-
-CRITICAL for yes/no questions like "is X in rack Y?":
-- Extract the rack name (e.g., "A1", "B4") into expected_rack parameter
-- Do NOT put "is in rack X?" in the intent field
-- Example: "leander-dc-border-leaf1 is in A1" → expected_rack="A1" (NOT intent="is in A1")
-
-CRITICAL for queries with numeric limits (latest/recent/last N):
-- Extract the number from "latest N", "recent N", "last N events", etc. into limit parameter
-- Examples: "latest 10" → limit=10, "recent 5 events" → limit=5, "last 20 denies" → limit=20
-- If no number specified, leave limit=null to use the default
-
-Current user query: "{prompt}"
+User query: "{prompt}"
 {conversation_context}
 
-**AVAILABLE TOOLS (numbered list):**
+Available tools:
 {tools_description}
 
-**YOUR TASK:**
-1. Identify the entity type in the query (IP vs device name vs rack name vs site)
-2. Match it to the appropriate tool from the list above
-3. Extract parameters from the query
-   - For yes/no questions like "is X in rack Y?": extract the rack name (e.g., "A1") into expected_rack
-   - For queries with "latest N", "recent N", "last N": extract the number into limit
-   - Do NOT use the intent field for yes/no questions
-
-RESPOND WITH ONLY A VALID JSON OBJECT (no markdown, no explanation).
-Format: First think through the entity type, then respond.
-
+Respond with ONLY a valid JSON object — no markdown, no explanation:
 {{
-    "entity_analysis": "What entity is in the query? (e.g., 'leander-dc-border-leaf1' has dashes and is long → DEVICE NAME)",
-    "tool_name": "<exact tool name from the list above>" or null,
+    "entity_analysis": "brief note on what entity/intent is in the query",
+    "tool_name": "<exact tool name>" or null,
     "needs_clarification": true or false,
     "clarification_question": "question text" or null,
     "parameters": {{
         "ip_address": null or "value",
         "device_name": null or "value",
         "rack_name": null or "value",
-        "expected_rack": null or "A1" or "B4" (ONLY the rack name when user asks 'is X in rack Y?', NOT a description),
+        "expected_rack": null or "value",
         "address_group_name": null or "value",
         "device_group": null or "value",
         "site_name": null or "value",
-        "intent": null (DO NOT use for yes/no questions),
+        "intent": null or "value",
         "source": null or "value",
         "destination": null or "value",
         "protocol": null or "value",
         "port": null or "value",
-        "limit": null or 10 or 20 (extract number from "latest N", "recent N", "last N events"),
+        "limit": null or <number>,
         "format": "table"
     }}
-}}
-"""
-    return prompt_text
+}}"""
 
 
 

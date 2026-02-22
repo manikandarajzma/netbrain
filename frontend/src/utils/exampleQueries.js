@@ -1,7 +1,7 @@
 export const exampleQueries = [
   {
     category: 'atlas',
-    label: 'Atlas',
+    label: 'NetBrain',
     icon: '\uD83C\uDF10',
     queries: [
       'Find path from 10.0.0.1 to 10.0.1.1',

@@ -10,33 +10,10 @@ from typing import Any, Dict
 
 logger = logging.getLogger("atlas.chat_service")
 
-# Lazy imports to avoid circular deps and heavy Streamlit import at module load
+# Lazy imports to avoid circular deps
 def _get_mcp_client():
-    from atlas.mcp_client import (
-        get_mcp_session,
-        execute_network_query,
-        execute_rack_details_query,
-        execute_racks_list_query,
-        execute_rack_location_query,
-        execute_panorama_ip_object_group_query,
-        execute_panorama_address_group_members_query,
-        execute_splunk_recent_denies_query,
-        execute_path_allowed_check,
-    )
-    from atlas.mcp_client import FASTMCP_CLIENT_AVAILABLE, FastMCPClient
-    return (
-        get_mcp_session,
-        execute_network_query,
-        execute_rack_details_query,
-        execute_racks_list_query,
-        execute_rack_location_query,
-        execute_panorama_ip_object_group_query,
-        execute_panorama_address_group_members_query,
-        execute_splunk_recent_denies_query,
-        execute_path_allowed_check,
-        FASTMCP_CLIENT_AVAILABLE,
-        FastMCPClient,
-    )
+    from atlas.mcp_client import get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient
+    return get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient
 
 
 # Extract IP/CIDR from user message (restores parsing that existed in pre-Streamlit UI)
@@ -395,19 +372,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
     """Run tool discovery: get MCP tools, call LLM to select tool, return selection or clarification/error."""
     from atlas.mcp_client_tool_selection import select_tool_with_llm
 
-    (
-        get_mcp_session,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        FASTMCP_CLIENT_AVAILABLE,
-        FastMCPClient,
-    ) = _get_mcp_client()
+    get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient = _get_mcp_client()
 
     async for client_or_session in get_mcp_session():
         try:
@@ -435,49 +400,37 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                     return ", ".join((schema.get("properties") or {}).keys())
                 return ""
 
-            # Extract concise tool descriptions (first meaningful line only)
-            def _tool_description_concise(t):
-                """Extract just the essential purpose from the docstring, removing all the warnings and examples."""
+            # Extract tool description for LLM: everything before Args:/Returns: so
+            # CRITICAL DISTINCTION, QUICK CHECK, ABSOLUTE RULE, etc. reach the LLM.
+            def _tool_description_for_llm(t):
                 full_desc = (t.get("description") if isinstance(t, dict) else getattr(t, "description", None)) or "No description"
-
-                # Take only the first line before any double newline or before any "**" section
                 lines = full_desc.split('\n')
-                essential = []
+                kept = []
                 for line in lines:
                     stripped = line.strip()
-                    # Stop at section markers
-                    if stripped.startswith('**') or stripped.startswith('CRITICAL') or stripped.startswith('Args:') or stripped.startswith('Returns:'):
+                    if stripped.startswith('Args:') or stripped.startswith('Returns:'):
                         break
-                    # Skip empty lines at the start
-                    if not stripped and not essential:
+                    if not stripped:
+                        if kept and kept[-1] != "":
+                            kept.append("")
                         continue
-                    # Add non-empty lines until we hit a section
-                    if stripped:
-                        essential.append(stripped)
-                        # Stop after first sentence or two (max 2 lines)
-                        if len(essential) >= 2:
-                            break
+                    kept.append(stripped)
+                result = '\n'.join(kept).strip()
+                if len(result) > 1500:
+                    result = result[:1497] + "..."
+                return result or full_desc[:500]
 
-                result = ' '.join(essential)
-                # Truncate at first period if too long
-                if len(result) > 250:
-                    first_period = result.find('. ')
-                    if first_period > 50:
-                        result = result[:first_period + 1]
-
-                return result or full_desc[:200]
-
-            # Build concise description text per tool
+            # Build description text per tool (MCP docstring drives LLM selection)
             tool_descriptions_list = [
-                f"{_tool_name(t)}: {_tool_description_concise(t)} | Params: {_params(t)}"
+                f"{_tool_name(t)}: {_tool_description_for_llm(t)} | Params: {_params(t)}"
                 for t in tools
             ]
-            # Log concise descriptions for debugging
+            # Log descriptions for debugging
             for t in tools:
                 name = _tool_name(t)
                 if name in ("check_path_allowed", "query_panorama_ip_object_group", "get_device_rack_location"):
-                    desc = _tool_description_concise(t)
-                    logger.debug(f"Concise description for {name}: {desc}")
+                    desc = _tool_description_for_llm(t)
+                    logger.debug(f"Tool description for {name}: {desc[:200]}...")
 
             # Format as a clean numbered list (easier for LLM to parse)
             tools_description = "\n".join([
@@ -717,6 +670,67 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
     return {"success": False, "error": "Could not connect to MCP server."}
 
 
+# Per-tool timeouts (seconds) and required params
+_TOOL_TIMEOUTS: dict[str, float] = {
+    "query_network_path": 385.0,
+    "check_path_allowed": 370.0,
+    "get_splunk_recent_denies": 95.0,
+    "get_device_rack_location": 65.0,
+    "list_racks": 65.0,
+    "get_rack_details": 65.0,
+    "query_panorama_ip_object_group": 65.0,
+    "query_panorama_address_group_members": 65.0,
+}
+
+_TOOL_REQUIRED_PARAMS: dict[str, list[str]] = {
+    "get_device_rack_location": ["device_name"],
+    "get_rack_details": ["rack_name"],
+    "check_path_allowed": ["source", "destination"],
+    "query_network_path": ["source", "destination"],
+    "query_panorama_ip_object_group": ["ip_address"],
+    "query_panorama_address_group_members": ["address_group_name"],
+    "get_splunk_recent_denies": ["ip_address"],
+}
+
+# Exhaustive list of params each tool accepts — used to filter out cross-tool params
+# that the LLM's unified schema injects (e.g. format='table' sent to Panorama tools).
+_TOOL_ALLOWED_PARAMS: dict[str, set[str]] = {
+    "get_device_rack_location": {"device_name", "intent", "format", "expected_rack", "conversation_history"},
+    "get_rack_details": {"rack_name", "site_name", "format", "conversation_history"},
+    "list_racks": {"site_name", "format", "conversation_history"},
+    "query_panorama_ip_object_group": {"ip_address", "device_group", "vsys"},
+    "query_panorama_address_group_members": {"address_group_name", "device_group", "vsys"},
+    "get_splunk_recent_denies": {"ip_address", "limit", "earliest_time"},
+    "query_network_path": {"source", "destination", "protocol", "port", "is_live", "continue_on_policy_denial"},
+    "check_path_allowed": {"source", "destination", "protocol", "port", "is_live"},
+}
+
+
+def _build_mcp_params(tool_name: str, tool_params: dict[str, Any], default_live: bool) -> dict[str, Any]:
+    """Inject tool-specific defaults and derived values into tool_params."""
+    # Strip None values and any params not accepted by this tool.
+    # The LLM uses a unified schema with fields for all tools; unused ones come through as None
+    # or with default values (e.g. format='table') and must be removed before calling the MCP server.
+    allowed = _TOOL_ALLOWED_PARAMS.get(tool_name)
+    p = {
+        k: v for k, v in tool_params.items()
+        if v is not None and (allowed is None or k in allowed)
+    }
+    if tool_name == "query_network_path":
+        p.setdefault("protocol", "TCP")
+        p.setdefault("port", "0")
+        p["is_live"] = 1 if default_live else 0
+        p["continue_on_policy_denial"] = True
+    elif tool_name == "check_path_allowed":
+        p.setdefault("protocol", "TCP")
+        p.setdefault("port", "0")
+        p["is_live"] = 1
+    elif tool_name == "get_splunk_recent_denies":
+        p.setdefault("limit", 100)
+        p.setdefault("earliest_time", "-24h")
+    return p
+
+
 async def execute_tool(
     tool_name: str,
     tool_params: dict[str, Any],
@@ -724,166 +738,28 @@ async def execute_tool(
     default_live: bool = True,
 ) -> dict[str, Any] | str:
     """Execute the selected MCP tool and return result dict or error string."""
-    (
-        _,
-        execute_network_query,
-        execute_rack_details_query,
-        execute_racks_list_query,
-        execute_rack_location_query,
-        execute_panorama_ip_object_group_query,
-        execute_panorama_address_group_members_query,
-        execute_splunk_recent_denies_query,
-        execute_path_allowed_check,
-        _,
-        _,
-    ) = _get_mcp_client()
+    from atlas.mcp_client import call_mcp_tool
 
-    def run(coro):
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as ex:
-            return ex.submit(lambda: asyncio.run(coro)).result(timeout=400)
-
-    try:
-        if tool_name == "get_device_rack_location":
-            device_name = (tool_params.get("device_name") or "").strip()
-            if not device_name:
-                return {"error": "Device name not found in query."}
-            result = await asyncio.wait_for(
-                execute_rack_location_query(
-                    device_name,
-                    tool_params.get("format") or "table",
-                    None,
-                    tool_params.get("intent"),
-                    tool_params.get("expected_rack"),
-                ),
-                timeout=65.0,
-            )
-            return result or {"error": "No result from rack location query."}
-
-        if tool_name == "list_racks":
-            result = await asyncio.wait_for(
-                execute_racks_list_query(
-                    tool_params.get("site_name"),
-                    tool_params.get("format") or "table",
-                    None,
-                ),
-                timeout=65.0,
-            )
-            return result or {"error": "No result."}
-
-        if tool_name == "get_rack_details":
-            rack_name = tool_params.get("rack_name")
-            if not rack_name:
-                return {"error": "Rack name not found in query."}
-            result = await asyncio.wait_for(
-                execute_rack_details_query(
-                    rack_name,
-                    tool_params.get("format") or "table",
-                    None,
-                    tool_params.get("site_name"),
-                ),
-                timeout=65.0,
-            )
-            return result or {"error": "No result."}
-
-        if tool_name == "check_path_allowed":
-            source = (tool_params.get("source") or "").strip()
-            destination = (tool_params.get("destination") or "").strip()
-            if not source or not destination:
-                return {"error": "Source and destination IP addresses are required."}
-            result = await asyncio.wait_for(
-                execute_path_allowed_check(
-                    source,
-                    destination,
-                    tool_params.get("protocol") or "TCP",
-                    tool_params.get("port") or "0",
-                    True,
-                ),
-                timeout=370.0,
-            )
-            return result or {"error": "No result."}
-
-        if tool_name == "query_network_path":
-            source = tool_params.get("source")
-            destination = tool_params.get("destination")
-            if not source or not destination:
-                return {"error": "Source and destination are required."}
-            is_live = 1 if default_live else 0
-            result = await asyncio.wait_for(
-                execute_network_query(
-                    source,
-                    destination,
-                    tool_params.get("protocol") or "TCP",
-                    tool_params.get("port") or "0",
-                    is_live,
-                ),
-                timeout=385.0,
-            )
-            if isinstance(result, dict) and "result" in result and len(result) == 1:
-                inner = result["result"]
-                if isinstance(inner, str):
-                    try:
-                        import json
-                        result = json.loads(inner)
-                    except Exception:
-                        pass
-            return result or {"error": "No result."}
-
-        if tool_name == "query_panorama_ip_object_group":
-            ip_address = (tool_params.get("ip_address") or "").strip()
-            if not ip_address:
-                return {"error": "IP address not found in query."}
-            result = await asyncio.wait_for(
-                execute_panorama_ip_object_group_query(
-                    ip_address,
-                    tool_params.get("device_group"),
-                    tool_params.get("vsys", "vsys1"),
-                ),
-                timeout=65.0,
-            )
-            return result or {"error": "No result."}
-
-        if tool_name == "query_panorama_address_group_members":
-            address_group_name = (tool_params.get("address_group_name") or "").strip()
-            if not address_group_name:
-                return {"error": "Address group name not found in query."}
-            result = await asyncio.wait_for(
-                execute_panorama_address_group_members_query(
-                    address_group_name,
-                    tool_params.get("device_group"),
-                    tool_params.get("vsys", "vsys1"),
-                ),
-                timeout=65.0,
-            )
-            return result or {"error": "No result."}
-
-        if tool_name == "get_splunk_recent_denies":
-            ip_address = (tool_params.get("ip_address") or "").strip()
-            if not ip_address:
-                return {"error": "IP address not found in query."}
-            # Handle limit: use 100 if None or not provided
-            limit = tool_params.get("limit")
-            if limit is None:
-                limit = 100
-            result = await asyncio.wait_for(
-                execute_splunk_recent_denies_query(
-                    ip_address,
-                    limit,
-                    tool_params.get("earliest_time") or "-24h",
-                ),
-                timeout=95.0,
-            )
-            return result or {"error": "No result."}
-
+    if tool_name not in _TOOL_TIMEOUTS:
         return {"error": f"Unknown tool: {tool_name}"}
-    except asyncio.TimeoutError:
-        return {"error": "Request timed out. Please try again."}
-    except Exception as e:
-        return {"error": str(e)}
+
+    for param in _TOOL_REQUIRED_PARAMS.get(tool_name, []):
+        if not str(tool_params.get(param) or "").strip():
+            return {"error": f"{param} not found in query."}
+
+    params = _build_mcp_params(tool_name, tool_params, default_live)
+    result = await call_mcp_tool(tool_name, params, timeout=_TOOL_TIMEOUTS[tool_name])
+
+    # query_network_path may return {"result": "<json-string>"} — unwrap it
+    if tool_name == "query_network_path" and isinstance(result, dict) and list(result) == ["result"]:
+        inner = result["result"]
+        if isinstance(inner, str):
+            try:
+                result = json.loads(inner)
+            except Exception:
+                pass
+
+    return result or {"error": "No result."}
 
 
 # Tool name → display label for status ("Querying NetBrain", etc.)

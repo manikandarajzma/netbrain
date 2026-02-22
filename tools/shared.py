@@ -122,6 +122,7 @@ NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
 
 # NetBox
 NETBOX_URL = os.getenv("NETBOX_URL", "http://192.168.15.109:8080").rstrip("/")
+# Load once per process at import time. Repeated "Loaded..." in logs usually means process restarts (e.g. uvicorn --reload).
 NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "")
 if not NETBOX_TOKEN:
     _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
@@ -156,6 +157,34 @@ SPLUNK_HOST = os.getenv("SPLUNK_HOST", "192.168.15.110")
 SPLUNK_PORT = os.getenv("SPLUNK_PORT", "8089")
 SPLUNK_USER = os.getenv("SPLUNK_USER", "")
 SPLUNK_PASSWORD = os.getenv("SPLUNK_PASSWORD", "")
+if not SPLUNK_USER or not SPLUNK_PASSWORD:
+    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
+    if _vault_url:
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.keyvault.secrets import SecretClient
+            _credential = DefaultAzureCredential()
+            _client = SecretClient(vault_url=_vault_url, credential=_credential)
+            if not SPLUNK_USER:
+                _secret_name = os.getenv("SPLUNK_USER_KEYVAULT_SECRET_NAME", "SPLUNK-USER")
+                try:
+                    _secret = _client.get_secret(_secret_name)
+                    if _secret and _secret.value:
+                        SPLUNK_USER = _secret.value
+                        logger.info("Loaded SPLUNK_USER from Azure Key Vault secret '%s'", _secret_name)
+                except Exception as e:
+                    logger.warning("Key Vault: could not load secret '%s' from %s: %s", _secret_name, _vault_url, e)
+            if not SPLUNK_PASSWORD:
+                _secret_name = os.getenv("SPLUNK_PASSWORD_KEYVAULT_SECRET_NAME", "SPLUNK-PASSWORD")
+                try:
+                    _secret = _client.get_secret(_secret_name)
+                    if _secret and _secret.value:
+                        SPLUNK_PASSWORD = _secret.value
+                        logger.info("Loaded SPLUNK_PASSWORD from Azure Key Vault secret '%s'", _secret_name)
+                except Exception as e:
+                    logger.warning("Key Vault: could not load secret '%s' from %s: %s", _secret_name, _vault_url, e)
+        except Exception as e:
+            logger.warning("Key Vault: failed to initialize client for Splunk credentials: %s", e)
 
 # MCP Server
 MCP_SERVER_HOST = os.getenv("MCP_SERVER_HOST", "127.0.0.1")

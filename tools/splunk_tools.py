@@ -245,16 +245,15 @@ async def get_splunk_recent_denies(
     earliest_time: str = "-24h"
 ) -> Dict[str, Any]:
     """
-    Get the list of recent deny/denied events in Splunk for a given IP address.
+    Search Splunk for recent firewall deny events involving a given IP address.
 
-    Use this tool when the user asks for "recent denies for an IP", "list of denies for [IP]",
-    "deny events for IP", "Splunk denies for [IP]", or similar. Extract the IP address from the query.
+    Use for: queries asking for deny/denial events for an IP — "recent denies for X", "deny events for X", "Splunk denies for X", "firewall denials for X".
+    Do NOT use for: path queries, device/rack lookups, address group lookups.
 
-    **Query variations (all → get_splunk_recent_denies; need one IP address):**
-    - "recent denies for 10.0.0.1" / "list denies for 10.0.0.1" / "deny events for 10.0.0.1"
-    - "Splunk denies for 192.168.1.1" / "show me denies for 10.0.0.250"
-    - "what denials for 10.0.0.5?" / "firewall denies for 10.0.0.1"
-    - "list all denies for IP 10.0.0.1" / "recent deny events 10.0.0.1"
+    Examples:
+    - "recent denies for 10.0.0.1" → ip_address="10.0.0.1"
+    - "show deny events for 192.168.1.5" → ip_address="192.168.1.5"
+    - "latest 10 denies for 10.0.0.250" → ip_address="10.0.0.250", limit=10
 
     Args:
         ip_address: IP address to search for in deny events (e.g. "192.168.1.1", "10.0.0.5")

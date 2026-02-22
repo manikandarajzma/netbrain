@@ -134,67 +134,18 @@ async def get_rack_details(
     conversation_history: Optional[str] = None  # JSON string instead of List[Dict]
 ) -> Dict[str, Any]:
     """
-    Use ONLY for rack name lookup (e.g. "A4", "A1"). Input: rack_name (short, no dots). NOT for "path allowed" or "traffic allowed" with two IPs—use check_path_allowed. Rack names have no dots; IPs have dots.
+    Get inventory and details for a specific rack by name from NetBox (devices, utilization, location).
 
-    Use this tool when the user asks about a specific rack by SHORT name (A4, A1, B2). Do not use for device names with dashes (get_device_rack_location).
+    Use for: queries about a specific rack by its SHORT name — short alphanumeric like "A4", "B2", "A1".
+    Rack names: short, letter+number, NO dashes, NO dots (e.g. "A4", "A1", "B12").
+    Do NOT use for: device names (they have dashes, use get_device_rack_location), listing many racks (use list_racks), IP addresses.
 
-    When to use this tool:
-    - Query contains a RACK NAME: short identifier like "A1", "A4", "B2", "Rack A4"
-    - **CRITICAL: If query mentions "space utilization", "utilization", "rack details", "rack" with a SHORT name (like "A4") → this is ALWAYS a rack query → use this tool**
-    - **ABSOLUTE RULE #1: If the query is JUST a short identifier like "A4", "A1", "B2" (1-3 characters, letter + number, no dashes, no dots) → this is ALWAYS a rack name → use this tool IMMEDIATELY. DO NOT return tool_name as null.**
-    - **ABSOLUTE RULE #2: DO NOT ask for clarification when the query is clearly a rack name like "A4" - just use this tool directly with rack_name="A4"**
-    - **ABSOLUTE RULE #3: If you see a query that is just "A4" or "A1" or any short identifier matching the rack name pattern, you MUST return tool_name="get_rack_details" with rack_name set to that value. Never return null for tool_name in this case.**
-
-    **HANDLING FOLLOW-UP RESPONSES:**
-    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - AND the current query is just "3" or "three" → this means the user selected option 3 (Look up rack in NetBox)
-    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "3" and the question lists "3) Look up rack in NetBox", use this tool**
-    - Extract the rack name or IP address from EARLIER messages in the conversation history (the message immediately before the clarification question)
-    - Use this tool (get_rack_details) with the rack name from history
-    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama..., 2) Look up device..., 3) Look up rack in NetBox..." → user responds "3" → use this tool with rack_name from history (if rack name exists) or IP address
-
-    **Rack name identification:**
-    - Rack names are SHORT (1-3 characters)
-    - Rack names do NOT contain dashes (-)
-    - Rack names do NOT contain dots (.) - IP addresses have dots, so they are NOT rack names
-    - Pattern: letter(s) + number(s), e.g., "A1", "A4", "B12"
-    - If you see "A1" or "A4" → this is a RACK NAME → use this tool
-    - If you see "11.0.0.1" or any string with dots → this is an IP ADDRESS, NOT a rack name → do NOT use this tool
-    - If you see ANY name with DASHES (e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1") → this is a DEVICE NAME → use get_device_rack_location instead
-
-    **IMPORTANT: Do NOT confuse with device names:**
-    - Device names ALWAYS contain DASHES (e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1") → use get_device_rack_location
-    - Rack names NEVER contain dashes (e.g., "A1", "A4") → use this tool (get_rack_details)
-    - CRITICAL RULE: If a name contains a dash (-), it is ALWAYS a device name, NEVER a rack name!
-    - CRITICAL: "roundrock-dc-border-leaf1" has dashes = DEVICE, NOT a rack!
-    - CRITICAL: "leander-dc-leaf1" has dashes = DEVICE, NOT a rack!
-    - CRITICAL: "border-leaf1" is PART of a device name, NOT a rack name!
-
-    **Examples:**
-    - Query: "rack details for A4" → rack_name="A4", site_name=None, format="table"
-    - Query: "rack details of A4" → rack_name="A4", site_name=None, format="table"
-    - Query: "A4" → rack_name="A4", site_name=None, format="table"
-    - Query: "show me rack A4" → rack_name="A4", site_name=None, format="table"
-    - Query: "A1 in Round Rock DC" → rack_name="A1", site_name="Round Rock DC", format="table"
-    - Query: "show rack A4" → rack_name="A4", site_name=None, format="table"
-    - Query: "A1" → rack_name="A1", site_name=None, format="table"
-    - Query: "space utilization of A4" → rack_name="A4", site_name=None, format="table" (A4 is a rack name, NOT a device!)
-    - Query: "rack A4 utilization" → rack_name="A4", site_name=None, format="table"
-    - Query: "A4 space usage" → rack_name="A4", site_name=None, format="table"
-
-    **Query variations (all → get_rack_details with rack_name=short id; use site_name if location given):**
-    - "rack A4" / "rack A1" / "A4" / "A1" / "show rack A4" / "show me rack A1"
-    - "rack details for A4" / "rack details of A1" / "details for rack A4" / "info on rack A1"
-    - "A4 in Leander" / "A4 at Leander DC" / "rack A1 in Round Rock" / "A1 at Round Rock DC"
-    - "space utilization of A4" / "A4 utilization" / "A4 space usage" / "rack A4 utilization"
-    - "which devices are in rack A4?" / "devices in A4" / "what's in rack A4"
-    - Any phrase with a SHORT rack id (A1, A4, B2, no dashes) → use this tool. Names with DASHES are devices → use get_device_rack_location instead.
-
-    The tool can return data in different formats:
-    - table: Returns data formatted as a table (recommended)
-    - json: Returns data in JSON format
-    - list: Returns data as a list
-    - None: Returns a natural language summary with AI analysis
+    Examples:
+    - "rack A4" → rack_name="A4"
+    - "show me rack B2 at Leander" → rack_name="B2", site_name="Leander"
+    - "what's in rack A1?" → rack_name="A1"
+    - "A4 utilization" → rack_name="A4"
+    - "space usage of rack A1 in Round Rock" → rack_name="A1", site_name="Round Rock"
 
     Args:
         rack_name: The SHORT rack identifier (e.g., "A4", "A1", "B2") - must be short, no dashes
@@ -657,38 +608,14 @@ async def list_racks(
     """
     List all racks from NetBox, optionally filtered by site.
 
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query asks for "all racks", "list racks", "show racks", "racks in [site]"
-    - Use this tool when the query asks for racks at a specific site (e.g., "racks in Leander DC", "racks at Round Rock")
-    - Use this tool when the query asks for "all racks" without specifying a particular rack name
-    - Do NOT use this tool if the query contains a specific rack name (like "A4", "A1") - use get_rack_details instead
+    Use for: queries asking about MULTIPLE racks — "list racks", "show all racks", "racks at Leander", "how many racks in Round Rock".
+    Do NOT use for: a specific rack name like "A4" (use get_device_rack_location instead).
 
-    **Examples:**
-    - Query: "list all racks" → site_name=None, format="table"
-    - Query: "show all racks" → site_name=None, format="table"
-    - Query: "racks in Leander DC" → site_name="Leander DC", format="table"
-    - Query: "racks at Round Rock" → site_name="Round Rock", format="table"
-    - Query: "what racks are in Leander" → site_name="Leander", format="table"
-    - Query: "how many racks are in round rock" → site_name="round rock", format="table"
-    - Query: "which racks are at Round Rock" → site_name="Round Rock", format="table"
-    - Query: "all racks in Round Rock DC" → site_name="Round Rock DC", format="table"
-
-    **Query variations (all → list_racks; set site_name when a location is mentioned):**
-    - "list all racks" / "show all racks" / "all racks" / "list racks" / "show racks"
-    - "what racks are in Leander" / "what racks are in leander" / "which racks are in Round Rock"
-    - "how many racks are in round rock" / "how many racks in Leander DC"
-    - "racks at Leander" / "racks in Leander DC" / "racks at Round Rock" / "racks in Round Rock DC"
-    - "list racks at Leander" / "list racks in Round Rock" / "show racks at Leander DC"
-    - "give me all racks at Leander" / "show me racks in Round Rock" / "get racks at Leander DC"
-    - "count of racks in round rock" / "number of racks at Leander"
-    - "which racks are at Round Rock?" / "what racks are at Leander DC?"
-    - Do NOT use for a single rack name (e.g. "A4", "A1") → use get_rack_details instead.
-
-    The tool can return data in different formats:
-    - table: Returns data formatted as a table (recommended)
-    - json: Returns data in JSON format
-    - list: Returns data as a list
-    - None: Returns a natural language summary with AI analysis
+    Examples:
+    - "list all racks" → site_name=None
+    - "racks in Leander DC" → site_name="Leander DC"
+    - "what racks are at Round Rock?" → site_name="Round Rock"
+    - "how many racks in Leander?" → site_name="Leander"
 
     Args:
         site_name: Optional site name to filter racks (e.g., "Round Rock DC", "Leander DC"). If None, returns all racks.
@@ -976,94 +903,18 @@ async def get_device_rack_location(
     conversation_history: Optional[str] = None  # JSON string instead of List[Dict]
 ) -> Dict[str, Any]:
     """
-    Use ONLY for NetBox device lookup by device name (e.g. leander-dc-leaf1). Input: device_name (names have dashes). NOT for "path allowed" or "traffic allowed" between two IPs—use check_path_allowed. Queries with dots (IPs) are not device names.
+    Look up a network device's rack location and details in NetBox by device name.
 
-    **QUICK CHECK: Does the user query contain a DOT (.)?**
-    - YES (e.g., "11.0.0.1", "192.168.1.1") → This is an IP address → DO NOT use this tool → Ask for clarification instead
-    - NO (e.g., "leander-dc-leaf6", "roundrock-dc-leaf1") → This might be a device name → Continue reading below
+    Use for: queries about a specific DEVICE — identified by a name with dashes like "leander-dc-border-leaf1", "roundrock-dc-leaf1".
+    Device names: long, hyphenated strings (e.g. "leander-dc-border-leaf1"). NOT short rack names, NOT IP addresses.
+    Do NOT use for: IP addresses (have dots, not dashes), short rack names like "A4" (use get_rack_details), path queries.
 
-    **ABSOLUTE RULE #1: If the user query is JUST an IP address (like "11.0.0.1", "11.0.0.2", "192.168.1.1") with NO other words, you MUST ask for clarification. DO NOT select this tool.**
-
-    **ABSOLUTE RULE #2: IP addresses have DOTS (.) - Device names have DASHES (-). They are completely different.**
-    - "11.0.0.1" has dots → it's an IP address → DO NOT use this tool → ask for clarification
-    - "leander-dc-leaf6" has dashes → it's a device name → you CAN use this tool
-
-    **ABSOLUTE RULE #3: This tool requires a device_name parameter. If the query is just an IP address, there is NO device_name, so DO NOT use this tool.**
-
-    **CRITICAL: This tool is ONLY for DEVICE NAMES, NOT for IP addresses.**
-
-    **CRITICAL: When to use this tool:**
-    - Use this tool ONLY when the query contains a DEVICE NAME (a name with DASHES, e.g., "roundrock-dc-border-leaf1", "leander-dc-leaf1")
-    - Device names are LONG strings with multiple dashes separating parts
-    - Examples of device names: "roundrock-dc-border-leaf1", "leander-dc-border-leaf2", "roundrock-dc-leaf1"
-
-    **CRITICAL: When NOT to use this tool - READ CAREFULLY:**
-    - **DO NOT use this tool for IP addresses** (e.g., "11.0.0.1", "11.0.0.2", "192.168.1.100")
-    - **IP addresses have DOTS (.), device names have DASHES (-) - they are completely different**
-    - If the query is JUST an IP address (like "11.0.0.1" or "11.0.0.2") with no device name:
-      * Ask for clarification using the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-      * OR use query_panorama_ip_object_group if the query explicitly mentions Panorama/object groups
-    - **NEVER use this tool for queries that are just IP addresses - IP addresses are NOT device names**
-    - Example: "11.0.0.1" is an IP address (has dots) → do NOT use this tool, ask for clarification
-    - Example: "11.0.0.2" is an IP address (has dots) → do NOT use this tool, ask for clarification
-    - Example: "roundrock-dc-leaf1" is a device name (has dashes) → use this tool
-
-    **HANDLING FOLLOW-UP RESPONSES:**
-    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - AND the current query is just "2" or "two" → this means the user selected option 2 (Look up device in NetBox)
-    - **CRITICAL: Only use this tool (get_device_rack_location) when user responds "2" to a clarification question that lists "2) Look up device in NetBox"**
-    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "2" and the question lists "2) Look up device in NetBox", use this tool**
-    - Extract the IP address or device name from EARLIER messages in the conversation history (the message immediately before the clarification question)
-    - Use this tool (get_device_rack_location) with the device name or IP from history
-    - **IMPORTANT: When using this tool for a follow-up response, if you extracted an IP address, pass it as device_name parameter (NetBox can look up devices by IP)**
-    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama..., 2) Look up device in NetBox..." → user responds "2" → use this tool with device_name="11.0.0.1" (from history, even though it's an IP, pass it as device_name)
-    - **DO NOT use this tool when user responds "1" to a clarification question - that means Panorama query (option 1)**
-
-    **Device name identification:**
-    - Device names ALWAYS contain DASHES (-)
-    - Device names are typically 15+ characters long
-    - If you see "roundrock-dc-border-leaf1" → this is a DEVICE NAME → use this tool
-    - If you see "A1" or "A4" → this is a RACK NAME → use get_rack_details instead
-    - **CRITICAL: If you see "11.0.0.1" or any string with DOTS (.) → this is an IP ADDRESS, NOT a device name → do NOT use this tool**
-    - IP addresses have dots (.), device names have dashes (-) - they are completely different
-
-    **Intent parameter (what the user wants to see):**
-    - "device_details" (default): Show all device information (rack, position, site, status, device type, manufacturer, model, etc.)
-    - "rack_location_only": Show only rack location (site, rack, position) - use when query contains "rack location" or "where is"
-    - "device_type_only": Show only device type - use when query contains "device type"
-    - "status_only": Show only device status - use when query contains "status"
-    - "site_only": Show only site name - use when query contains "site" or "what site" or "which site" (e.g., "site leander-dc-leaf1" → intent="site_only")
-    - "manufacturer_only": Show only manufacturer - use when query contains "manufacturer"
-
-    **CRITICAL: Query format examples:**
-    - "site leander-dc-leaf1" → device_name="leander-dc-leaf1", intent="site_only" (NOT a rack query!)
-    - "what site does leander-dc-leaf1 belong to" → device_name="leander-dc-leaf1", intent="site_only"
-    - "leander-dc-leaf1" (just device name) → device_name="leander-dc-leaf1", intent="device_details"
-
-    **Format parameter:**
-    - "table" (recommended): Returns data formatted as a table
-    - "json": Returns data in JSON format
-    - "list": Returns data as a list
-    - None: Returns a natural language summary with AI analysis
-
-    **Examples:**
-    - Query: "roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="device_details", format="table"
-    - Query: "rack location roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="rack_location_only", format="table"
-    - Query: "manufacturer of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="manufacturer_only", format="table"
-    - Query: "status of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="status_only", format="table"
-
-    **Query variations (all → get_device_rack_location with device_name=the name with dashes; this is NetBox device lookup, NOT Panorama):**
-    - "is leander-dc-border-leaf1 in A1?" / "is leander-dc-border-leaf1 racked in A1?" / "is device X in rack Y?" → device_name="leander-dc-border-leaf1" (look up device; result shows which rack it is in—compare to A1)
-    - "on netbox where is leander-dc-border-leaf1?" / "in netbox where is leander-dc-border-leaf1?"
-    - "where is leander-dc-border-leaf1?" / "where is leander-dc-border-leaf1 racked?"
-    - "which rack is leander-dc-border-leaf1 in?" / "what rack is leander-dc-border-leaf1 in?"
-    - "rack location of leander-dc-border-leaf1" / "rack location for leander-dc-border-leaf1"
-    - "find leander-dc-border-leaf1 in netbox" / "look up leander-dc-border-leaf1 in netbox"
-    - "netbox where is leander-dc-border-leaf1" / "netbox find device leander-dc-border-leaf1"
-    - "locate leander-dc-border-leaf1" / "locate device leander-dc-border-leaf1"
-    - "which site is leander-dc-border-leaf1 in?" / "what site is leander-dc-border-leaf1 in?" → intent="site_only"
-    - "device type of leander-dc-border-leaf1" → intent="device_type_only"
-    - Any phrase with a name containing DASHES (e.g. roundrock-dc-leaf1, leander-dc-border-leaf1) asking where/location/rack/site → use this tool. Do NOT use Panorama tools for device names with dashes.
+    Examples:
+    - "where is leander-dc-border-leaf1 racked?" → device_name="leander-dc-border-leaf1"
+    - "which rack is roundrock-dc-leaf1 in?" → device_name="roundrock-dc-leaf1"
+    - "is leander-dc-border-leaf1 in rack A2?" → device_name="leander-dc-border-leaf1", expected_rack="A2"
+    - "what site is leander-dc-leaf1 in?" → device_name="leander-dc-leaf1", intent="site_only"
+    - "device type of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="device_type_only"
 
     Args:
         device_name: The FULL device name to look up (e.g., "roundrock-dc-border-leaf1" - must include all parts with dashes).

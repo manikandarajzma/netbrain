@@ -214,82 +214,23 @@ async def query_panorama_ip_object_group(
     vsys: str = "vsys1"
 ) -> Dict[str, Any]:
     """
-    query_panorama_ip_object_group: Use ONLY when user has ONE IP and asks which address group contains it (e.g. "what group is 10.0.0.1 in"). NEVER use for "path allowed", "traffic allowed", or "check if traffic from X to Y" — use check_path_allowed for those. Input: ip_address (one only). Output: list of groups.
+    Find which Panorama address groups contain a given IP address.
 
-    **CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_address_group_members:**
-    - **This tool (query_panorama_ip_object_group):** Query has an IP address → finds which groups contain that IP
-      - Example: "what address group is 11.0.0.0/24 part of" → INPUT: IP "11.0.0.0/24", OUTPUT: groups
-      - Example: "which group contains 11.0.0.1" → INPUT: IP "11.0.0.1", OUTPUT: groups
-    - **Other tool (query_panorama_address_group_members):** Query has a group name → lists IPs in that group
-      - Example: "what IPs are in address group leander_web" → INPUT: group "leander_web", OUTPUT: IPs
-      - **DO NOT use this tool (query_panorama_ip_object_group) for queries that have a group name and ask for IPs**
+    Use for: queries with an IP address (has dots, e.g. "10.0.0.1") asking which address group/object group it belongs to.
+    Input is an IP; output is the list of groups that contain it.
+    Do NOT use for: device names (have dashes, use get_device_rack_location), group member listing (use query_panorama_address_group_members), path/traffic checks.
 
-    **QUICK CHECK: Does the user query contain a DOT (.)?**
-    - YES (e.g., "11.0.0.1", "192.168.1.1") → This is an IP address → You can use this tool OR ask clarification if it's just the IP with no context
-    - NO (e.g., "leander-dc-leaf6") → This is NOT an IP address → DO NOT use this tool → Use get_device_rack_location instead
+    Examples:
+    - "what address group is 10.0.0.1 in?" → ip_address="10.0.0.1"
+    - "which group contains 11.0.0.0/24?" → ip_address="11.0.0.0/24"
+    - "find address group for 192.168.1.5" → ip_address="192.168.1.5"
 
-    **ABSOLUTE RULE #1: If the user query is JUST an IP address (like "11.0.0.1", "11.0.0.2", "192.168.1.1") with NO other words, you MUST ask for clarification first. DO NOT immediately select this tool.**
-
-    **ABSOLUTE RULE #2: IP addresses have DOTS (.) - Device names have DASHES (-). They are completely different.**
-    - "11.0.0.1" has dots → it's an IP address → you can use this tool OR ask clarification
-    - "leander-dc-leaf6" has dashes → it's a device name → DO NOT use this tool → use get_device_rack_location instead
-
-    **ABSOLUTE RULE #3: When the query is JUST an IP address (no context), ask: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"**
-
-    **CRITICAL: This tool is for IP ADDRESSES, NOT for device names.**
-
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query contains an IP ADDRESS (a string with DOTS like "11.0.0.1", "11.0.0.2", "192.168.1.100", "11.0.0.0/24")
-    - **If the query is JUST an IP address (like "11.0.0.1" or "11.0.0.2") without explicit context, ask for clarification first using the standard format**
-    - **CRITICAL DISTINCTION:**
-      - Query asks "what address group is [IP] part of" or "which address group contains [IP]" or "what object group is [IP] in" → This tool (query_panorama_ip_object_group) - you have an IP and want to find which groups contain it
-      - Query asks "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → DO NOT use this tool → use query_panorama_address_group_members instead - you have a group name and want to list its members
-    - Use this tool when the query explicitly asks about "address group", "object group", "what group", "which group" FOR an IP address (the IP is the input, groups are the output)
-    - Use this tool when querying Panorama for IP address membership in address objects or address groups
-    - Examples: "what address group is 11.0.0.0/24 part of" → ip_address="11.0.0.0/24" → use this tool
-    - Examples: "what address group 10.0.0.254 belongs to" → ip_address="10.0.0.254" → use this tool
-    - Examples: "which object group contains 192.168.1.100" → ip_address="192.168.1.100" → use this tool
-    - Examples: "find address group for 11.0.0.1" → ip_address="11.0.0.1" → use this tool
-    - Examples: "11.0.0.1" (just IP) → ask for clarification: "What would you like to do with 11.0.0.1? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - Examples: "11.0.0.2" (just IP) → ask for clarification: "What would you like to do with 11.0.0.2? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - This tool queries Panorama (firewall management), NOT NetBox (rack/device inventory)
-    - **CRITICAL: IP addresses have DOTS (.), device names have DASHES (-) - they are completely different. If you see dots, it's an IP address → use this tool or ask clarification. If you see dashes, it's a device name → use get_device_rack_location.**
+    If query is just a bare IP with no context, ask: "What would you like to do with [IP]?
+    1) Query Panorama for object groups  2) Look up device in NetBox  3) Look up rack in NetBox  4) Query network path"
 
     **HANDLING FOLLOW-UP RESPONSES:**
     - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-    - AND the current query is just "1" or "one" → this means the user selected option 1 (Query Panorama for object groups)
-    - **CRITICAL: You MUST use this tool (query_panorama_ip_object_group) when user responds "1" to a clarification question that lists "1) Query Panorama for object groups"**
-    - **CRITICAL: The standard clarification question order is: 1) Panorama, 2) Device, 3) Rack, 4) Network Path - if you see "1" and the question lists "1) Query Panorama for object groups", use this tool**
-    - Extract the IP address from EARLIER messages in the conversation history (the message immediately before the clarification question)
-    - Use this tool (query_panorama_ip_object_group) with the IP address from history
-    - Example: User says "11.0.0.1" → clarification asked with "1) Query Panorama for object groups, 2) Look up device..." → user responds "1" → use this tool (query_panorama_ip_object_group) with ip_address="11.0.0.1" (from history)
-    - **DO NOT use get_device_rack_location when user responds "1" to a clarification question - "1" ALWAYS means Panorama query in the standard format**
-
-    **IMPORTANT: Do NOT confuse with other tools:**
-    - This is NOT for rack queries (use get_rack_details for rack names like "A4")
-    - This is NOT for device queries (use get_device_rack_location for device names with dashes like "leander-dc-leaf6")
-    - This tool does NOT use "site" parameter - Panorama uses "device_group" (firewall device groups), NOT NetBox sites
-    - If the query is JUST an IP address without context (like "11.0.0.1"), ask for clarification mentioning ALL possible intents
-    - **CRITICAL: When generating clarification questions, ALWAYS use this EXACT order:**
-      * "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
-      * This order MUST be consistent: Panorama is ALWAYS option 1, device lookup is ALWAYS option 2, rack lookup is ALWAYS option 3, network path is ALWAYS option 4
-      * DO NOT change the order - it must always be: Panorama (1), Device (2), Rack (3), Network Path (4)
-    - When generating clarification questions for ambiguous IP addresses:
-      * ALWAYS include Panorama as option 1
-      * Ask what the user wants to DO with the IP (query Panorama, look up device, look up rack)
-      * DO NOT ask for "site" when the intent is about Panorama/object groups - Panorama doesn't use sites
-    - This is for Panorama address/object group queries for IP addresses
-
-    **Query variations (all → query_panorama_ip_object_group; input is an IP/CIDR with dots; do NOT use for device names with dashes → use get_device_rack_location):**
-    - "what address group is 11.0.0.0/24 part of?" / "which group contains 11.0.0.1?"
-    - "what object group is 10.0.0.254 in?" / "find address group for 192.168.1.100"
-    - "which address group has 11.0.0.1?" / "what group does 10.0.0.1 belong to?"
-    - "panorama what group is 11.0.0.1 in?" / "in panorama which group contains 11.0.0.1?"
-    - If query has a name with DASHES (e.g. leander-dc-border-leaf1) or says "netbox" / "where is" for a device → use get_device_rack_location, NOT this tool.
-
-    This tool searches Panorama for address objects and address groups containing the specified IP address.
-    It checks both shared objects and device-group specific objects.
-    Additionally, it queries for security and NAT policies that use the found address groups.
+    - AND the current query is just "1" → user selected option 1 (Panorama) → use this tool with ip_address from earlier history.
 
     Args:
         ip_address: IP address to search for (e.g., "192.168.1.100", "10.0.0.1", "10.0.0.254")
@@ -1095,63 +1036,21 @@ async def query_panorama_address_group_members(
     vsys: str = "vsys1"
 ) -> Dict[str, Any]:
     """
-    Query Panorama to list all IPs/address objects in a specific address group (input: group name; output: list of members).
+    List all IP addresses and address objects that are members of a named Panorama address group.
 
-    Do NOT use for: "check if traffic from X to Y is allowed", "is path allowed", "is traffic allowed" — use check_path_allowed instead. This tool only lists members of a named address group; it does not check if traffic is allowed between two IPs.
+    Use for: queries with an ADDRESS GROUP NAME asking what IPs/members are in it.
+    Input is a group name; output is the list of member IPs/objects.
+    Do NOT use for: finding which group an IP belongs to (use query_panorama_ip_object_group), path/traffic checks, device/rack lookups.
 
-    **CRITICAL DISTINCTION - DO NOT CONFUSE WITH query_panorama_ip_object_group:**
-    - **This tool (query_panorama_address_group_members):** Query has a group name → lists IPs in that group
-      - Example: "what IPs are in address group leander_web" → INPUT: group "leander_web", OUTPUT: IPs
-      - Example: "list IPs in group leander_web" → INPUT: group "leander_web", OUTPUT: IPs
-    - **Other tool (query_panorama_ip_object_group):** Query has an IP address → finds which groups contain that IP
-      - Example: "what address group is 11.0.0.0/24 part of" → INPUT: IP "11.0.0.0/24", OUTPUT: groups
-      - **DO NOT use this tool (query_panorama_address_group_members) for queries that have an IP and ask which groups contain it**
-
-    **CRITICAL: When to use this tool:**
-    - Use this tool when the query asks about "what IPs are in address group X", "list IPs in group X", "what addresses are in group X"
-    - Use this tool when the query mentions an address group name (e.g., "leander_web", "web_servers", "dmz_hosts")
-    - **CRITICAL DISTINCTION:**
-      - Query asks "what IPs are in address group [NAME]" or "list IPs in group [NAME]" → This tool (query_panorama_address_group_members) - you have a group name and want to list its members
-      - Query asks "what address group is [IP] part of" or "which group contains [IP]" → DO NOT use this tool → use query_panorama_ip_object_group instead - you have an IP and want to find which groups contain it
-    - Examples: "what other IPs are in the address group leander_web" → address_group_name="leander_web" → use this tool
-    - Examples: "list all IPs in address group web_servers" → address_group_name="web_servers" → use this tool
-    - Examples: "what addresses are in the group leander_web" → address_group_name="leander_web" → use this tool
-    - This tool queries Panorama (firewall management), NOT NetBox (rack/device inventory)
-
-    **IMPORTANT: Do NOT confuse with other tools:**
-    - This is NOT for IP addresses (use query_panorama_ip_object_group to find which groups an IP belongs to)
-    - This is NOT for rack queries (use get_rack_details for rack names like "A4")
-    - This is NOT for device queries (use get_device_rack_location for device names with dashes like "leander-dc-leaf6")
-    - This tool does NOT use "site" parameter - Panorama uses "device_group" (firewall device groups), NOT NetBox sites
-
-    This tool searches Panorama for a specific address group and returns all address objects (and their IP values) that are members of that group.
-    It checks both shared address groups and device-group specific address groups.
+    Examples:
+    - "what IPs are in address group leander_web?" → address_group_name="leander_web"
+    - "list members of group web_servers" → address_group_name="web_servers"
+    - "what addresses are in dmz_hosts?" → address_group_name="dmz_hosts"
 
     Args:
         address_group_name: Name of the address group to query (e.g., "leander_web", "web_servers")
         device_group: Optional device group name to search within (if None, searches shared and all device groups)
         vsys: VSYS name (default: "vsys1")
-
-    Returns:
-        dict: Address group members information including:
-            - address_group_name: The queried address group name
-            - members: List of address objects in the group with their IP values
-            - policies: List of security and NAT policies that use this address group
-            - device_group: Device group where the group was found (if applicable)
-            - location: Location where group was found ("shared" or "device-group")
-            - error: Error message if query fails
-
-    **Examples:**
-    - Query: "what other IPs are in the address group leander_web" → address_group_name="leander_web", device_group=None
-    - Query: "list all IPs in address group web_servers" → address_group_name="web_servers", device_group=None
-    - Query: "what addresses are in the group leander_web" → address_group_name="leander_web", device_group=None
-
-    **Query variations (all → query_panorama_address_group_members; input is a GROUP NAME, output is list of IPs):**
-    - "what IPs are in address group leander_web?" / "list IPs in group leander_web"
-    - "what addresses are in the group web_servers?" / "list members of address group dmz_hosts"
-    - "show me IPs in group leander_web" / "members of address group web_servers"
-    - "panorama list IPs in group X" / "what's in address group leander_web?"
-    - Do NOT use for "which group contains [IP]" → use query_panorama_ip_object_group instead.
     """
     import xml.etree.ElementTree as ET
     import urllib.parse
