@@ -16,6 +16,7 @@ Atlas exposes two MCP tools for querying Palo Alto Panorama's XML API for addres
 8. [Policy Resolution](#policy-resolution)
 9. [LLM Analysis](#llm-analysis)
 10. [Known Pitfalls](#known-pitfalls)
+11. [FAQs](#faqs)
 
 ---
 
@@ -191,6 +192,39 @@ _addr_obj_cache: dict[str, tuple[dict, float]] = {}
 - **Why it matters:** Address objects are the raw data that groups and policies reference. Without caching, every query for a group's members would require fetching all objects again. With caching, the second query to the same location is a pure in-memory dict lookup.
 - **Cache key:** `f"{location_type}:{location_name or 'shared'}"` — one entry per Panorama location.
 
+### Cache refresh mechanism
+
+Both `_dg_cache` and `_addr_obj_cache` use **lazy (on-demand) refresh** — there is no background timer or scheduled job. The refresh logic runs at the start of each tool invocation:
+
+```
+Incoming query
+     │
+     ▼
+Is cache entry present AND age < 5 minutes?
+     │
+     ├── YES → return cached value immediately (no HTTP call)
+     │
+     └── NO  → fetch from Panorama XML API
+               store result + current timestamp
+               return fresh value
+```
+
+The age check uses `time.monotonic()` (wall-clock independent):
+
+```python
+now = _time.monotonic()
+if _dg_cache and (now - _dg_cache[1]) < _CACHE_TTL:
+    return _dg_cache[0]   # cache hit
+
+# ... fetch from Panorama ...
+_dg_cache = (names, now)  # store with current timestamp
+```
+
+**Implications:**
+- If no queries arrive for 5+ minutes, the cache entries expire but **no fetch happens** until the next query comes in. The first query after expiry pays the fetch cost; all subsequent queries within the next 5 minutes are served from cache.
+- There is no way to manually invalidate the address object or device group caches short of restarting the MCP server. If Panorama config changes (e.g. a commit adds new objects) those changes will not be visible to Atlas for up to 5 minutes.
+- The API key cache has no TTL and never auto-refreshes — it is only cleared if Panorama returns a session-expired error and `clear_api_key_cache()` is called explicitly.
+
 ### Cache hit/miss logging
 
 All cache decisions are logged at DEBUG level:
@@ -320,3 +354,35 @@ Panorama's XML API response time degrades as the candidate config grows. With 6,
 ### SSL certificate verification
 
 All API calls disable SSL certificate verification (`ssl.CERT_NONE`, `check_hostname=False`) because Panorama typically uses a self-signed certificate. This is intentional and appropriate for internal lab environments.
+
+---
+
+## FAQs
+
+**Q: How long is the Panorama API key valid?**
+
+Panorama API keys have no built-in expiry. A key remains valid indefinitely until the account password is changed, the key is explicitly revoked in Panorama, or Panorama is restarted. Atlas caches the key in memory for the lifetime of the MCP server process and reuses it on every query.
+
+**Q: If the API key is stolen, can an attacker use it directly against Panorama?**
+
+Yes. A stolen key works directly against Panorama's XML API regardless of Atlas. Client-side TTLs in Atlas do not help here because they only control when Atlas re-fetches a key — they do not invalidate the old key on Panorama. The real mitigations are on the Panorama side:
+
+- **Read-only role** — create a dedicated Atlas admin account with `XML API` + `Read` permissions only. A stolen key can query but cannot change config, commit, or push policies.
+- **Allowed IP restriction** — in Panorama under `Device > Administrators > [account] > Allowed IP Addresses`, restrict the account to only accept API calls from the Atlas server's IP. Requests from any other IP are rejected even with a valid key.
+- **Password rotation** — rotating the Panorama account password immediately invalidates all existing keys for that account. Atlas re-fetches a fresh key automatically on the next query since credentials are always pulled from Azure Key Vault.
+
+**Q: Can we set an expiry on the API key when requesting it from Panorama?**
+
+No. Panorama's `keygen` endpoint does not accept an expiry parameter. The only way to limit key lifetime is to rotate the account password on Panorama, which invalidates all existing keys for that account.
+
+**Q: Why does Atlas not re-fetch the API key more frequently?**
+
+Panorama API keys are long-lived by design (see above). Re-fetching on a schedule would not improve security since the old key remains valid on Panorama until the password changes. The only benefit of periodic re-fetch is limiting how long a leaked in-memory key is actively used by Atlas, which is a minor hygiene measure.
+
+**Q: How quickly do Panorama config changes (new commits) appear in Atlas queries?**
+
+Up to 5 minutes. The address object and device group caches have a 5-minute TTL. After a commit completes on Panorama, the next Atlas query that hits an expired cache entry will fetch fresh data. Queries served from a warm cache will return the pre-commit state until the TTL expires.
+
+**Q: Why do queries sometimes slow down when Panorama has many objects?**
+
+Panorama's XML API response time degrades as the candidate config grows. With thousands of objects in a device group, each `action=get` call takes longer because Panorama must serialise a larger XML tree. Atlas mitigates this with caching (warm queries skip the API call entirely) and parallel fetching (multiple locations are queried simultaneously), but the first query after cache expiry will still be slower with larger configs.
