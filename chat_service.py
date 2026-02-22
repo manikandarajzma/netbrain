@@ -1,6 +1,6 @@
 """
-Chat service: tool discovery + execution for FastAPI.
-Uses MCP client and tool selection from mcp_client / mcp_client_tool_selection.
+Chat service: native LLM tool calling via LangChain bind_tools().
+The LLM selects and calls tools directly from their MCP schemas — no custom routing logic.
 """
 import asyncio
 import json
@@ -10,759 +10,54 @@ from typing import Any, Dict
 
 logger = logging.getLogger("atlas.chat_service")
 
-# Lazy imports to avoid circular deps
-def _get_mcp_client():
-    from atlas.mcp_client import get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient
-    return get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient
 
+# ---------------------------------------------------------------------------
+# Scope check
+# ---------------------------------------------------------------------------
 
-# Extract IP/CIDR from user message (restores parsing that existed in pre-Streamlit UI)
 _IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
-
-# Path override: "path allowed" / "traffic allowed" / "find path from X to Y" with two IPs → force check_path_allowed
-_PATH_ALLOWED_RE = re.compile(
-    r"\b(?:is\s+)?path\s+allowed\b|\b(?:is\s+)?traffic\s+allowed\b|"
-    r"check\s+if\s+traffic\s+.*?\s+allowed|can\s+traffic\s+.*\s+reach|"
-    r"\b(?:does\s+path\s+exist|is\s+connectivity\s+allowed|can\s+.+\s+reach\s+.+|"
-    r"connectivity\s+from\s+.+\s+to\s+|traffic\s+from\s+.+\s+to\s+.+\s+allowed)",
-    re.IGNORECASE,
-)
-_PATH_FROM_TO_RE = re.compile(
-    r"\b(?:find|get|show|query|trace)?\s*(?:network\s+)?path\s+from\s+.+\s+to\s+",
-    re.IGNORECASE,
-)
-
-
-def _parse_path_allowed_query(prompt: str) -> dict[str, Any] | None:
-    """If prompt asks path/traffic allowed or path from A to B between two IPs, return params for check_path_allowed."""
-    if not (prompt or "").strip():
-        return None
-    if not _PATH_ALLOWED_RE.search(prompt) and not _PATH_FROM_TO_RE.search(prompt):
-        return None
-    ips = _IP_OR_CIDR_RE.findall(prompt)
-    if len(ips) < 2:
-        return None
-    protocol = "TCP"
-    if re.search(r"\bUDP\b", prompt, re.I):
-        protocol = "UDP"
-    port = "443"
-    port_m = re.search(r"\b(?:port\s+)?(\d{1,5})\b", prompt)
-    if port_m:
-        port = port_m.group(1)
-    return {
-        "source": ips[0],
-        "destination": ips[1],
-        "protocol": protocol,
-        "port": port,
-    }
-
-
-# Device rack override: all variations for "where is device X" / "is X in rack Y" with X = device name (dashes) → get_device_rack_location
-_DEVICE_RACK_RE = re.compile(
-    r"\b(?:where\s+is|which\s+rack\s+is|what\s+rack\s+is)\s+(.+?)\s+racked\b|"
-    r"\b(?:where\s+is|which\s+rack)\s+(.+?)\s+in\s+(?:the\s+)?rack\b|"
-    r"\brack\s+location\s+(?:of|for)\s+(.+?)(?:\?|$|\s)|"
-    r"\b(?:locate|find|look\s+up|show)\s+(?:device\s+)?([a-z0-9\-]+)(?:\s+in\s+netbox|\s+in\s+NetBox)?(?:\?|$|\s)|"
-    r"\b(?:which\s+rack\s+has|what\s+rack\s+is|which\s+rack\s+is)\s+([a-z0-9\-]+)(?:\s+in)?(?:\?|$|\s)|"
-    r"\bdevice\s+([a-z0-9\-]+)\s+(?:location|rack|position)(?:\?|$|\s)|"
-    r"\b([a-z0-9\-]+)\s+rack\s+position(?:\?|$|\s)|"
-    r"\bis\s+([a-z0-9\-]+)\s+in\s+[A-Za-z0-9]{1,15}(?:\?|$|\s)|"
-    r"\bis\s+([a-z0-9\-]+)\s+racked\s+in\s+[A-Za-z0-9]{1,15}(?:\?|$|\s)|"
-    r"\b(?:on|in)\s+netbox\s+where\s+is\s+([a-z0-9\-]+)(?:\?|$|\s)|"
-    r"\bnetbox\s+(?:where\s+is|find\s+device)\s+([a-z0-9\-]+)(?:\?|$|\s)|"
-    r"\bwhere\s+is\s+([a-z0-9\-]+)(?:\?|$|\s)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _parse_device_rack_query(prompt: str) -> dict[str, Any] | None:
-    """If prompt asks where a device is racked / on netbox where is X, return params for get_device_rack_location."""
-    if not (prompt or "").strip():
-        return None
-    m = _DEVICE_RACK_RE.search(prompt)
-    if not m:
-        return None
-    # First non-empty group is the device name
-    device_name = next((g for g in m.groups() if g), "")
-    device_name = device_name.strip().strip("?.,")
-    if not device_name or len(device_name) > 120:
-        return None
-    # Device names have dashes; IPs have dots — require dash for "where is X" / "netbox where is X" (avoid IP)
-    if "." in device_name or (not re.search(r"-", device_name) and len(device_name) <= 4):
-        return None  # likely IP or short rack name (A4), not device
-    return {"device_name": device_name}
-
-
-# Rack details override: all variations for "rack A4" / "details for A1" / "A4 in Leander" → get_rack_details (NetBox), not Panorama
-_RACK_NAME_RE = re.compile(
-    r"^(?:rack\s+)?([A-Za-z0-9]{1,15})$|"
-    r"\brack\s+([A-Za-z0-9]{1,15})(?:\s|$|\?)|"
-    r"\b(?:show|display|get)\s+(?:me\s+)?(?:rack\s+)?([A-Za-z0-9]{1,15})(?:\s|$|\?)|"
-    r"\b(?:details?|info)\s+(?:for\s+)?(?:rack\s+)?([A-Za-z0-9]{1,15})(?:\s|$|\?)|"
-    r"\b(?:space\s+)?utilization\s+(?:of\s+)?([A-Za-z0-9]{1,15})(?:\s|$|\?)|"
-    r"\b([A-Za-z0-9]{1,15})\s+(?:rack|utilization|space\s+usage)(?:\s|$|\?)|"
-    r"\b(?:what'?s?|which\s+devices?)\s+in\s+rack\s+([A-Za-z0-9]{1,15})(?:\?|$|\s)|"
-    r"\bdevices?\s+in\s+([A-Za-z0-9]{1,15})(?:\?|$|\s)",
-    re.IGNORECASE,
-)
-# "rack A1 in Leander", "rack A4 at Round Rock DC", "A1 in Leander", "A4 at Leander DC"
-_RACK_AND_SITE_RE = re.compile(
-    r"\b(?:rack\s+)?([A-Za-z0-9]{1,15})\s+(?:in|at)\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)",
-    re.IGNORECASE,
-)
-
-
-def _parse_rack_details_query(prompt: str) -> dict[str, Any] | None:
-    """If prompt is a short rack name or 'rack X' or 'rack X in/at <site>', return params for get_rack_details (avoids Panorama)."""
-    raw = (prompt or "").strip()
-    if not raw:
-        return None
-    # "rack A1 in Leander" / "rack A4 at Leander DC" → pass site so server can resolve "Leander" → "Leander DC"
-    m_site = _RACK_AND_SITE_RE.search(raw)
-    if m_site:
-        rack_name = m_site.group(1).strip()
-        site_name = m_site.group(2).strip()
-        if rack_name and "." not in rack_name and "-" not in rack_name and site_name:
-            # Check if multiple known site names are mentioned (e.g., "leander round rock")
-            # Common site name patterns: "Leander", "Round Rock", "Austin", etc.
-            site_lower = site_name.lower()
-            known_sites = ["leander", "round rock", "roundrock", "austin", "dallas", "houston"]
-            sites_found = [site for site in known_sites if site in site_lower]
-
-            if len(sites_found) >= 2:
-                # Multiple site names detected - return None to let LLM ask for clarification
-                logger.debug(f"Multiple sites detected in '{site_name}': {sites_found} - deferring to LLM")
-                return None
-
-            # Also check word count as fallback (e.g., "leander round rock" = 3 words is unusual)
-            site_words = site_name.split()
-            if len(site_words) >= 3 and "dc" not in site_lower:
-                # 3+ words without "DC" suggests multiple sites - let LLM handle it
-                logger.debug(f"Ambiguous site name detected: '{site_name}' (3+ words) - deferring to LLM")
-                return None
-
-            return {"rack_name": rack_name, "site_name": site_name}
-    # Whole query is a single word (rack name) — no dots, no dashes
-    if re.match(r"^[A-Za-z0-9]{1,15}$", raw):
-        return {"rack_name": raw}
-    m = _RACK_NAME_RE.search(raw)
-    if not m:
-        return None
-    rack_name = next((g for g in m.groups() if g), "").strip()
-    if not rack_name or "." in rack_name or "-" in rack_name:
-        return None
-    return {"rack_name": rack_name}
-
-
-# List racks: all variations for "list racks at X" / "racks in Leander" / "how many racks in X" → list_racks(site_name=...)
-# Use plural "racks" so "rack A1 in Leander" stays get_rack_details, not list_racks
-_LIST_RACKS_AT_SITE_RE = re.compile(
-    r"\b(?:what|which|list|show|get|display|how\s+many|count\s+of|number\s+of)\s+(?:all\s+)?racks\s+(?:are\s+)?(?:at|in)\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)|"
-    r"\b(?:list|show|get|display)\s+(?:me\s+)?(?:all\s+)?racks\s+(?:at|in)\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)|"
-    r"\b(?:all\s+)?racks\s+(?:at|in)\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)|"
-    r"\bracks\s+at\s+site\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)|"
-    r"\b(?:give\s+me|show\s+me)\s+all\s+racks\s+(?:at|in)\s+([A-Za-z0-9\s]{1,50}?)(?:\?|$|\s*$)",
-    re.IGNORECASE,
-)
-
-
-def _parse_list_racks_query(prompt: str) -> dict[str, Any] | None:
-    """If prompt is 'list racks at X' / 'what racks are in X' / 'list all racks', return params for list_racks."""
-    raw = (prompt or "").strip()
-    if not raw:
-        return None
-    # "list all racks" / "show all racks" (no site) → list_racks with no filter
-    if re.match(r"^(?:list|show|get|display)\s+(?:all\s+)?racks\s*$", raw, re.IGNORECASE):
-        return {"site_name": None}
-    m = _LIST_RACKS_AT_SITE_RE.search(raw)
-    if not m:
-        return None
-    site_name = next((g for g in m.groups() if g), "").strip()
-    if not site_name:
-        return None
-    return {"site_name": site_name}
-
-
-def _parse_rack_follow_up_site(
-    conversation_history: list[dict[str, Any]],
-    prompt: str,
-) -> dict[str, Any] | None:
-    """If the last assistant message asked 'Which site?' for a rack and the user replied with a site name, return get_rack_details params."""
-    if not conversation_history or not (prompt or "").strip():
-        return None
-    raw = prompt.strip()
-
-    # CRITICAL: Reject if prompt is clearly a NEW query, not a follow-up answer to "Which site?"
-    # These checks prevent misrouting new queries when conversation history contains old "Which site?" messages
-
-    # Check for IP addresses (dots) - these are Panorama/Splunk/path queries, NOT rack follow-ups
-    if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", raw):
-        # Contains an IP address - this is a new query
-        return None
-
-    # Check for device names (dashes) - these are device queries, NOT rack follow-ups
-    if re.search(r"[a-z]+-[a-z]+-[a-z]+", raw, re.IGNORECASE):
-        # Contains dashes in a device name pattern - this is a new device query
-        return None
-
-    # Check for query keywords that indicate a NEW query (not a follow-up answer)
-    query_keywords = r"\b(what|where|show|list|which|find|query|path|address group|panorama|splunk|deny|events|allowed|traffic)\b"
-    if re.search(query_keywords, raw, re.IGNORECASE):
-        # Contains query keywords - this is a new question, not a site name answer
-        return None
-
-    # User reply should look like a site name: short phrase, no "rack" keyword
-    if re.search(r"\brack\b", raw, re.IGNORECASE) or len(raw) > 60:
-        return None
-    # Find last assistant message (content can be string or dict with error/requires_site/sites)
-    last_assistant_content = None
-    for i in range(len(conversation_history) - 1, -1, -1):
-        msg = conversation_history[i]
-        if (msg.get("role") or "").lower() == "assistant":
-            c = msg.get("content")
-            if isinstance(c, dict):
-                last_assistant_content = str(c.get("error") or "") + " " + str(c.get("message", ""))
-                if c.get("requires_site") and c.get("sites"):
-                    last_assistant_content += " Which site? " + ", ".join(str(s) for s in c.get("sites", [])) + "."
-            else:
-                last_assistant_content = str(c or "")
-            break
-    if not last_assistant_content:
-        return None
-
-    # Try multiple patterns for rack clarification questions:
-    # Pattern 1: "Multiple racks named 'A4' found at different sites"
-    rack_match = re.search(r"Multiple racks named\s+'([^']+)'", last_assistant_content, re.IGNORECASE)
-
-    # Pattern 2: "Which site are you referring to for rack A4?" (LLM-generated)
-    if not rack_match:
-        rack_match = re.search(r"(?:which site|site).*?rack\s+([A-Z0-9]{1,5})", last_assistant_content, re.IGNORECASE)
-
-    # Pattern 3: Any message with "which site" or "Which site?" asking about site
-    if not rack_match and re.search(r"which site", last_assistant_content, re.IGNORECASE):
-        # Try to extract rack name from the prompt itself (might be in recent context)
-        # Check if previous user message mentioned a rack
-        for i in range(len(conversation_history) - 1, -1, -1):
-            msg = conversation_history[i]
-            if (msg.get("role") or "").lower() == "user":
-                user_msg = str(msg.get("content") or "")
-                rack_in_user_msg = re.search(r"\brack\s+([A-Z0-9]{1,5})\b", user_msg, re.IGNORECASE)
-                if rack_in_user_msg:
-                    rack_match = rack_in_user_msg
-                    break
-
-    if not rack_match:
-        return None
-
-    rack_name = rack_match.group(1).strip()
-    if not rack_name:
-        return None
-    return {"rack_name": rack_name, "site_name": raw}
-
-
-def _extract_ip_or_cidr_from_prompt(text: str) -> str | None:
-    """Extract the first IPv4 or CIDR from text. Used when tool needs ip_address but LLM did not fill it."""
-    if not (text or "").strip():
-        return None
-    m = _IP_OR_CIDR_RE.search(text)
-    return m.group(0) if m else None
 
 
 def _is_obviously_in_scope(prompt: str) -> bool:
-    """Fast keyword check: return True if query clearly matches known tool patterns.
-
-    This avoids sending obvious network-infra queries through the LLM scope check
-    which can misclassify valid queries (e.g. "object group" vs "address group").
-    """
+    """Fast keyword check: return True if query clearly matches known tool patterns."""
     lower = (prompt or "").lower()
-    # Has an IP address or CIDR?
     has_ip = bool(_IP_OR_CIDR_RE.search(prompt or ""))
-
-    # Panorama / firewall keywords
     panorama_kw = any(k in lower for k in (
         "object group", "address group", "panorama", "palo alto",
         "firewall rule", "security rule", "security policy",
         "device group", "address object", "ip group",
     ))
-    # Path keywords
     path_kw = any(k in lower for k in (
         "network path", "path from", "path to", "traffic allowed",
         "path allowed", "can reach", "connectivity", "path",
     ))
-    # NetBox / rack keywords
     netbox_kw = any(k in lower for k in (
         "rack", "netbox", "racked", "device location",
     ))
-    # Splunk keywords
     splunk_kw = any(k in lower for k in (
         "splunk", "deny", "denied", "denies", "firewall log",
         "recent deny", "deny event",
     ))
-
-    # IP + any domain keyword → clearly in scope
     if has_ip and (panorama_kw or path_kw or splunk_kw):
         return True
-    # Domain keyword alone (no IP needed for racks, path queries, etc.)
     if panorama_kw or path_kw or netbox_kw or splunk_kw:
         return True
-    # Two IPs likely means path/traffic query
-    ips = _IP_OR_CIDR_RE.findall(prompt or "")
-    if len(ips) >= 2:
+    if len(_IP_OR_CIDR_RE.findall(prompt or "")) >= 2:
         return True
     return False
 
 
-async def is_query_in_scope(prompt: str) -> Dict[str, Any]:
-    """
-    Use LLM to quickly check if the query is related to network infrastructure tools.
-    Returns: {"in_scope": True/False, "reason": str}
-    """
-    # Fast path: skip LLM if query obviously matches known tool patterns
+def is_query_in_scope(prompt: str) -> Dict[str, Any]:
+    """Keyword-only scope check — no LLM call."""
     if _is_obviously_in_scope(prompt):
-        logger.debug("Scope check: keyword match → IN_SCOPE (skipped LLM)")
-        return {"in_scope": True, "reason": "Keyword match - clearly in scope"}
-
-    try:
-        from langchain_ollama import ChatOllama
-
-        scope_check_prompt = f"""You are a scope classifier for a network infrastructure assistant.
-
-The assistant can ONLY handle queries related to:
-• Network device locations and rack details (NetBox) — e.g. "where is device X racked", "rack A4", "list racks"
-• Network path queries and traffic allowed checks — e.g. "path from A to B", "is traffic allowed"
-• Panorama / Palo Alto firewall lookups — e.g. "what object group is IP in", "address group members", "IP object group", "which group contains IP"
-• Splunk deny event searches (firewall logs) — e.g. "recent denies for IP", "firewall deny events"
-
-Any query mentioning IP addresses, firewalls, network paths, racks, Panorama, Splunk, object groups, address groups, or network devices is IN SCOPE.
-
-Determine if the following query is IN SCOPE or OUT OF SCOPE.
-
-Query: "{prompt}"
-
-RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
-"""
-        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
-        llm = ChatOllama(
-            model=OLLAMA_MODEL,
-            base_url=OLLAMA_BASE_URL,
-            temperature=0.0,
-        )
-
-        response = await asyncio.wait_for(
-            llm.ainvoke(scope_check_prompt),
-            timeout=5.0
-        )
-
-        result_text = response.content.strip().upper() if hasattr(response, "content") else str(response).strip().upper()
-
-        if "OUT_OF_SCOPE" in result_text or "OUT OF SCOPE" in result_text:
-            return {"in_scope": False, "reason": "Query is not related to network infrastructure tools"}
-        else:
-            return {"in_scope": True, "reason": "Query is related to network infrastructure"}
-
-    except asyncio.TimeoutError:
-        logger.warning("Scope check timed out, assuming in-scope")
-        return {"in_scope": True, "reason": "Timeout - assuming in scope"}
-    except Exception as e:
-        logger.warning(f"Scope check failed ({e}), assuming in-scope")
-        return {"in_scope": True, "reason": f"Error during scope check: {e}"}
+        return {"in_scope": True, "reason": "Keyword match"}
+    return {"in_scope": True, "reason": "Passed through to LLM"}
 
 
-async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]]) -> dict[str, Any]:
-    """Run tool discovery: get MCP tools, call LLM to select tool, return selection or clarification/error."""
-    from atlas.mcp_client_tool_selection import select_tool_with_llm
+# ---------------------------------------------------------------------------
+# Tool display names + timeouts
+# ---------------------------------------------------------------------------
 
-    get_mcp_session, FASTMCP_CLIENT_AVAILABLE, FastMCPClient = _get_mcp_client()
-
-    async for client_or_session in get_mcp_session():
-        try:
-            if FASTMCP_CLIENT_AVAILABLE and hasattr(client_or_session, "list_tools"):
-                tools_result = await client_or_session.list_tools()
-                tools = tools_result if isinstance(tools_result, list) else (getattr(tools_result, "tools", None) or [])
-            else:
-                tools_result = await client_or_session.list_tools()
-                tools = tools_result if isinstance(tools_result, list) else (getattr(tools_result, "tools", None) or [])
-            if not tools:
-                return {"success": False, "error": "No tools available from MCP server."}
-
-            # No term matching: use tool list order from server; selection is LLM + docstrings only
-            def _tool_name(t):
-                return t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
-
-            # Hide check_path_allowed from LLM — query_network_path covers path
-            # queries and the LLM inconsistently picks between the two
-            tools = [t for t in tools if _tool_name(t) != "check_path_allowed"]
-
-            tool_names_list = [_tool_name(t) for t in tools]
-            def _params(t):
-                schema = getattr(t, "inputSchema", None)
-                if isinstance(schema, dict):
-                    return ", ".join((schema.get("properties") or {}).keys())
-                return ""
-
-            # Extract tool description for LLM: everything before Args:/Returns: so
-            # CRITICAL DISTINCTION, QUICK CHECK, ABSOLUTE RULE, etc. reach the LLM.
-            def _tool_description_for_llm(t):
-                full_desc = (t.get("description") if isinstance(t, dict) else getattr(t, "description", None)) or "No description"
-                lines = full_desc.split('\n')
-                kept = []
-                for line in lines:
-                    stripped = line.strip()
-                    if stripped.startswith('Args:') or stripped.startswith('Returns:'):
-                        break
-                    if not stripped:
-                        if kept and kept[-1] != "":
-                            kept.append("")
-                        continue
-                    kept.append(stripped)
-                result = '\n'.join(kept).strip()
-                if len(result) > 1500:
-                    result = result[:1497] + "..."
-                return result or full_desc[:500]
-
-            # Build description text per tool (MCP docstring drives LLM selection)
-            tool_descriptions_list = [
-                f"{_tool_name(t)}: {_tool_description_for_llm(t)} | Params: {_params(t)}"
-                for t in tools
-            ]
-            # Log descriptions for debugging
-            for t in tools:
-                name = _tool_name(t)
-                if name in ("check_path_allowed", "query_panorama_ip_object_group", "get_device_rack_location"):
-                    desc = _tool_description_for_llm(t)
-                    logger.debug(f"Tool description for {name}: {desc[:200]}...")
-
-            # Format as a clean numbered list (easier for LLM to parse)
-            tools_description = "\n".join([
-                f"{i+1}. {desc}"
-                for i, desc in enumerate(tool_descriptions_list)
-            ])
-
-            # Check for rack follow-up responses FIRST (before LLM)
-            # If user is answering "which site?" for a rack query, handle it immediately
-            rack_follow_up_params = _parse_rack_follow_up_site(conversation_history, prompt)
-            if rack_follow_up_params and "get_rack_details" in tool_names_list:
-                logger.debug(f"RACK FOLLOW-UP DETECTED: get_rack_details with {rack_follow_up_params}")
-                return {
-                    "success": True,
-                    "tool_name": "get_rack_details",
-                    "parameters": rack_follow_up_params,
-                    "format": "table",
-                    "intent": None,
-                }
-
-            # Check for out-of-scope queries EARLY (before LLM or tool execution)
-            # Use LLM to classify scope - scalable approach that catches any out-of-scope query
-            scope_result = await is_query_in_scope(prompt)
-            if not scope_result.get("in_scope"):
-                logger.debug(f"OUT-OF-SCOPE DETECTED: {scope_result.get('reason')}")
-                return {
-                    "success": False,
-                    "needs_clarification": True,
-                    "clarification_question": (
-                        "I'm not equipped to answer that question. I can help with:\n"
-                        "• Network device locations and rack details (NetBox)\n"
-                        "• Network path queries and traffic allowed checks\n"
-                        "• Panorama address group lookups\n"
-                        "• Splunk deny event searches\n\n"
-                        "Please ask a question related to these areas."
-                    )
-                }
-
-            # OPTIONAL: Regex-based fast-path (can be disabled by setting USE_REGEX_FALLBACK=False)
-            # Use LLM as primary selector, regex as fallback only when LLM fails
-            USE_REGEX_FALLBACK = False  # Set to True to enable regex fast-path
-
-            tool_name_override = None
-            tool_params_override = {}
-
-            if USE_REGEX_FALLBACK:
-                # Check for "is path allowed" / "traffic allowed" with two IPs
-                path_allowed_params = _parse_path_allowed_query(prompt)
-                if path_allowed_params and "check_path_allowed" in tool_names_list:
-                    tool_name_override = "check_path_allowed"
-                    tool_params_override = path_allowed_params
-
-                # Check for "where is X racked?" with device name
-                if not tool_name_override:
-                    device_rack_params = _parse_device_rack_query(prompt)
-                    if device_rack_params and "get_device_rack_location" in tool_names_list:
-                        tool_name_override = "get_device_rack_location"
-                        tool_params_override = device_rack_params
-
-                # Check for "list racks at Leander"
-                if not tool_name_override:
-                    list_racks_params = _parse_list_racks_query(prompt)
-                    if list_racks_params and "list_racks" in tool_names_list:
-                        tool_name_override = "list_racks"
-                        tool_params_override = list_racks_params
-
-                # Check for "Rack A4" / rack details
-                if not tool_name_override:
-                    rack_details_params = _parse_rack_follow_up_site(conversation_history, prompt) or _parse_rack_details_query(prompt)
-                    if rack_details_params and "get_rack_details" in tool_names_list:
-                        tool_name_override = "get_rack_details"
-                        tool_params_override = rack_details_params
-
-                # If regex override matched, skip LLM and return immediately
-                if tool_name_override:
-                    logger.debug(f"REGEX FAST-PATH: {tool_name_override} with params {tool_params_override}")
-                    return {
-                        "success": True,
-                        "tool_name": tool_name_override,
-                        "parameters": tool_params_override,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-            # Proceed with LLM selection (primary method)
-            tool_selection_result = await select_tool_with_llm(
-                prompt=prompt,
-                tools_description=tools_description,
-                conversation_history=conversation_history,
-            )
-            tool_name = tool_selection_result.get("tool_name")
-            needs_clarification = tool_selection_result.get("needs_clarification", False)
-
-            if not tool_selection_result.get("success"):
-                return tool_selection_result
-
-            if tool_name is None and not needs_clarification:
-                # LLM failed to select a tool - try regex patterns as safety net
-                logger.warning("LLM returned tool_name=None, trying regex safety net...")
-
-                # Try all regex patterns as fallback
-                device_rack_params = _parse_device_rack_query(prompt)
-                if device_rack_params and "get_device_rack_location" in tool_names_list:
-                    logger.debug("REGEX SAFETY NET: get_device_rack_location")
-                    return {
-                        "success": True,
-                        "tool_name": "get_device_rack_location",
-                        "parameters": device_rack_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                path_allowed_params = _parse_path_allowed_query(prompt)
-                if path_allowed_params and "check_path_allowed" in tool_names_list:
-                    logger.debug("REGEX SAFETY NET: check_path_allowed")
-                    return {
-                        "success": True,
-                        "tool_name": "check_path_allowed",
-                        "parameters": path_allowed_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                rack_details_params = _parse_rack_follow_up_site(conversation_history, prompt) or _parse_rack_details_query(prompt)
-                if rack_details_params and "get_rack_details" in tool_names_list:
-                    logger.debug("REGEX SAFETY NET: get_rack_details")
-                    return {
-                        "success": True,
-                        "tool_name": "get_rack_details",
-                        "parameters": rack_details_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                list_racks_params = _parse_list_racks_query(prompt)
-                if list_racks_params and "list_racks" in tool_names_list:
-                    logger.debug("REGEX SAFETY NET: list_racks")
-                    return {
-                        "success": True,
-                        "tool_name": "list_racks",
-                        "parameters": list_racks_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                # No regex match either
-                logger.debug("REGEX SAFETY NET: No pattern matched")
-
-                clarification_msg = tool_selection_result.get("clarification_question") or (
-                    "I'm sorry, but this system is not equipped to process that type of query."
-                )
-
-                return {
-                    "success": False,
-                    "tool_name": None,
-                    "needs_clarification": False,
-                    "clarification_question": clarification_msg,
-                    "error": "Query cannot be processed by any available tool",
-                }
-            if needs_clarification:
-                # LLM wants clarification - but check regex fallback first in case LLM is wrong
-                logger.debug("LLM asked for clarification, checking regex fallback...")
-
-                # Try all regex patterns as fallback
-                device_rack_params = _parse_device_rack_query(prompt)
-                if device_rack_params and "get_device_rack_location" in tool_names_list:
-                    logger.debug("REGEX FALLBACK: Overriding LLM -> get_device_rack_location")
-                    return {
-                        "success": True,
-                        "tool_name": "get_device_rack_location",
-                        "parameters": device_rack_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                path_allowed_params = _parse_path_allowed_query(prompt)
-                if path_allowed_params and "check_path_allowed" in tool_names_list:
-                    logger.debug("REGEX FALLBACK: Overriding LLM -> check_path_allowed")
-                    return {
-                        "success": True,
-                        "tool_name": "check_path_allowed",
-                        "parameters": path_allowed_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                list_racks_params = _parse_list_racks_query(prompt)
-                if list_racks_params and "list_racks" in tool_names_list:
-                    logger.debug("REGEX FALLBACK: Overriding LLM -> list_racks")
-                    return {
-                        "success": True,
-                        "tool_name": "list_racks",
-                        "parameters": list_racks_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                rack_details_params = _parse_rack_follow_up_site(conversation_history, prompt) or _parse_rack_details_query(prompt)
-                if rack_details_params and "get_rack_details" in tool_names_list:
-                    logger.debug("REGEX FALLBACK: Overriding LLM -> get_rack_details")
-                    return {
-                        "success": True,
-                        "tool_name": "get_rack_details",
-                        "parameters": rack_details_params,
-                        "format": "table",
-                        "intent": None,
-                    }
-
-                # No regex match - use LLM's clarification
-                logger.debug("REGEX FALLBACK: No pattern matched, using LLM clarification")
-                return {
-                    "success": False,
-                    "needs_clarification": True,
-                    "clarification_question": tool_selection_result.get("clarification_question", "Could you please clarify?"),
-                }
-            if not tool_name:
-                return {"success": False, "error": "LLM did not select a tool."}
-            tool_params = dict(tool_selection_result.get("parameters") or {})
-            if "intent" in tool_params:
-                tool_params = {k: v for k, v in tool_params.items() if k != "intent"}
-
-            # Log successful LLM selection
-            logger.debug(f"LLM successfully selected tool: {tool_name} with params {tool_params}")
-            if "expected_rack" in tool_params:
-                logger.debug(f"expected_rack extracted: {repr(tool_params.get('expected_rack'))}")
-
-            return {
-                "success": True,
-                "tool_name": tool_name,
-                "parameters": tool_params,
-                "format": tool_selection_result.get("format", "table"),
-                "intent": tool_selection_result.get("intent"),
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-        break
-    return {"success": False, "error": "Could not connect to MCP server."}
-
-
-# Per-tool timeouts (seconds) and required params
-_TOOL_TIMEOUTS: dict[str, float] = {
-    "query_network_path": 385.0,
-    "check_path_allowed": 370.0,
-    "get_splunk_recent_denies": 95.0,
-    "get_device_rack_location": 65.0,
-    "list_racks": 65.0,
-    "get_rack_details": 65.0,
-    "query_panorama_ip_object_group": 65.0,
-    "query_panorama_address_group_members": 65.0,
-}
-
-_TOOL_REQUIRED_PARAMS: dict[str, list[str]] = {
-    "get_device_rack_location": ["device_name"],
-    "get_rack_details": ["rack_name"],
-    "check_path_allowed": ["source", "destination"],
-    "query_network_path": ["source", "destination"],
-    "query_panorama_ip_object_group": ["ip_address"],
-    "query_panorama_address_group_members": ["address_group_name"],
-    "get_splunk_recent_denies": ["ip_address"],
-}
-
-# Exhaustive list of params each tool accepts — used to filter out cross-tool params
-# that the LLM's unified schema injects (e.g. format='table' sent to Panorama tools).
-_TOOL_ALLOWED_PARAMS: dict[str, set[str]] = {
-    "get_device_rack_location": {"device_name", "intent", "format", "expected_rack", "conversation_history"},
-    "get_rack_details": {"rack_name", "site_name", "format", "conversation_history"},
-    "list_racks": {"site_name", "format", "conversation_history"},
-    "query_panorama_ip_object_group": {"ip_address", "device_group", "vsys"},
-    "query_panorama_address_group_members": {"address_group_name", "device_group", "vsys"},
-    "get_splunk_recent_denies": {"ip_address", "limit", "earliest_time"},
-    "query_network_path": {"source", "destination", "protocol", "port", "is_live", "continue_on_policy_denial"},
-    "check_path_allowed": {"source", "destination", "protocol", "port", "is_live"},
-}
-
-
-def _build_mcp_params(tool_name: str, tool_params: dict[str, Any], default_live: bool) -> dict[str, Any]:
-    """Inject tool-specific defaults and derived values into tool_params."""
-    # Strip None values and any params not accepted by this tool.
-    # The LLM uses a unified schema with fields for all tools; unused ones come through as None
-    # or with default values (e.g. format='table') and must be removed before calling the MCP server.
-    allowed = _TOOL_ALLOWED_PARAMS.get(tool_name)
-    p = {
-        k: v for k, v in tool_params.items()
-        if v is not None and (allowed is None or k in allowed)
-    }
-    if tool_name == "query_network_path":
-        p.setdefault("protocol", "TCP")
-        p.setdefault("port", "0")
-        p["is_live"] = 1 if default_live else 0
-        p["continue_on_policy_denial"] = True
-    elif tool_name == "check_path_allowed":
-        p.setdefault("protocol", "TCP")
-        p.setdefault("port", "0")
-        p["is_live"] = 1
-    elif tool_name == "get_splunk_recent_denies":
-        p.setdefault("limit", 100)
-        p.setdefault("earliest_time", "-24h")
-    return p
-
-
-async def execute_tool(
-    tool_name: str,
-    tool_params: dict[str, Any],
-    *,
-    default_live: bool = True,
-) -> dict[str, Any] | str:
-    """Execute the selected MCP tool and return result dict or error string."""
-    from atlas.mcp_client import call_mcp_tool
-
-    if tool_name not in _TOOL_TIMEOUTS:
-        return {"error": f"Unknown tool: {tool_name}"}
-
-    for param in _TOOL_REQUIRED_PARAMS.get(tool_name, []):
-        if not str(tool_params.get(param) or "").strip():
-            return {"error": f"{param} not found in query."}
-
-    params = _build_mcp_params(tool_name, tool_params, default_live)
-    result = await call_mcp_tool(tool_name, params, timeout=_TOOL_TIMEOUTS[tool_name])
-
-    # query_network_path may return {"result": "<json-string>"} — unwrap it
-    if tool_name == "query_network_path" and isinstance(result, dict) and list(result) == ["result"]:
-        inner = result["result"]
-        if isinstance(inner, str):
-            try:
-                result = json.loads(inner)
-            except Exception:
-                pass
-
-    return result or {"error": "No result."}
-
-
-# Tool name → display label for status ("Querying NetBrain", etc.)
 TOOL_DISPLAY_NAMES: dict[str, str] = {
     "check_path_allowed": "Atlas",
     "query_network_path": "Atlas",
@@ -774,44 +69,113 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "get_splunk_recent_denies": "Splunk",
 }
 
+_TOOL_TIMEOUTS: dict[str, float] = {
+    "query_network_path": 385.0,
+    "check_path_allowed": 370.0,
+    "get_splunk_recent_denies": 95.0,
+    "get_device_rack_location": 65.0,
+    "list_racks": 65.0,
+    "get_rack_details": 65.0,
+    "query_panorama_ip_object_group": 65.0,
+    "query_panorama_address_group_members": 65.0,
+}
 
-def get_tool_display_name(tool_name: str) -> str:
-    """Return human-readable label for status message, e.g. 'Querying path'."""
-    return TOOL_DISPLAY_NAMES.get(tool_name, "backend")
-
-
-# Agent loop: max tool discovery + execute attempts before forcing a final synthesized answer
 MAX_AGENT_ITERATIONS = 3
 
 
-def _apply_tool_param_fixes(
-    tool_name: str,
-    tool_params: dict[str, Any],
-    selection: dict[str, Any],
-    prompt: str,
-) -> None:
-    """Apply intent and parameter extraction fixes before execute_tool."""
-    if tool_name == "get_device_rack_location":
-        if selection.get("intent"):
-            tool_params["intent"] = selection.get("intent")
-        if tool_params.get("intent") == "rack_locatior":
-            tool_params["intent"] = "rack_location_only"
-    if tool_name in ("query_panorama_ip_object_group", "get_splunk_recent_denies"):
-        if not (tool_params.get("ip_address") or "").strip():
-            extracted = _extract_ip_or_cidr_from_prompt(prompt)
-            if extracted:
-                tool_params["ip_address"] = extracted
+def get_tool_display_name(tool_name: str) -> str:
+    return TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
 
-    # Extract limit from prompt if not provided (e.g., "latest 10", "recent 5 events")
-    if tool_name == "get_splunk_recent_denies" and tool_params.get("limit") is None:
-        limit_match = re.search(r"\b(?:latest|recent|last|top)\s+(\d+)\b", prompt, re.IGNORECASE)
-        if limit_match:
+
+# ---------------------------------------------------------------------------
+# MCP -> LangChain tool format conversion
+# ---------------------------------------------------------------------------
+
+def _to_openai_tool(t) -> dict:
+    """Convert an MCP tool object to OpenAI function-calling format for LangChain bind_tools()."""
+    name = t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
+    desc = t.get("description") if isinstance(t, dict) else getattr(t, "description", None)
+    schema = t.get("inputSchema") if isinstance(t, dict) else getattr(t, "inputSchema", None)
+    # Include description up to Args: section (keeps Use for, Do NOT use for, Examples)
+    if desc:
+        args_idx = desc.find("\n    Args:")
+        if args_idx > 0:
+            desc = desc[:args_idx].strip()
+        desc = desc[:600]
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc or "",
+            "parameters": schema or {"type": "object", "properties": {}},
+        },
+    }
+
+
+_mcp_tools_cache: list | None = None  # reset on server restart
+
+
+async def _fetch_mcp_tools() -> list:
+    """Fetch the tool list from the MCP server, cached for the process lifetime."""
+    global _mcp_tools_cache
+    if _mcp_tools_cache is not None:
+        return _mcp_tools_cache
+    from atlas.mcp_client import get_mcp_session
+    async for client in get_mcp_session():
+        tools_result = await client.list_tools()
+        result = tools_result if isinstance(tools_result, list) else (getattr(tools_result, "tools", None) or [])
+        if result:
+            _mcp_tools_cache = result
+        return result
+    return []
+
+
+def _build_llm_messages(prompt: str, conversation_history: list) -> list:
+    """Convert prompt + conversation history to LangChain messages."""
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    messages = [
+        SystemMessage(content=(
+            "You are a network infrastructure assistant. "
+            "Always call a tool — never answer from memory or prior context. "
+            "Tool selection rules: "
+            "short rack IDs like 'A4', 'B2' → get_rack_details; "
+            "device names with dashes like 'leander-dc-leaf1' → get_device_rack_location; "
+            "IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies; "
+            "address group names → query_panorama_address_group_members; "
+            "list/all racks → list_racks. "
+            "When the user's reply is short (e.g. a site name), check the conversation history "
+            "to understand what they are clarifying and combine it with the original request."
+        ))
+    ]
+    for msg in (conversation_history or [])[-10:]:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        # Normalise: parse JSON strings so the same logic applies whether the
+        # frontend sent a dict or JSON.stringify()'d it.
+        if isinstance(content, str) and content.startswith("{"):
             try:
-                tool_params["limit"] = int(limit_match.group(1))
-                logger.debug(f"limit extracted from prompt via regex: {tool_params['limit']}")
-            except ValueError:
+                content = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
                 pass
+        if isinstance(content, dict):
+            if content.get("requires_site"):
+                rack = content.get("rack", "rack")
+                content = f"Asked user which site for rack '{rack}'."
+            else:
+                # Replace structured result with a short note so the model cannot
+                # answer the next query from memory instead of calling a tool.
+                content = content.get("message") or content.get("reason") or "[Result shown above]"
+        if role == "user":
+            messages.append(HumanMessage(content=str(content)))
+        elif role == "assistant":
+            messages.append(AIMessage(content=str(content)))
+    messages.append(HumanMessage(content=prompt))
+    return messages
 
+
+# ---------------------------------------------------------------------------
+# Result normalization
+# ---------------------------------------------------------------------------
 
 def _strip_l2_noise(result: dict[str, Any]) -> dict[str, Any]:
     """Remove noisy path status messages like 'L2 connections has not been discovered'."""
@@ -828,10 +192,9 @@ def _normalize_result(
     result: dict[str, Any] | str | None,
     prompt: str = "",
 ) -> dict[str, Any] | str | None:
-    """Apply Splunk/LLM normalizations to a successful result."""
+    """Apply display normalizations to a successful tool result."""
     if result is None or (isinstance(result, dict) and len(result) == 0):
         return result
-    # Strip noisy L2 messages from path results
     if isinstance(result, dict) and result.get("path_hops"):
         result = dict(result)
         _strip_l2_noise(result)
@@ -839,121 +202,120 @@ def _normalize_result(
         if result.get("count") == 0 and "error" not in result:
             ip = result.get("ip_address", "this IP")
             result = dict(result)
-            result["message"] = f"No deny events found for {ip} in the last 24 hours. Try a different IP or time range, or check that Splunk has Palo Alto logs for that period."
+            result["message"] = (
+                f"No deny events found for {ip} in the last 24 hours. "
+                "Try a different IP or time range, or check that Splunk has Palo Alto logs for that period."
+            )
     if isinstance(result, dict) and result.get("intent") == "rack_locatior":
         result = dict(result)
         result["intent"] = "rack_location_only"
 
-    # Handle yes/no answers - prepend them to the result display
     if isinstance(result, dict) and "yes_no_answer" in result:
-        # Move yes_no_answer to the front by creating a new dict
-        yes_no_msg = result.pop("yes_no_answer")
-        # Create a new result dict with yes_no_answer first
-        new_result = {"yes_no_answer": yes_no_msg}
-        new_result.update(result)
-        return new_result
+        # Only keep yes_no_answer when the prompt is actually a verification question
+        # ("is device X in rack Y?"), not a plain location query ("where is X racked?")
+        keep_yes_no = False
+        if prompt:
+            pl = prompt.lower()
+            keep_yes_no = (
+                ("in rack" in pl or "at rack" in pl or "in the rack" in pl)
+                and any(w in pl for w in ("is ", "are ", "was ", "does ", "correct", "right"))
+            )
+        if keep_yes_no:
+            yes_no_msg = result.pop("yes_no_answer")
+            new_result = {"yes_no_answer": yes_no_msg}
+            new_result.update(result)
+            return new_result
+        else:
+            result = dict(result)
+            result.pop("yes_no_answer", None)
 
-    # Handle specific metric queries for get_rack_details - provide direct answers
     if tool_name == "get_rack_details" and isinstance(result, dict) and prompt and "error" not in result:
         prompt_lower = prompt.lower()
         rack_name = result.get("rack_name", "rack")
         site_name = result.get("site", "")
         location_str = f"{rack_name} at {site_name}" if site_name else rack_name
-
-        # Detect specific metric queries and extract the answer
         metric_answer = None
-
         if "space utilization" in prompt_lower or "utilization" in prompt_lower:
-            if "space_utilization" in result:
-                util_value = result.get("space_utilization")
-                if util_value is not None:
-                    metric_answer = f"Space utilization of {location_str} is {util_value}%"
-
+            util_value = result.get("space_utilization")
+            if util_value is not None:
+                metric_answer = f"Space utilization of {location_str} is {util_value}%"
         elif "occupied" in prompt_lower and "unit" in prompt_lower:
-            if "occupied_units" in result:
-                occupied = result.get("occupied_units")
-                if occupied is not None:
-                    metric_answer = f"{location_str} has {occupied} occupied units"
-
+            occupied = result.get("occupied_units")
+            if occupied is not None:
+                metric_answer = f"{location_str} has {occupied} occupied units"
         elif "available" in prompt_lower and "unit" in prompt_lower:
             height = result.get("height")
             occupied = result.get("occupied_units")
             if height is not None and occupied is not None:
-                available = height - occupied
-                metric_answer = f"{location_str} has {available} available units (out of {height} total)"
-
+                metric_answer = f"{location_str} has {height - occupied} available units (out of {height} total)"
         elif "status" in prompt_lower:
-            if "status" in result:
-                status = result.get("status")
-                if status:
-                    metric_answer = f"Status of {location_str} is: {status}"
-
+            status = result.get("status")
+            if status:
+                metric_answer = f"Status of {location_str} is: {status}"
         elif "height" in prompt_lower:
-            if "height" in result:
-                height = result.get("height")
-                if height is not None:
-                    metric_answer = f"{location_str} has a height of {height} units"
-
-        # If we detected a specific metric query, prepend the direct answer
+            height = result.get("height")
+            if height is not None:
+                metric_answer = f"{location_str} has a height of {height} units"
         if metric_answer:
             result = dict(result)
-            result["metric_answer"] = metric_answer
-            # Move metric_answer to the front
             new_result = {"metric_answer": metric_answer}
             for k, v in result.items():
                 if k != "metric_answer":
                     new_result[k] = v
             return new_result
 
-    # Handle Panorama IP lookup queries - provide direct answers
+    if tool_name == "query_panorama_address_group_members" and isinstance(result, dict) and "error" not in result:
+        members = result.get("members", [])
+        group_name = result.get("address_group_name", "this group")
+        if members:
+            count = len(members)
+            direct_answer = f"Address group '{group_name}' contains {count} member{'s' if count != 1 else ''}"
+            result = dict(result)
+            result.pop("direct_answer", None)
+            new_result = {"direct_answer": direct_answer}
+            for k, v in result.items():
+                new_result[k] = v
+            return new_result
+
     if tool_name == "query_panorama_ip_object_group" and isinstance(result, dict) and prompt and "error" not in result:
-        # Extract the queried IP from the result or prompt
         queried_ip = result.get("queried_ip") or result.get("ip_address")
         if not queried_ip:
-            # Try to extract from prompt
             ip_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b", prompt)
             if ip_match:
                 queried_ip = ip_match.group(0)
-
-        # Remove duplicate message if it exists (fix duplicate issue)
         if "message" in result and result.get("address_groups"):
-            # The message is already in the result, we'll create a better direct_answer instead
             result = dict(result)
-            result.pop("message", None)  # Remove the generic message
-
-        # Create a direct answer
+            result.pop("message", None)
         if queried_ip and result.get("address_groups"):
             address_groups = result.get("address_groups", [])
             group_names = [ag.get("name") for ag in address_groups if ag.get("name")]
-
             if group_names:
-                # Create direct answer
                 if len(group_names) == 1:
                     direct_answer = f"{queried_ip} is part of address group '{group_names[0]}'"
                 else:
                     groups_str = "', '".join(group_names)
                     direct_answer = f"{queried_ip} is part of address groups: '{groups_str}'"
-
-                # Add network info if available
                 address_objects = result.get("address_objects", [])
                 if address_objects:
                     network_names = [obj.get("name") for obj in address_objects if obj.get("name")]
                     if network_names:
                         direct_answer += f" (via {', '.join(network_names)})"
-
-                result["direct_answer"] = direct_answer
-                # Move direct_answer to the front
+                result = dict(result)
+                result.pop("direct_answer", None)
                 new_result = {"direct_answer": direct_answer}
                 for k, v in result.items():
-                    if k != "direct_answer":
-                        new_result[k] = v
+                    new_result[k] = v
                 return new_result
 
     return result
 
 
+# ---------------------------------------------------------------------------
+# RBAC
+# ---------------------------------------------------------------------------
+
 def _check_tool_access(username: str | None, tool_name: str, session_id: str | None = None) -> str | None:
-    """Return an error message if the user's role forbids *tool_name*, else None. Uses session_id for role when provided."""
+    """Return an error message if the user's role forbids tool_name, else None."""
     if username is None:
         return None
     from atlas.auth import get_role_for_session, get_user_role, get_allowed_tools
@@ -964,6 +326,10 @@ def _check_tool_access(username: str | None, tool_name: str, session_id: str | N
         return f"Your role ({role}) does not have access to {display} queries."
     return None
 
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 async def process_message(
     prompt: str,
@@ -978,106 +344,105 @@ async def process_message(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Process one user message: discover tool, optionally execute, return assistant response.
-    If discover_only=True, returns { tool_name, parameters, tool_display_name } (no execution).
-    If tool_name and parameters are provided, skips discovery and executes that tool.
-    Otherwise runs an agent loop (up to max_iterations, default MAX_AGENT_ITERATIONS): discover → execute;
-    on tool failure, re-discovers with error in context; after max attempts or on any failure, forces a
-    synthesized final answer via LLM instead of returning only the raw error.
+    Process one user message using native LLM tool calling via bind_tools().
+    The LLM receives MCP tool schemas directly and selects the appropriate tool.
     """
+    from atlas.mcp_client_tool_selection import synthesize_final_answer
+    from atlas.mcp_client import call_mcp_tool
+
     if max_iterations is None:
         max_iterations = MAX_AGENT_ITERATIONS
 
-    # Pre-filled tool: single execution, then synthesize on error
+    # Pre-filled tool: skip discovery, execute directly
     if tool_name and parameters is not None:
-        # RBAC check
         access_err = _check_tool_access(username, tool_name)
         if access_err:
             return {"role": "assistant", "content": access_err}
-        selection = {"success": True, "tool_name": tool_name, "parameters": parameters}
-        tool_params = dict(parameters)
-        _apply_tool_param_fixes(tool_name, tool_params, selection, prompt)
-        result = await execute_tool(tool_name, tool_params, default_live=default_live)
-        if result is None or (isinstance(result, dict) and len(result) == 0):
-            from atlas.mcp_client_tool_selection import synthesize_final_answer
-            msg = await synthesize_final_answer(
-                prompt, tool_name or "tool",
-                "No result returned. Check that the MCP server is running and NetBox is reachable (e.g. NETBOX_URL).",
-            )
-            return {"role": "assistant", "content": msg}
-        if isinstance(result, str):
+        result = await call_mcp_tool(tool_name, parameters, timeout=_TOOL_TIMEOUTS.get(tool_name, 65.0))
+        if isinstance(result, dict) and result.get("requires_site"):
             return {"role": "assistant", "content": result}
+        if result is None or (isinstance(result, dict) and not result):
+            msg = await synthesize_final_answer(prompt, tool_name, "No result returned.")
+            return {"role": "assistant", "content": msg}
         if isinstance(result, dict) and "error" in result:
-            if result.get("requires_site") and result.get("sites"):
-                return {"role": "assistant", "content": result}
-            from atlas.mcp_client_tool_selection import synthesize_final_answer
-            msg = await synthesize_final_answer(prompt, tool_name or "tool", result)
+            msg = await synthesize_final_answer(prompt, tool_name, result)
             return {"role": "assistant", "content": msg}
         return {"role": "assistant", "content": _normalize_result(tool_name, result, prompt)}
 
-    # Discover-only: no loop, no execution
-    if discover_only:
-        selection = await discover_tool(prompt, conversation_history)
-        if not selection.get("success"):
-            if selection.get("needs_clarification"):
-                return {"role": "assistant", "content": selection.get("clarification_question", "Could you please clarify?")}
-            return {"role": "assistant", "content": selection.get("clarification_question") or selection.get("error", "Something went wrong.")}
-        return {
-            "tool_name": selection.get("tool_name"),
-            "parameters": dict(selection.get("parameters") or {}),
-            "tool_display_name": get_tool_display_name(selection.get("tool_name") or ""),
-            "intent": selection.get("intent"),
-            "format": selection.get("format"),
-        }
+    # Fetch tools from MCP server and build LLM with bind_tools()
+    mcp_tools = await _fetch_mcp_tools()
+    if not mcp_tools:
+        return {"role": "assistant", "content": "Could not connect to MCP server."}
 
-    # Agent loop: up to max_iterations discover → execute; on error, add to history and retry; then force final answer
-    from atlas.mcp_client_tool_selection import synthesize_final_answer
-    history_so_far = list(conversation_history)
+    try:
+        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+    except ImportError:
+        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+
+    from langchain_ollama import ChatOllama
+    openai_tools = [_to_openai_tool(t) for t in mcp_tools]
+    llm = ChatOllama(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.0,
+    )
+    llm_with_tools = llm.bind_tools(openai_tools, tool_choice="required")
+    messages = _build_llm_messages(prompt, conversation_history)
+
     last_tool_name: str | None = None
-    last_error: str | dict[str, Any] | None = None
+    last_error: str | dict | None = None
 
     for iteration in range(max_iterations):
-        selection = await discover_tool(prompt, history_so_far)
-        if not selection.get("success"):
-            if selection.get("needs_clarification"):
-                return {"role": "assistant", "content": selection.get("clarification_question", "Could you please clarify?")}
-            if selection.get("clarification_question"):
-                return {"role": "assistant", "content": selection["clarification_question"]}
-            last_error = selection.get("error", "Something went wrong.")
-            if iteration == max_iterations - 1:
-                break
-            history_so_far = history_so_far + [{"role": "assistant", "content": last_error}]
-            continue
+        try:
+            ai_msg = await asyncio.wait_for(llm_with_tools.ainvoke(messages), timeout=90.0)
+        except asyncio.TimeoutError:
+            return {"role": "assistant", "content": "Tool selection timed out. Please try again."}
 
-        tool_name = selection.get("tool_name")
-        # RBAC check
-        access_err = _check_tool_access(username, tool_name, session_id)
+        if not ai_msg.tool_calls:
+            return {"role": "assistant", "content": ai_msg.content or "I could not determine how to answer that."}
+
+        tool_call = ai_msg.tool_calls[0]
+        sel_tool_name = tool_call["name"]
+        tool_args = dict(tool_call["args"])
+        tool_call_id = tool_call.get("id") or f"call_{sel_tool_name}_{iteration}"
+        last_tool_name = sel_tool_name
+
+        if sel_tool_name == "get_device_rack_location" and tool_args.get("intent") == "rack_location_only":
+            del tool_args["intent"]
+
+        if discover_only:
+            return {
+                "tool_name": sel_tool_name,
+                "parameters": tool_args,
+                "tool_display_name": get_tool_display_name(sel_tool_name),
+                "intent": tool_args.get("intent"),
+                "format": "table",
+            }
+
+        access_err = _check_tool_access(username, sel_tool_name, session_id)
         if access_err:
             return {"role": "assistant", "content": access_err}
-        tool_params = dict(selection.get("parameters") or {})
-        _apply_tool_param_fixes(tool_name, tool_params, selection, prompt)
-        result = await execute_tool(tool_name, tool_params, default_live=default_live)
-        last_tool_name = tool_name
 
-        if result is None or (isinstance(result, dict) and len(result) == 0):
-            last_error = "No result returned. Check that the MCP server is running and NetBox is reachable (e.g. NETBOX_URL)."
-            history_so_far = history_so_far + [{"role": "assistant", "content": last_error}]
-            continue
-        if isinstance(result, str):
+        result = await call_mcp_tool(sel_tool_name, tool_args, timeout=_TOOL_TIMEOUTS.get(sel_tool_name, 65.0))
+
+        if isinstance(result, dict) and result.get("requires_site"):
             return {"role": "assistant", "content": result}
-        if isinstance(result, dict) and "error" in result:
-            if result.get("requires_site") and result.get("sites"):
-                return {"role": "assistant", "content": result}
-            last_error = result
-            history_so_far = history_so_far + [{"role": "assistant", "content": result.get("error", "An error occurred.")}]
+
+        if result is None or (isinstance(result, dict) and not result):
+            last_error = "No result returned. Check that the MCP server is running."
+            from langchain_core.messages import ToolMessage
+            messages = messages + [ai_msg, ToolMessage(content=last_error, tool_call_id=tool_call_id)]
             continue
 
-        # Success
-        return {"role": "assistant", "content": _normalize_result(tool_name, result, prompt)}
+        if isinstance(result, dict) and "error" in result:
+            last_error = result
+            from langchain_core.messages import ToolMessage
+            messages = messages + [ai_msg, ToolMessage(content=json.dumps(result), tool_call_id=tool_call_id)]
+            continue
 
-    # All iterations exhausted or last step was discovery failure: force synthesized final answer
+        return {"role": "assistant", "content": _normalize_result(sel_tool_name, result, prompt)}
+
     if last_error is not None:
-        err_str = last_error if isinstance(last_error, str) else (last_error.get("error") or str(last_error))
-        msg = await synthesize_final_answer(prompt, last_tool_name or "tool", err_str)
+        msg = await synthesize_final_answer(prompt, last_tool_name or "tool", last_error)
         return {"role": "assistant", "content": msg}
-    return {"role": "assistant", "content": "Something went wrong. Please try rephrasing or try again later."}
+    return {"role": "assistant", "content": "Something went wrong. Please try again."}

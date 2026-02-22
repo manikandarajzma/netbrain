@@ -70,12 +70,16 @@ export function isDeviceRackRow(row) {
   return has >= 4
 }
 
+const _BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
+const _HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip'])
+
 export function orderKeys(row, preferredKeys) {
+  const skip = k => k.startsWith('_debug') || k === 'ai_analysis' || _BADGE_KEYS.has(k) || _HIDDEN_KEYS.has(k)
   if (preferredKeys && preferredKeys.length) {
     return [
       ...preferredKeys.filter(k => Object.prototype.hasOwnProperty.call(row, k)),
-      ...Object.keys(row).filter(k => !preferredKeys.includes(k) && !k.startsWith('_debug') && k !== 'ai_analysis'),
+      ...Object.keys(row).filter(k => !preferredKeys.includes(k) && !skip(k)),
     ]
   }
-  return Object.keys(row).filter(k => !k.startsWith('_debug') && k !== 'ai_analysis')
+  return Object.keys(row).filter(k => !skip(k))
 }

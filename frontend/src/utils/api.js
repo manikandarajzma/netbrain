@@ -73,18 +73,34 @@ export async function clearChatHistory() {
   return res.json()
 }
 
+// Chat can take a long time (e.g. Panorama/NetBrain tools have 65s server timeout).
+const CHAT_FETCH_TIMEOUT_MS = 120000
+
 export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null) {
   const body = { message, conversation_history: conversationHistory }
   if (conversationId) body.conversation_id = conversationId
   if (parentConversationId) body.parent_conversation_id = parentConversationId
+  const timeoutSignal = AbortSignal.timeout ? AbortSignal.timeout(CHAT_FETCH_TIMEOUT_MS) : null
+  const combinedSignal = timeoutSignal && signal ? (AbortSignal.any ? AbortSignal.any([signal, timeoutSignal]) : signal) : (timeoutSignal || signal)
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal,
+    signal: combinedSignal,
   })
   checkAuthRedirect(res)
-  if (!res.ok) throw new Error('Chat failed')
+  if (!res.ok) {
+    let msg = 'Chat failed'
+    try {
+      const err = await res.json()
+      const raw = (err?.detail && typeof err.detail === 'string' ? err.detail : null) || err?.error
+      // Never show server internals (e.g. Key Vault URLs, stack traces)
+      if (raw && typeof raw === 'string' && !/keyvault|api-version|REDACTED|\.py\s|traceback/i.test(raw)) {
+        msg = raw.length > 200 ? raw.slice(0, 200) + '…' : raw
+      }
+    } catch (_) {}
+    throw new Error(msg)
+  }
   return res.json()
 }
 

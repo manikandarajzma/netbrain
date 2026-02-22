@@ -99,6 +99,11 @@ async def catch_all(request: Request, exc: Exception):
     """Log traceback server-side only; return generic error to client (no info disclosure)."""
     import logging
     logging.exception("Unhandled exception")
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": "Something went wrong. Please try again."},
+            status_code=500,
+        )
     return HTMLResponse(
         content="<h1>Internal Server Error</h1><p>Something went wrong. Please try again.</p>",
         status_code=500,
@@ -450,12 +455,7 @@ async def api_chat(request: Request, body: ChatRequest):
     if not username:
         return response_401_clear_session(request)
     from atlas.chat_service import process_message
-    from atlas.chat_history import (
-        create_conversation,
-        append_to_conversation,
-        list_conversations,
-        get_conversation,
-    )
+    from atlas.chat_history import create_conversation, append_to_conversation
     conversation_id = (body.conversation_id or "").strip() or None
     history = body.conversation_history or []
     result = await process_message(

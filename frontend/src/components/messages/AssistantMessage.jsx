@@ -59,8 +59,10 @@ export default function AssistantMessage({ content }) {
       const v = c[k]
       return Array.isArray(v) && v.length > 0 && v.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
     })
+    const BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
+    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip'])
     const flatKeys = Object.keys(c).filter(k => {
-      if (arrayKeys.includes(k) || k === 'ai_analysis') return false
+      if (arrayKeys.includes(k) || k === 'ai_analysis' || BADGE_KEYS.has(k) || HIDDEN_KEYS.has(k)) return false
       const v = c[k]
       return v != null && typeof v !== 'object' && (typeof v !== 'string' || v.length <= 500)
     })
@@ -94,7 +96,7 @@ export default function AssistantMessage({ content }) {
     }
 
     if (groups.length === 0) {
-      const scalarKeys = Object.keys(c).filter(k => c[k] != null && typeof c[k] !== 'object')
+      const scalarKeys = Object.keys(c).filter(k => c[k] != null && typeof c[k] !== 'object' && !BADGE_KEYS.has(k))
       if (scalarKeys.length > 0 && scalarKeys.length <= 20) {
         groups.push({ type: 'horizontal', rows: [Object.fromEntries(scalarKeys.map(k => [k, c[k]]))] })
       }

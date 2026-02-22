@@ -124,13 +124,31 @@ export const useChatStore = create((set, get) => ({
     if (!text.trim()) return
 
     const { addMessage, pushHistory, nextConversationParentId } = get()
+
+    // If the last assistant message was a requires_site clarification, combine
+    // the user's site reply into a full query so the LLM gets complete context
+    // in a single message without needing conversation history.
+    let textToSend = text
+    const history = get().conversationHistory
+    const lastAssistant = [...history].reverse().find(m => m.role === 'assistant')
+    if (lastAssistant) {
+      let lc = lastAssistant.content
+      if (typeof lc === 'string' && lc.startsWith('{')) { try { lc = JSON.parse(lc) } catch (_) {} }
+      if (lc && typeof lc === 'object' && lc.requires_site && lc.rack) {
+        textToSend = `${lc.rack} at ${text.trim()}`
+      }
+    }
+
     addMessage('user', text)
     pushHistory('user', text)
 
     const ctrl = new AbortController()
     set({ isLoading: true, currentStatus: 'Identifying query', abortController: ctrl })
     const signal = ctrl.signal
-    const historySlice = get().conversationHistory.slice(-20)
+    // Send no history to the LLM — each query is stateless to prevent context
+    // from previous exchanges (e.g. a site disambiguation reply) from polluting
+    // unrelated follow-up queries.
+    const historySlice = []
     const parentIdForNew = nextConversationParentId || null
     // Never append to current conversation: each send creates a new conversation so sidebar entries stay one Q&A each.
     const conversationIdToUse = null
@@ -138,7 +156,7 @@ export const useChatStore = create((set, get) => ({
     try {
       let toolDisplayName = null
       try {
-        const discoverData = await discoverTool(text, historySlice, signal)
+        const discoverData = await discoverTool(textToSend, historySlice, signal)
         toolDisplayName = discoverData.tool_display_name
         set({ currentStatus: toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing' })
       } catch (err) {
@@ -146,7 +164,7 @@ export const useChatStore = create((set, get) => ({
         set({ currentStatus: 'Processing' })
       }
 
-      const data = await sendChat(text, historySlice, signal, conversationIdToUse, parentIdForNew)
+      const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew)
 
       if (toolDisplayName) {
         set({ currentStatus: 'Processing results from ' + toolDisplayName })

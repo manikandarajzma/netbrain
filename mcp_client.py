@@ -28,9 +28,10 @@ if sys.platform == 'win32':
 
 # Import ClientSession for managing MCP client connections (for stdio fallback)
 from mcp import ClientSession
-# Try to import FastMCP Client for HTTP transport (preferred)
+# Try to import FastMCP Client and transport for HTTP (preferred)
 try:
     from fastmcp import Client as FastMCPClient
+    from fastmcp.client.transports import StreamableHttpTransport
     FASTMCP_CLIENT_AVAILABLE = True
 except ImportError:
     FASTMCP_CLIENT_AVAILABLE = False
@@ -69,18 +70,17 @@ async def get_mcp_session():
         FastMCPClient or ClientSession: MCP client session
     """
     if FASTMCP_CLIENT_AVAILABLE:
-        # Use FastMCP Client for HTTP transport (automatically handles streamable-http)
+        # Use FastMCP Client with explicit transport so we can set both HTTP and SSE read timeouts.
+        # Long-running tools (e.g. Panorama ~65s) require the streamable-http SSE connection to stay
+        # open; otherwise the client can disconnect before the tool returns and you get "Chat failed".
         try:
             server_url = get_server_url()
             logger.debug(f"Connecting to MCP server via HTTP at {server_url}...")
-            # FastMCP Client automatically infers streamable-http from URL
-            # Try to configure with longer timeout for long-running requests
-            try:
-                # Check if FastMCPClient accepts timeout parameters
-                client = FastMCPClient(server_url, timeout=600)  # 10 minute timeout
-            except TypeError:
-                # If timeout parameter not supported, use default
-                client = FastMCPClient(server_url)
+            transport = StreamableHttpTransport(
+                server_url,
+                sse_read_timeout=600,  # 10 min – keep SSE open for long tool runs
+            )
+            client = FastMCPClient(transport, timeout=600)  # 10 min request timeout
             async with client:
                 logger.debug("FastMCP HTTP client connected successfully")
                 yield client

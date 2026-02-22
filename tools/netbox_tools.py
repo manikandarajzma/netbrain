@@ -141,7 +141,7 @@ async def get_rack_details(
     Do NOT use for: device names (they have dashes, use get_device_rack_location), listing many racks (use list_racks), IP addresses.
 
     Examples:
-    - "rack A4" → rack_name="A4"
+    - "show me rack A4 at Leander" → rack_name="A4", site_name="Leander"
     - "show me rack B2 at Leander" → rack_name="B2", site_name="Leander"
     - "what's in rack A1?" → rack_name="A1"
     - "A4 utilization" → rack_name="A4"
@@ -910,8 +910,8 @@ async def get_device_rack_location(
     Do NOT use for: IP addresses (have dots, not dashes), short rack names like "A4" (use get_rack_details), path queries.
 
     Examples:
-    - "where is leander-dc-border-leaf1 racked?" → device_name="leander-dc-border-leaf1"
-    - "which rack is roundrock-dc-leaf1 in?" → device_name="roundrock-dc-leaf1"
+    - "where is leander-dc-border-leaf1 racked?" → device_name="leander-dc-border-leaf1", intent=null (returns all details)
+    - "which rack is roundrock-dc-leaf1 in?" → device_name="roundrock-dc-leaf1", intent=null (returns all details)
     - "is leander-dc-border-leaf1 in rack A2?" → device_name="leander-dc-border-leaf1", expected_rack="A2"
     - "what site is leander-dc-leaf1 in?" → device_name="leander-dc-leaf1", intent="site_only"
     - "device type of roundrock-dc-border-leaf1" → device_name="roundrock-dc-border-leaf1", intent="device_type_only"

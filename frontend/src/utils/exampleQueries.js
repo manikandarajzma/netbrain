@@ -17,7 +17,7 @@ export const exampleQueries = [
     icon: '\uD83D\uDD27',
     queries: [
       'Where is leander-dc-border-leaf1 racked?',
-      'Rack A4',
+      'Show me rack A4 at Leander',
       'List racks at Leander',
     ],
   },
