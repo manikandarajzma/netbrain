@@ -1,6 +1,6 @@
 # Panorama MCP Tools
 
-Atlas exposes two MCP tools that let Claude query Palo Alto Panorama's XML API for address objects, address groups, and security/NAT policies. This document explains how the tools work, how queries are routed, and the performance mechanisms that keep responses fast even at scale (6,000+ objects and groups).
+Atlas exposes two MCP tools for querying Palo Alto Panorama's XML API for address objects, address groups, and security/NAT policies. This document explains how the tools work, how queries are routed, and the performance mechanisms that keep responses fast even at scale (6,000+ objects and groups).
 
 ---
 
@@ -25,7 +25,7 @@ Atlas exposes two MCP tools that let Claude query Palo Alto Panorama's XML API f
 User question
      │
      ▼
-Claude (via MCP)
+MCP Client (AI assistant)
      │
      ▼
 panorama_tools.py  ──►  Panorama XML API (https://PANORAMA_URL/api/)
@@ -292,7 +292,7 @@ Each matching policy is returned with: name, type (security/nat), rulebase (pre/
 
 ## LLM Analysis
 
-After the raw Panorama data is assembled, it is passed to a Claude LLM for a natural-language summary. The LLM receives the full JSON result and a system prompt instructing it to:
+After the raw Panorama data is assembled, it is passed to the configured LLM (`_get_llm()`) for a natural-language summary. The LLM receives the full JSON result and a system prompt instructing it to:
 
 - For `query_panorama_ip_object_group`: write a 2–4 sentence narrative (no tables) stating which group(s) the IP is in, the address object name, and how many policies reference them.
 - For `query_panorama_address_group_members`: produce two markdown tables — one for group members (name, type, IP, location) and one for policies (group, policy name, type, rulebase, action, source, destination, services).
