@@ -14,12 +14,12 @@ import logging
 import re
 from typing import Optional, Dict, Any, List
 
-logger = logging.getLogger("netbrain.tool_selection")
+logger = logging.getLogger("atlas.tool_selection")
 from langchain_ollama import ChatOllama
 
 # Single source for LLM config: .env (loaded by tools.shared)
 try:
-    from netbrain.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+    from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
 except ImportError:
     from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
 

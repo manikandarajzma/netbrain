@@ -10,7 +10,7 @@ from typing import Optional
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-# Load .env from netbrain/, project root, then cwd (first file wins per variable)
+# Load .env from atlas/, project root, then cwd (first file wins per variable)
 from dotenv import load_dotenv
 _this_dir = os.path.dirname(os.path.abspath(__file__))
 for _path in (
@@ -61,7 +61,7 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
 # Maps role -> list of sidebar category slugs shown in the UI.  None = all.
 ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
-    "netadmin": ["netbrain", "panorama"],
+    "netadmin": ["atlas", "panorama"],
     "guest": [],
 }
 
@@ -161,7 +161,7 @@ def destroy_session(session_id: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def extract_role_from_token(token_claims: dict) -> Optional[str]:
-    """Extract the NetAssist role from Azure token claims.
+    """Extract the Atlas role from Azure token claims.
 
     Priority order:
     1. Azure 'roles' claim (app roles assigned via Enterprise Application)

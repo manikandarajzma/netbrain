@@ -22,11 +22,11 @@ The MCP server (`mcp_server.py`) runs separately on port `8765` — FastAPI neve
 ## 2. Application Setup
 
 ```python
-# app_fastapi.py (lines 46-56)
+# app.py (lines 46-56)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="NetAssist", version="0.1.0")
+app = FastAPI(title="Atlas", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,18 +54,18 @@ Always registered. Allows cross-origin requests from any origin so that a React 
 ### 3.2 Session Middleware (OIDC only)
 
 ```python
-# app_fastapi.py (lines 81-89)
+# app.py (lines 81-89)
 if AUTH_MODE == "oidc":
     from starlette.middleware.sessions import SessionMiddleware
     app.add_middleware(
         SessionMiddleware,
         secret_key=secrets.token_urlsafe(32),  # random on every startup
-        session_cookie="netbrain_oauth_state",
+        session_cookie="atlas_oauth_state",
         max_age=600,  # 10 minutes
     )
 ```
 
-`SessionMiddleware` stores the OAuth2 state parameter in a short-lived, server-signed cookie. This is only needed during the OIDC redirect flow (steps B2–B3 in the auth flow). It is not the same as the session cookie that identifies logged-in users — that is a separate cookie (`netbrain_session`) managed by `auth.py`.
+`SessionMiddleware` stores the OAuth2 state parameter in a short-lived, server-signed cookie. This is only needed during the OIDC redirect flow (steps B2–B3 in the auth flow). It is not the same as the session cookie that identifies logged-in users — that is a separate cookie (`atlas_session`) managed by `auth.py`.
 
 The `secret_key` is randomly generated each startup, which means the OAuth state cookie is invalidated on server restart (acceptable — the user just needs to log in again).
 
@@ -74,7 +74,7 @@ The `secret_key` is randomly generated each startup, which means the OAuth state
 ## 4. OIDC Client Registration
 
 ```python
-# app_fastapi.py (lines 61-76)
+# app.py (lines 61-76)
 oauth = None
 if AUTH_MODE == "oidc" and AZURE_CLIENT_ID and AZURE_TENANT_ID:
     from authlib.integrations.starlette_client import OAuth
@@ -111,8 +111,8 @@ FastAPI manages two separate cookies:
 
 | Cookie | Name | Set by | Max-age | Purpose |
 |---|---|---|---|---|
-| Application session | `netbrain_session` | `POST /login`, `GET /auth/callback` | 7 days (local) / 30 min (OIDC) | Identifies logged-in user across requests |
-| OAuth state | `netbrain_oauth_state` | `SessionMiddleware` | 10 min | Carries the OAuth2 `state` parameter during OIDC redirect |
+| Application session | `atlas_session` | `POST /login`, `GET /auth/callback` | 7 days (local) / 30 min (OIDC) | Identifies logged-in user across requests |
+| OAuth state | `atlas_oauth_state` | `SessionMiddleware` | 10 min | Carries the OAuth2 `state` parameter during OIDC redirect |
 
 The application session cookie is `httponly=True` (not accessible to JavaScript) and `samesite="lax"` (protects against CSRF while still allowing redirect-based login flows).
 
@@ -123,10 +123,10 @@ The application session cookie is `httponly=True` (not accessible to JavaScript)
 Three small functions bridge the `Request` object to the `auth.py` session store:
 
 ```python
-# app_fastapi.py (lines 110-124)
+# app.py (lines 110-124)
 
 def get_session_id(request: Request) -> str | None:
-    """Read netbrain_session cookie from the request."""
+    """Read atlas_session cookie from the request."""
     return request.cookies.get(SESSION_COOKIE)
 
 def get_current_username(request: Request) -> str | None:
@@ -186,14 +186,14 @@ If the user is already logged in, immediately redirects to `/`.
 Initiates the Microsoft OIDC flow:
 
 ```python
-# app_fastapi.py
+# app.py
 @app.get("/auth/microsoft")
 async def auth_microsoft(request: Request):
     redirect_uri = str(request.url_for("auth_callback")).replace("://127.0.0.1", "://localhost")
     return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
 ```
 
-`authorize_redirect()` generates a URL to `https://login.microsoftonline.com/...` with the OAuth2 state parameter (stored in the `netbrain_oauth_state` cookie by SessionMiddleware) and redirects the browser there.
+`authorize_redirect()` generates a URL to `https://login.microsoftonline.com/...` with the OAuth2 state parameter (stored in the `atlas_oauth_state` cookie by SessionMiddleware) and redirects the browser there.
 
 The `127.0.0.1` → `localhost` replacement ensures the callback URL matches the **Redirect URI** configured in Azure App Registration exactly — Azure requires `localhost` not `127.0.0.1`.
 
@@ -206,7 +206,7 @@ The `127.0.0.1` → `localhost` replacement ensures the callback URL matches the
 Handles the token exchange after Microsoft redirects back:
 
 ```python
-# app_fastapi.py (lines 185-240)
+# app.py (lines 185-240)
 @app.get("/auth/callback")
 async def auth_callback(request: Request):
     token = await oauth.microsoft.authorize_access_token(request)  # exchange code for tokens
@@ -278,7 +278,7 @@ async def api_me(request: Request):
     }
 ```
 
-The React SPA calls this on startup to decide which sidebar categories to render. `allowed_categories` comes from `auth.ROLE_ALLOWED_CATEGORIES` — `None` means all categories are visible (admin), a list like `["netbrain", "panorama"]` restricts the UI for `netadmin`.
+The React SPA calls this on startup to decide which sidebar categories to render. `allowed_categories` comes from `auth.ROLE_ALLOWED_CATEGORIES` — `None` means all categories are visible (admin), a list like `["atlas", "panorama"]` restricts the UI for `netadmin`.
 
 ---
 
@@ -384,7 +384,7 @@ The primary chat endpoint. Calls `process_message()` with the full agent loop (t
 **`_strip_l2_noise()`** post-processes the result before it reaches the frontend:
 
 ```python
-# app_fastapi.py (lines 330-337)
+# app.py (lines 330-337)
 def _strip_l2_noise(d: dict) -> dict:
     """Remove noisy NetBrain L2 status messages from path results."""
     noise = (
@@ -513,7 +513,7 @@ For `query_network_path` rows, the result also includes `path_summary` (device n
 ## 8. Request Model — `ChatRequest`
 
 ```python
-# app_fastapi.py (lines 325-327)
+# app.py (lines 325-327)
 from pydantic import BaseModel
 from typing import Any
 
@@ -531,7 +531,7 @@ Each element in `conversation_history` is a dict with `{"role": "user"|"assistan
 ## 9. Static File Mounts
 
 ```python
-# app_fastapi.py (lines 534-547)
+# app.py (lines 534-547)
 
 VUE_ASSETS = APP_DIR / "frontend" / "dist" / "assets"
 if VUE_ASSETS.exists():
@@ -558,7 +558,7 @@ Mounts are conditional — they are only registered if the directories exist, so
 ## 10. Error Handler
 
 ```python
-# app_fastapi.py (lines 92-102)
+# app.py (lines 92-102)
 @app.exception_handler(Exception)
 async def catch_all(request: Request, exc: Exception):
     tb = traceback.format_exc()
@@ -576,11 +576,11 @@ A catch-all exception handler returns a plain HTML page with the full Python tra
 ## 11. Startup and Server
 
 ```python
-# app_fastapi.py (lines 550-561)
+# app.py (lines 550-561)
 def main():
     import uvicorn
     uvicorn.run(
-        "netbrain.app_fastapi:app",
+        "run_web:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
@@ -589,7 +589,7 @@ def main():
 
 The app is started via `uvicorn`, an ASGI server. `reload=True` enables hot-reload for development — uvicorn watches for file changes and restarts automatically. In production this would be set to `False`.
 
-The `app` object is the ASGI callable: `netbrain.app_fastapi:app` is the module path used by uvicorn to locate it.
+The `app` object is the ASGI callable: use `run_web:app` when running from the project root, or `atlas.app:app` when running from the parent directory.
 
 ---
 
@@ -601,10 +601,10 @@ Browser / API client
         │  HTTP (port 8000)
         ▼
 ┌─────────────────────────────────────┐
-│           FastAPI (app_fastapi.py)  │
+│           FastAPI (app.py)  │
 │                                     │
 │  Session cookie  ─────────►  auth.py│
-│  (netbrain_session)         │  _sessions{}
+│  (atlas_session)         │  _sessions{}
 │                             │  OIDC TTL check
 │                             │
 │  POST /api/chat  ──────────►  chat_service.process_message()

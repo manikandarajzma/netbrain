@@ -96,7 +96,7 @@ def _read_json_file(path: Path) -> dict[str, Any] | list[Any]:
         # Migration fallback: try reading as plaintext JSON
         try:
             result = json.loads(raw.decode("utf-8"))
-            logging.getLogger("netbrain.chat_history").warning(
+            logging.getLogger("atlas.chat_history").warning(
                 "Plaintext (unencrypted) chat file detected: %s — will re-encrypt on next write.", path
             )
             return result

@@ -8,7 +8,7 @@
 ## Install Dependencies
 
 ```bash
-cd netbrain/frontend
+cd atlas/frontend
 npm install
 ```
 
@@ -18,12 +18,12 @@ Run two terminals:
 
 **Terminal 1 — FastAPI backend:**
 ```bash
-uvicorn netbrain.app_fastapi:app --reload --port 8000
+uvicorn atlas.app:app --reload --port 8000
 ```
 
 **Terminal 2 — Vite dev server:**
 ```bash
-cd netbrain/frontend
+cd atlas/frontend
 npm run dev
 ```
 
@@ -34,7 +34,7 @@ npm run dev
 ## Production Build
 
 ```bash
-cd netbrain/frontend
+cd atlas/frontend
 npm run build
 ```
 
@@ -42,7 +42,7 @@ This outputs to `frontend/dist/`. FastAPI automatically serves the build when `f
 
 Start the server as usual:
 ```bash
-uvicorn netbrain.app_fastapi:app --port 8000
+uvicorn atlas.app:app --port 8000
 ```
 
 Visit `http://localhost:8000` — it serves the React app directly.

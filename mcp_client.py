@@ -1,5 +1,5 @@
 """
-MCP Client for NetBrain Network Query.
+MCP Client for Atlas network query.
 
 This module provides the MCP client API used by the FastAPI chat service:
 - get_mcp_session: context manager for MCP HTTP or stdio connections
@@ -8,7 +8,7 @@ This module provides the MCP client API used by the FastAPI chat service:
 - execute_panorama_ip_object_group_query, execute_panorama_address_group_members_query: Panorama lookups
 - execute_splunk_recent_denies_query: Splunk deny events
 
-Use the FastAPI app for the chat UI: uv run python -m netbrain.app_fastapi
+Use the FastAPI app for the chat UI: uv run python -m atlas.app
 """
 
 # Import asyncio for handling asynchronous operations (needed for MCP client)
@@ -17,7 +17,7 @@ import logging
 import sys
 import warnings
 
-logger = logging.getLogger("netbrain.mcp_client")
+logger = logging.getLogger("atlas.mcp_client")
 
 # Suppress asyncio cleanup warnings on Windows (these are harmless cleanup errors)
 if sys.platform == 'win32':

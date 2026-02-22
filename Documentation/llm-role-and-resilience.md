@@ -67,8 +67,8 @@ class ToolParameters(BaseModel):
     ip_address: Optional[str]       # for Panorama / Splunk tools
     device_name: Optional[str]      # for NetBox rack location
     rack_name: Optional[str]        # for NetBox rack details
-    source: Optional[str]           # for NetBrain path queries
-    destination: Optional[str]      # for NetBrain path queries
+    source: Optional[str]           # for path queries
+    destination: Optional[str]      # for path queries
     protocol: Optional[str]
     port: Optional[str]
     limit: Optional[int]            # for Splunk (e.g. "latest 10")
@@ -94,7 +94,7 @@ async def is_query_in_scope(prompt: str) -> Dict[str, Any]:
     scope_check_prompt = f"""You are a scope classifier for a network infrastructure assistant.
 The assistant can ONLY handle queries related to:
 • Network device locations and rack details (NetBox)
-• Network path queries and traffic allowed checks (NetBrain)
+• Network path queries and traffic allowed checks
 • Panorama / Palo Alto firewall lookups
 • Splunk deny event searches
 
@@ -190,12 +190,12 @@ def _is_obviously_in_scope(prompt: str) -> bool:
     has_ip = bool(_IP_OR_CIDR_RE.search(prompt))
 
     panorama_kw = any(k in lower for k in ("object group", "address group", "panorama", ...))
-    netbrain_kw = any(k in lower for k in ("network path", "path from", "traffic allowed", ...))
+    path_kw = any(k in lower for k in ("network path", "path from", "traffic allowed", ...))
     netbox_kw   = any(k in lower for k in ("rack", "racked", "device location", ...))
     splunk_kw   = any(k in lower for k in ("splunk", "deny", "denied", "firewall log", ...))
 
-    if has_ip and (panorama_kw or netbrain_kw or splunk_kw): return True
-    if panorama_kw or netbrain_kw or netbox_kw or splunk_kw: return True
+    if has_ip and (panorama_kw or path_kw or splunk_kw): return True
+    if panorama_kw or path_kw or netbox_kw or splunk_kw: return True
     if len(_IP_OR_CIDR_RE.findall(prompt)) >= 2:             return True
     return False
 ```
@@ -331,7 +331,7 @@ except Exception as e:
 | Tool selection for ambiguous / complex queries | LLM | Fails — user sees error |
 | Parameter extraction (IPs, device names, etc.) | LLM via Pydantic | Regex (limited patterns only) |
 | Conversation context / follow-up queries | LLM reads history | Regex cannot handle follow-ups |
-| MCP tool execution (NetBrain, NetBox, etc.) | Unaffected | Unaffected — server-side only |
+| MCP tool execution (Atlas path, NetBox, etc.) | Unaffected | Unaffected — server-side only |
 | AI enrichment of tool responses | LLM generates summary | Raw API data returned, no summary |
 | Human-readable error messages | LLM synthesizes | Raw error string shown |
 

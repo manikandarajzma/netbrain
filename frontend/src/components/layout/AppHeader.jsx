@@ -11,7 +11,7 @@ export default function AppHeader() {
 
   return (
     <header className={styles.header}>
-      <span className={styles.logo}>{'\u26A1'} NetAssist</span>
+      <span className={styles.logo}>{'\u26A1'} Atlas</span>
       <div className={`${styles.healthStatus} ${styles[status] || ''}`} title={tooltip}>
         <span className={`${styles.healthDot} ${styles[status] || ''}`} />
         <span className={styles.healthLabel}>{label}</span>

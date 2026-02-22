@@ -6,12 +6,12 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>NetAssist</title>
+    <title>Atlas</title>
     <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
     <header>
-        <span>⚡ NetAssist</span>
+        <span>⚡ Atlas</span>
         <div id="health-status" class="health-status" title="Checking...">
             <span class="health-dot checking"></span>
             <span class="health-label">Checking...</span>
@@ -37,9 +37,9 @@
             </div>
             <div id="example-queries">
                 <h2>📋 Example Queries</h2>
-                {% if allowed_categories is none or "netbrain" in allowed_categories %}
-                <div class="example-category" data-category="netbrain">
-                    <div class="example-category-label">🌐 NetBrain</div>
+                {% if allowed_categories is none or "atlas" in allowed_categories %}
+                <div class="example-category" data-category="atlas">
+                    <div class="example-category-label">🌐 Atlas</div>
                     <div class="example-chips">
                         <button type="button" class="example-chip" data-query="Find path from 10.0.0.1 to 10.0.1.1">Find path from 10.0.0.1 to 10.0.1.1</button>
                         <button type="button" class="example-chip" data-query="Show network path from 192.168.1.1 to 192.168.2.1">Show network path from 192.168.1.1 to 192.168.2.1</button>

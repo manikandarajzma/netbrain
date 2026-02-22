@@ -6,7 +6,7 @@ import ChatMessages from '../chat/ChatMessages.jsx'
 import ChatInput from '../chat/ChatInput.jsx'
 import styles from './ChatLayout.module.css'
 
-const LAST_CHAT_KEY = 'netbrain_last_conversation_id'
+const LAST_CHAT_KEY = 'atlas_last_conversation_id'
 
 export default function ChatLayout() {
   const inputRef = useRef(null)

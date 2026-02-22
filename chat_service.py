@@ -8,11 +8,11 @@ import logging
 import re
 from typing import Any, Dict
 
-logger = logging.getLogger("netbrain.chat_service")
+logger = logging.getLogger("atlas.chat_service")
 
 # Lazy imports to avoid circular deps and heavy Streamlit import at module load
 def _get_mcp_client():
-    from netbrain.mcp_client import (
+    from atlas.mcp_client import (
         get_mcp_session,
         execute_network_query,
         execute_rack_details_query,
@@ -23,7 +23,7 @@ def _get_mcp_client():
         execute_splunk_recent_denies_query,
         execute_path_allowed_check,
     )
-    from netbrain.mcp_client import FASTMCP_CLIENT_AVAILABLE, FastMCPClient
+    from atlas.mcp_client import FASTMCP_CLIENT_AVAILABLE, FastMCPClient
     return (
         get_mcp_session,
         execute_network_query,
@@ -218,7 +218,7 @@ def _parse_rack_follow_up_site(
     # CRITICAL: Reject if prompt is clearly a NEW query, not a follow-up answer to "Which site?"
     # These checks prevent misrouting new queries when conversation history contains old "Which site?" messages
 
-    # Check for IP addresses (dots) - these are Panorama/Splunk/NetBrain queries, NOT rack follow-ups
+    # Check for IP addresses (dots) - these are Panorama/Splunk/path queries, NOT rack follow-ups
     if re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", raw):
         # Contains an IP address - this is a new query
         return None
@@ -307,10 +307,10 @@ def _is_obviously_in_scope(prompt: str) -> bool:
         "firewall rule", "security rule", "security policy",
         "device group", "address object", "ip group",
     ))
-    # NetBrain / path keywords
-    netbrain_kw = any(k in lower for k in (
+    # Path keywords
+    path_kw = any(k in lower for k in (
         "network path", "path from", "path to", "traffic allowed",
-        "path allowed", "can reach", "connectivity", "netbrain",
+        "path allowed", "can reach", "connectivity", "path",
     ))
     # NetBox / rack keywords
     netbox_kw = any(k in lower for k in (
@@ -323,10 +323,10 @@ def _is_obviously_in_scope(prompt: str) -> bool:
     ))
 
     # IP + any domain keyword → clearly in scope
-    if has_ip and (panorama_kw or netbrain_kw or splunk_kw):
+    if has_ip and (panorama_kw or path_kw or splunk_kw):
         return True
     # Domain keyword alone (no IP needed for racks, path queries, etc.)
-    if panorama_kw or netbrain_kw or netbox_kw or splunk_kw:
+    if panorama_kw or path_kw or netbox_kw or splunk_kw:
         return True
     # Two IPs likely means path/traffic query
     ips = _IP_OR_CIDR_RE.findall(prompt or "")
@@ -352,7 +352,7 @@ async def is_query_in_scope(prompt: str) -> Dict[str, Any]:
 
 The assistant can ONLY handle queries related to:
 • Network device locations and rack details (NetBox) — e.g. "where is device X racked", "rack A4", "list racks"
-• Network path queries and traffic allowed checks (NetBrain) — e.g. "path from A to B", "is traffic allowed"
+• Network path queries and traffic allowed checks — e.g. "path from A to B", "is traffic allowed"
 • Panorama / Palo Alto firewall lookups — e.g. "what object group is IP in", "address group members", "IP object group", "which group contains IP"
 • Splunk deny event searches (firewall logs) — e.g. "recent denies for IP", "firewall deny events"
 
@@ -364,7 +364,7 @@ Query: "{prompt}"
 
 RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
 """
-        from netbrain.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
         llm = ChatOllama(
             model=OLLAMA_MODEL,
             base_url=OLLAMA_BASE_URL,
@@ -393,7 +393,7 @@ RESPOND WITH ONLY "IN_SCOPE" OR "OUT_OF_SCOPE" (one word, no explanation).
 
 async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]]) -> dict[str, Any]:
     """Run tool discovery: get MCP tools, call LLM to select tool, return selection or clarification/error."""
-    from netbrain.mcp_client_tool_selection import select_tool_with_llm
+    from atlas.mcp_client_tool_selection import select_tool_with_llm
 
     (
         get_mcp_session,
@@ -509,7 +509,7 @@ async def discover_tool(prompt: str, conversation_history: list[dict[str, Any]])
                     "clarification_question": (
                         "I'm not equipped to answer that question. I can help with:\n"
                         "• Network device locations and rack details (NetBox)\n"
-                        "• Network path queries and traffic allowed checks (NetBrain)\n"
+                        "• Network path queries and traffic allowed checks\n"
                         "• Panorama address group lookups\n"
                         "• Splunk deny event searches\n\n"
                         "Please ask a question related to these areas."
@@ -888,8 +888,8 @@ async def execute_tool(
 
 # Tool name → display label for status ("Querying NetBrain", etc.)
 TOOL_DISPLAY_NAMES: dict[str, str] = {
-    "check_path_allowed": "NetBrain",
-    "query_network_path": "NetBrain",
+    "check_path_allowed": "Atlas",
+    "query_network_path": "Atlas",
     "query_panorama_ip_object_group": "Panorama",
     "query_panorama_address_group_members": "Panorama",
     "get_rack_details": "NetBox",
@@ -900,7 +900,7 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
 
 
 def get_tool_display_name(tool_name: str) -> str:
-    """Return human-readable label for status message, e.g. 'Querying NetBrain'."""
+    """Return human-readable label for status message, e.g. 'Querying path'."""
     return TOOL_DISPLAY_NAMES.get(tool_name, "backend")
 
 
@@ -938,7 +938,7 @@ def _apply_tool_param_fixes(
 
 
 def _strip_l2_noise(result: dict[str, Any]) -> dict[str, Any]:
-    """Remove noisy NetBrain status messages like 'L2 connections has not been discovered'."""
+    """Remove noisy path status messages like 'L2 connections has not been discovered'."""
     noise = ["l2 connections has not been discovered", "l2 connection has not been discovered"]
     for key in ("path_status_description", "statusDescription"):
         val = result.get(key)
@@ -1080,7 +1080,7 @@ def _check_tool_access(username: str | None, tool_name: str, session_id: str | N
     """Return an error message if the user's role forbids *tool_name*, else None. Uses session_id for role when provided."""
     if username is None:
         return None
-    from netbrain.auth import get_role_for_session, get_user_role, get_allowed_tools
+    from atlas.auth import get_role_for_session, get_user_role, get_allowed_tools
     role = get_role_for_session(session_id) if session_id else get_user_role(username)
     allowed = get_allowed_tools(role)
     if allowed is not None and tool_name not in allowed:
@@ -1123,7 +1123,7 @@ async def process_message(
         _apply_tool_param_fixes(tool_name, tool_params, selection, prompt)
         result = await execute_tool(tool_name, tool_params, default_live=default_live)
         if result is None or (isinstance(result, dict) and len(result) == 0):
-            from netbrain.mcp_client_tool_selection import synthesize_final_answer
+            from atlas.mcp_client_tool_selection import synthesize_final_answer
             msg = await synthesize_final_answer(
                 prompt, tool_name or "tool",
                 "No result returned. Check that the MCP server is running and NetBox is reachable (e.g. NETBOX_URL).",
@@ -1134,7 +1134,7 @@ async def process_message(
         if isinstance(result, dict) and "error" in result:
             if result.get("requires_site") and result.get("sites"):
                 return {"role": "assistant", "content": result}
-            from netbrain.mcp_client_tool_selection import synthesize_final_answer
+            from atlas.mcp_client_tool_selection import synthesize_final_answer
             msg = await synthesize_final_answer(prompt, tool_name or "tool", result)
             return {"role": "assistant", "content": msg}
         return {"role": "assistant", "content": _normalize_result(tool_name, result, prompt)}
@@ -1155,7 +1155,7 @@ async def process_message(
         }
 
     # Agent loop: up to max_iterations discover → execute; on error, add to history and retry; then force final answer
-    from netbrain.mcp_client_tool_selection import synthesize_final_answer
+    from atlas.mcp_client_tool_selection import synthesize_final_answer
     history_so_far = list(conversation_history)
     last_tool_name: str | None = None
     last_error: str | dict[str, Any] | None = None

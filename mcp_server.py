@@ -1,5 +1,5 @@
 """
-MCP Server for NetBrain Network Query – Entry Point.
+MCP Server for Atlas network query – Entry Point.
 
 This module imports domain tool modules to register all MCP tools on the
 shared FastMCP instance, then starts the server.
@@ -30,7 +30,7 @@ import tools.netbox_tools      # noqa: F401
 import tools.panorama_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
 
-logger = logging.getLogger("netbrain.server")
+logger = logging.getLogger("atlas.server")
 
 # ---------------------------------------------------------------------------
 # Health check endpoint (available at GET /health on the MCP HTTP server)

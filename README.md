@@ -1,6 +1,6 @@
-# NetAssist - AI-Powered Network Infrastructure Assistant
+# Atlas - AI-Powered Network Infrastructure Assistant
 
-**NetAssist** is an intelligent network infrastructure assistant built on the Model Context Protocol (MCP), providing natural language access to NetBrain path queries, NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
+**Atlas** is an intelligent network infrastructure assistant built on the Model Context Protocol (MCP), providing natural language access to path queries (via NetBrain API), NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
 
 ---
 
@@ -30,7 +30,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    FastAPI Web Server                           │
-│                   (app_fastapi.py)                              │
+│                   (app.py)                              │
 │  • Authentication (auth.py, OIDC or local)                      │
 │  • Chat API (/api/chat, /api/discover, /api/me)                 │
 │  • Serves React build (frontend/dist/) in production            │
@@ -61,7 +61,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
                              │       MCP Server                    │
                              │      (mcp_server.py)                │
                              │  Exposes tools via MCP:             │
-                             │  • NetBrain path queries            │
+                             │  • Path queries (NetBrain API)      │
                              │  • NetBox device/rack lookups       │
                              │  • Panorama address groups          │
                              │  • Splunk deny events               │
@@ -78,7 +78,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 
 ### Key Components
 
-1. **FastAPI Web Server** (`app_fastapi.py`)
+1. **FastAPI Web Server** (`app.py`)
    - Serves the React build from `frontend/dist/` in production
    - Handles authentication (local or Microsoft OIDC)
    - Provides `/api/chat`, `/api/discover`, `/api/me` endpoints
@@ -111,7 +111,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 
 5. **MCP Server** (`mcp_server.py`)
    - Exposes network infrastructure tools via MCP protocol
-   - Integrates with NetBrain, NetBox, Panorama, Splunk APIs
+   - Integrates with NetBrain API, NetBox, Panorama, Splunk APIs
    - Runs independently on port 8765
    - Must be started before the web client
 
@@ -125,9 +125,10 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 ## Project Structure
 
 ```
-palo-netbrain/
-└── netbrain/                          # Main application directory
-    ├── app_fastapi.py                 # FastAPI web server (port 8000)
+atlas/
+└── (project root)                     # Main application directory
+    ├── app.py                         # FastAPI web server (port 8000)
+    ├── run_web.py                     # Launcher: adds parent to sys.path, imports atlas.app (use with uvicorn run_web:app)
     ├── auth.py                        # Authentication (local + OIDC)
     ├── chat_service.py                # Tool orchestration & execution
     ├── mcp_client.py                  # MCP client library
@@ -208,13 +209,13 @@ ollama pull llama3.1:8b
 
 **Using uv (recommended):**
 ```bash
-cd netbrain
+cd atlas
 uv sync
 ```
 
 **Using pip:**
 ```bash
-cd netbrain
+cd atlas
 pip install -e .
 ```
 
@@ -223,7 +224,7 @@ pip install -e .
 After cloning the repo or whenever you don't have `node_modules` yet, run:
 
 ```bash
-cd netbrain/frontend
+cd atlas/frontend
 npm install
 npm run build
 ```
@@ -306,7 +307,7 @@ You need **two terminal windows** running simultaneously (three for frontend dev
 ### Terminal 1: Start the MCP Server
 
 ```bash
-cd netbrain
+cd atlas
 uv run python mcp_server.py
 ```
 
@@ -324,10 +325,16 @@ INFO: Server initialized with tools: check_path_allowed, query_network_path, get
 
 ### Terminal 2: Start the Web Client
 
+From the project root (`atlas/`):
+
 ```bash
-cd netbrain
-uv run python -m netbrain.app_fastapi
+cd atlas
+uv run uvicorn run_web:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+**Why `run_web`?** The app lives in the `atlas` package (`atlas.app`, `atlas.auth`, etc.). When you run from inside the project directory, Python does not see that directory as the `atlas` package, so `uvicorn atlas.app:app` would fail with “No module named 'atlas'”. `run_web.py` is a thin launcher: it adds the parent of the project directory to `sys.path`, then imports `atlas.app`. That way uvicorn can load `run_web:app` from the project root and the `atlas` package resolves correctly.
+
+Alternatively, from the **parent** of the project directory you can run: `uv run python -m atlas.app` or `uv run uvicorn atlas.app:app --host 0.0.0.0 --port 8000 --reload`.
 
 **Output:**
 ```
@@ -341,14 +348,14 @@ INFO: Uvicorn running on http://0.0.0.0:8000
 - Web UI available at **http://localhost:8000**
 - Serves the React build from `frontend/dist/` (run `npm run build` first)
 - **Auto-reload enabled**: changes to Python files are picked up automatically
-- No need to restart when editing `chat_service.py`, `app_fastapi.py`, etc.
+- No need to restart when editing `chat_service.py`, `app.py`, etc.
 
 ### Terminal 3 (Optional): Frontend Development
 
 For frontend hot-reload during development:
 
 ```bash
-cd netbrain/frontend
+cd atlas/frontend
 npm run dev
 ```
 
@@ -359,8 +366,10 @@ npm run dev
 
 ### Alternative: Custom Host/Port
 
+From project root:
+
 ```bash
-uv run uvicorn netbrain.app_fastapi:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn run_web:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
@@ -488,7 +497,7 @@ The MCP server exposes the following tools:
 2. Log in with **admin** / **admin** (or your configured credentials)
 3. Type natural language queries in the chat box:
 
-#### NetBrain Path Queries
+#### Path Queries
 ```
 Find path from 10.0.0.1 to 10.0.1.1
 Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?
@@ -579,7 +588,7 @@ ollama pull llama3.1:8b
 
 **Solution:**
 ```bash
-cd netbrain
+cd atlas
 uv sync  # or: pip install -e .
 ```
 
@@ -587,7 +596,7 @@ uv sync  # or: pip install -e .
 
 ## Development Notes
 
-- **FastAPI auto-reload:** The web client (`app_fastapi.py`) automatically reloads when you edit Python files. No need to restart Terminal 2.
+- **FastAPI auto-reload:** The web client (`app.py`) automatically reloads when you edit Python files. No need to restart Terminal 2.
 - **MCP server does NOT auto-reload:** If you change `mcp_server.py`, you must restart Terminal 1.
 - **Frontend development:** Run `npm run dev` in `frontend/` for hot-reload at `:5173`. For production, run `npm run build` and access via `:8000`.
 - **Frontend architecture:** React 18 + Zustand + CSS Modules. See [frontend/frontend.md](frontend/frontend.md).

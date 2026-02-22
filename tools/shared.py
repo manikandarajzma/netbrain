@@ -9,7 +9,7 @@ import os
 import sys
 import logging
 
-# Ensure parent directory (netbrain/) is on sys.path so sibling modules
+# Ensure parent directory (atlas/) is on sys.path so sibling modules
 # (netbrainauth, panoramaauth) can be imported from tool modules.
 _parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _parent_dir not in sys.path:
@@ -17,7 +17,7 @@ if _parent_dir not in sys.path:
 
 # ---------------------------------------------------------------------------
 # Load .env file (must happen before any os.getenv calls)
-# Look in netbrain/, project root, then cwd so one .env works everywhere.
+# Look in atlas/, project root, then cwd so one .env works everywhere.
 # ---------------------------------------------------------------------------
 from dotenv import load_dotenv
 for _env_path in (
@@ -65,7 +65,7 @@ urllib3.disable_warnings()
 # ---------------------------------------------------------------------------
 from fastmcp import FastMCP
 
-mcp = FastMCP("netbrain-mcp-server")
+mcp = FastMCP("atlas-mcp-server")
 
 # LLM state (lazy-initialized)
 mcp.llm = None

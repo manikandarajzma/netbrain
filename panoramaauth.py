@@ -44,7 +44,7 @@ for _p in (
         load_dotenv(_p)
 
 # Configure module logger
-logger = logging.getLogger("netbrain.panoramaauth")
+logger = logging.getLogger("atlas.panoramaauth")
 
 # Panorama API configuration
 PANORAMA_URL = os.getenv("PANORAMA_URL", "https://192.168.15.247")

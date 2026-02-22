@@ -9,7 +9,7 @@ This document explains how the MCP (Model Context Protocol) server and clients a
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    FastAPI Chat Interface                        │
-│              (app_fastapi.py - Port 8000)                        │
+│              (app.py - Port 8000)                        │
 └──────────────────────┬──────────────────────────────────────────┘
                        │ HTTP POST /api/chat
                        ↓
@@ -78,7 +78,7 @@ All domain tool modules import and decorate the same shared `FastMCP` instance, 
 # tools/shared.py (lines 62-68)
 from fastmcp import FastMCP
 
-mcp = FastMCP("netbrain-mcp-server")
+mcp = FastMCP("atlas-mcp-server")
 
 # LLM state is lazily attached to the server instance
 mcp.llm = None
@@ -105,8 +105,8 @@ async def get_splunk_recent_denies(
 
 | Domain     | Tool Name                               |
 |------------|-----------------------------------------|
-| NetBrain   | `query_network_path`                    |
-| NetBrain   | `check_path_allowed`                    |
+| Atlas (path) | `query_network_path`                    |
+| Atlas (path) | `check_path_allowed`                    |
 | NetBox     | `get_rack_details`                      |
 | NetBox     | `list_racks`                            |
 | NetBox     | `get_device_rack_location`              |
@@ -464,7 +464,7 @@ def _check_tool_access(username: str, tool_name: str) -> str | None:
 | `mcp_client.py`               | HTTP-first MCP client; dual-transport (HTTP + stdio)         |
 | `mcp_client_tool_selection.py`| LLM-driven tool selection with Pydantic structured output    |
 | `chat_service.py`             | Agent loop: discover → execute → normalise, up to 3 retries  |
-| `app_fastapi.py`              | FastAPI entry point, auth, routes                            |
+| `app.py`                       | FastAPI entry point, auth, routes                            |
 | LangChain (`ChatOllama`)      | Tool selection inference + AI enrichment of tool responses   |
 
 ---
@@ -688,7 +688,7 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
 
 ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
-    "netadmin": ["netbrain", "panorama", "your_category"],  # ← add sidebar category slug
+    "netadmin": ["atlas", "panorama", "your_category"],  # ← add sidebar category slug
 }
 ```
 
@@ -741,7 +741,7 @@ The naive approach would be:
 
 ```python
 # tools/shared.py — eager initialisation (what is NOT done)
-mcp = FastMCP("netbrain-mcp-server")
+mcp = FastMCP("atlas-mcp-server")
 mcp.llm = ChatOllama(model=OLLAMA_MODEL, ...)  # runs at import time
 ```
 
@@ -751,7 +751,7 @@ This fails if Ollama isn't running when the server starts — the import of `too
 
 ```python
 # tools/shared.py (lines 65-69)
-mcp = FastMCP("netbrain-mcp-server")
+mcp = FastMCP("atlas-mcp-server")
 
 mcp.llm = None        # initial state: "never tried"
 mcp.llm_error = None

@@ -5,7 +5,7 @@ const exampleQueriesEl = document.getElementById('example-queries');
 let conversationHistory = [];
 var currentConversationId = null;
 var conversationsList = [];
-var LAST_CONVERSATION_KEY = 'netbrain_last_conversation_id';
+var LAST_CONVERSATION_KEY = 'atlas_last_conversation_id';
 
 // On 401, redirect to login so user can sign in again (session expired or invalid).
 function redirectIfUnauthorized(res) {
