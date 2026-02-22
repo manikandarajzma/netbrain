@@ -51,18 +51,28 @@ async def health_check(request: Request) -> JSONResponse:
 
 
 if __name__ == "__main__":
-    # Add a file handler so all log output also goes to mcp_server.log
+    # Send all logs to file only (no console output)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     log_file_path = os.path.join(script_dir, "mcp_server.log")
     file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
     ))
-    logging.getLogger().addHandler(file_handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+    root = logging.getLogger()
+    # Remove all existing handlers (console etc.) so output goes only to the file
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+    root.addHandler(file_handler)
+    root.setLevel(logging.DEBUG)
+    # Remove StreamHandlers from any logger that got one (e.g. from tools.shared.setup_logging)
+    for name, logr in logging.Logger.manager.loggerDict.items():
+        if isinstance(logr, logging.Logger):
+            for h in logr.handlers[:]:
+                if isinstance(h, logging.StreamHandler):
+                    logr.removeHandler(h)
 
-    logger.info("Server logs will be written to: %s", log_file_path)
+    logger.info("MCP server starting; logs written to %s", log_file_path)
 
     # Run the MCP server using streamable-http transport
     mcp.run(transport="streamable-http", port=MCP_SERVER_PORT, host=MCP_SERVER_HOST)

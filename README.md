@@ -128,7 +128,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 atlas/
 └── (project root)                     # Main application directory
     ├── app.py                         # FastAPI web server (port 8000)
-    ├── run_web.py                     # Launcher: adds parent to sys.path, imports atlas.app (use with uvicorn run_web:app)
+    ├── run_web.py                     # Launcher: run with `uv run python run_web.py` (reload + file logging built in)
     ├── auth.py                        # Authentication (local + OIDC)
     ├── chat_service.py                # Tool orchestration & execution
     ├── mcp_client.py                  # MCP client library
@@ -329,12 +329,14 @@ From the project root (`atlas/`):
 
 ```bash
 cd atlas
-uv run uvicorn run_web:app --host 0.0.0.0 --port 8000 --reload
+uv run python run_web.py
 ```
+
+This starts the server with **reload** and **file-only logging** (no console output). Logs: **MCP server** → `mcp_server.log`; **web app** → `atlas_web.log` (both in project root).
 
 **Why `run_web`?** The app lives in the `atlas` package (`atlas.app`, `atlas.auth`, etc.). When you run from inside the project directory, Python does not see that directory as the `atlas` package, so `uvicorn atlas.app:app` would fail with “No module named 'atlas'”. `run_web.py` is a thin launcher: it adds the parent of the project directory to `sys.path`, then imports `atlas.app`. That way uvicorn can load `run_web:app` from the project root and the `atlas` package resolves correctly.
 
-Alternatively, from the **parent** of the project directory you can run: `uv run python -m atlas.app` or `uv run uvicorn atlas.app:app --host 0.0.0.0 --port 8000 --reload`.
+Alternatively, from the **parent** of the project directory: `uv run python -m atlas.app` (or run uvicorn manually with your own options).
 
 **Output:**
 ```
@@ -369,7 +371,7 @@ npm run dev
 From project root:
 
 ```bash
-uv run uvicorn run_web:app --host 0.0.0.0 --port 8000 --reload
+uv run python run_web.py
 ```
 
 ---

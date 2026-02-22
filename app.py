@@ -182,24 +182,36 @@ async def auth_callback(request: Request):
         print(f"OIDC token error: {exc}", flush=True)
         return RedirectResponse(url="/login?error=oidc", status_code=302)
 
-    # Extract user info from the ID token claims
-    userinfo = token.get("userinfo") or {}
+    # Get user claims from id_token; fall back to authlib's parsed userinfo
+    import json as _json
+    import base64 as _base64
+    userinfo = {}
+    id_token = token.get("id_token")
+    if id_token:
+        try:
+            payload = id_token.split(".")[1]
+            payload += "=" * (4 - len(payload) % 4)
+            userinfo = _json.loads(_base64.urlsafe_b64decode(payload))
+        except Exception:
+            pass
     if not userinfo:
-        # Try to parse the id_token manually
-        id_token = token.get("id_token")
-        if id_token:
-            try:
-                import json, base64
-                # Decode the payload (second segment) of the JWT
-                payload = id_token.split(".")[1]
-                # Add padding
-                payload += "=" * (4 - len(payload) % 4)
-                userinfo = json.loads(base64.urlsafe_b64decode(payload))
-            except Exception:
-                pass
+        userinfo = token.get("userinfo") or {}
 
     if not userinfo:
         return RedirectResponse(url="/login?error=oidc", status_code=302)
+
+    # Azure PIM-activated app roles appear in the access_token, not the id_token.
+    # Merge roles from access_token into userinfo if present.
+    access_token_str = token.get("access_token", "")
+    if access_token_str and not userinfo.get("roles"):
+        try:
+            _at_payload = access_token_str.split(".")[1]
+            _at_payload += "=" * (4 - len(_at_payload) % 4)
+            _at_claims = _json.loads(_base64.urlsafe_b64decode(_at_payload))
+            if _at_claims.get("roles"):
+                userinfo = {**userinfo, "roles": _at_claims["roles"]}
+        except Exception:
+            pass
 
     username = extract_username_from_token(userinfo)
     role = extract_role_from_token(userinfo)

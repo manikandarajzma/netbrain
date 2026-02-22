@@ -1,6 +1,6 @@
 # Panorama query end-to-end flow
 
-This document traces a **single example query** from the moment the user types it to the response, and explains **why** the chat service and LLM do tool discovery, **when** authentication and authorization happen, **how** MCP tools are exposed, and **what** the client is and how it consumes Panorama tools.
+This document traces a **single example query** from the moment the user types it to the response, and explains **why** the chat service and LLM do tool discovery, **when** authentication and authorization happen, **how** MCP tools are exposed, and **what** the client is and how it consumes Panorama tools. It also lists **all components involved**, including LangChain, Ollama, and Pydantic.
 
 ---
 
@@ -11,6 +11,25 @@ We follow this one question from end to end:
 > **"What address group is 11.0.0.1 part of?"**
 
 The user expects an answer like: *"11.0.0.1 is in address groups: leander_web, dmz_servers."*
+
+---
+
+## Components involved (full stack)
+
+| Layer | Component | Role |
+|--------|-----------|------|
+| **Frontend** | Browser (React SPA) | Sends message to `/api/chat`, displays response; never talks to MCP or Panorama. |
+| **API** | FastAPI (`app.py`) | Authn (session cookie), routes `/api/chat`, persists chat history, returns JSON. |
+| **Orchestration** | Chat service (`chat_service.py`) | Coordinates discovery → authz → execute; calls MCP client and tool-selection LLM. |
+| **Tool selection** | `mcp_client_tool_selection.py` | **LangChain** + **ChatOllama** (Ollama) + **Pydantic** (`ToolSelection`, `ToolParameters`): maps natural language to one MCP tool name and parameters. |
+| **LLM runtime** | Ollama | Local LLM server (e.g. `llama3.1:8b`); used by tool selection and by optional result summarization. |
+| **MCP client** | `mcp_client.py` | Gets MCP session, calls `list_tools()` and `call_tool(name, arguments)` over HTTP to the MCP server. |
+| **MCP server** | `mcp_server.py` | Serves FastMCP app; loads `tools/panorama_tools`, `tools/netbrain_tools`, etc.; exposes tools over streamable-http (:8765). |
+| **Tools + LLM** | `tools/panorama_tools.py` | Implements `query_panorama_ip_object_group` (and address group members); calls Panorama REST API; optionally uses **LangChain** (`ChatPromptTemplate` + `_get_llm()` from `tools/shared.py`) to add a short **ai_analysis** narrative summary. |
+| **Shared LLM** | `tools/shared.py` | Holds FastMCP instance, **OLLAMA_MODEL** / **OLLAMA_BASE_URL**; **`_get_llm()`** lazily creates **ChatOllama** (LangChain) for use by Panorama/NetBox tools for result summarization. |
+| **Backend** | Panorama (Palo Alto) | REST API (XML); returns address objects/groups and policy usage. |
+
+So for a Panorama query, the full chain is: **Browser → FastAPI → Chat service → (MCP client + list_tools) → Tool selection (LangChain + ChatOllama + Pydantic) → Chat service → authz → MCP client → call_tool → MCP server → tools/panorama_tools → Panorama API → (optional LangChain summarization in panorama_tools) → back up the stack.**
 
 ---
 
@@ -47,13 +66,22 @@ User types: "What address group is 11.0.0.1 part of?"
          ▼                    │                    ▼
 ┌─────────────────────┐       │       ┌─────────────────────────────┐
 │  MCP client         │       │       │  MCP client (mcp_client.py)  │
-│  get_mcp_session()  │       │       │  get_mcp_session()           │
-│  list_tools()       │       │       │  call_tool(                  │
-│  → then LLM picks   │       │       │    "query_panorama_ip_       │
-│    tool + params    │       │       │     object_group",            │
-│  (Ollama)           │       │       │    arguments={ip_address:    │
-│                     │       │       │     "11.0.0.1", vsys: "vsys1"│
-└─────────────────────┘       │       └──────────────┬──────────────┘
+│  list_tools()       │       │       │  call_tool(...)             │
+└──────────┬──────────┘       │       └──────────────┬──────────────┘
+           │                   │                      │
+           ▼                   │                      │
+┌─────────────────────┐       │                      │
+│  Tool selection     │       │                      │
+│  (mcp_client_tool_  │       │                      │
+│   selection.py)     │       │                      │
+│  LangChain +        │       │                      │
+│  ChatOllama (Ollama)│       │                      │
+│  Pydantic           │       │                      │
+│  (ToolSelection,     │       │                      │
+│   ToolParameters)    │       │                      │
+│  → tool_name +      │       │                      │
+│    parameters        │       │                      │
+└─────────────────────┘       │                      │
                               │                       │  HTTP POST to MCP server
                               │                       ▼
                               │       ┌─────────────────────────────┐
@@ -68,8 +96,10 @@ User types: "What address group is 11.0.0.1 part of?"
                               │       │  tools/panorama_tools.py    │
                               │       │  query_panorama_ip_object_  │
                               │       │  group(ip_address="11.0.0.1")│
-                              │       │  → panoramaauth.get_api_key  │
-                              │       │  → Panorama REST API (XML)   │
+                              │       │  → panoramaauth → Panorama  │
+                              │       │  → (optional) LangChain      │
+                              │       │     ChatPromptTemplate +    │
+                              │       │     _get_llm() → ai_analysis │
                               │       └──────────────┬──────────────┘
                               │                      │
                               │                      ▼
@@ -117,11 +147,11 @@ User types: "What address group is 11.0.0.1 part of?"
    An LLM (or heuristics) decides whether the query is something the system can answer (e.g. not off-topic). If not, the service returns a clarification or error and **does not** run any tool.
 
 3. **LLM selects one tool and its parameters**  
-   The user prompt and the tool list (names + short descriptions) are sent to **Ollama** via `select_tool_with_llm()` in `mcp_client_tool_selection.py`. The LLM returns:
+   The user prompt and the tool list are sent to **`select_tool_with_llm()`** in **`mcp_client_tool_selection.py`**. That module uses **LangChain** and **ChatOllama** to call the local **Ollama** server (e.g. `llama3.1:8b`) and **Pydantic** structured output (`ToolSelection`, `ToolParameters`) so the LLM returns:
    - **Tool name:** e.g. `query_panorama_ip_object_group`
    - **Parameters:** e.g. `{ "ip_address": "11.0.0.1", "vsys": "vsys1" }`
 
-   For our example, the LLM sees the question and the description of `query_panorama_ip_object_group` (“user has one IP and asks which address group contains it”) and correctly picks this tool with `ip_address: "11.0.0.1"`.
+   For our example, the LLM sees the question and the description of `query_panorama_ip_object_group` (“user has one IP and asks which address group contains it”) and correctly picks this tool with `ip_address: "11.0.0.1"`. So **LangChain**, **ChatOllama**, **Pydantic**, and **Ollama** are the components that perform tool discovery.
 
 **Why use the LLM at all?**
 
@@ -152,8 +182,9 @@ User types: "What address group is 11.0.0.1 part of?"
 - The MCP client:
   - Calls `get_mcp_session()` (HTTP to `MCP_SERVER_HOST:MCP_SERVER_PORT`, e.g. `http://127.0.0.1:8765/mcp`).
   - Calls `client.call_tool("query_panorama_ip_object_group", arguments={"ip_address": "11.0.0.1", "vsys": "vsys1"})`.
-- The MCP server receives the call, invokes the registered function `query_panorama_ip_object_group(ip_address="11.0.0.1", ...)` in **tools/panorama_tools.py**, which uses **panoramaauth** to get an API key and calls the Panorama REST API, parses XML, and returns a result dict.
-- The result is returned over MCP to the client, then to the chat service, which may run `_normalize_result()` and then returns `{ role: "assistant", content: ... }` to FastAPI.
+- The MCP server receives the call and invokes **tools/panorama_tools.py** `query_panorama_ip_object_group(ip_address="11.0.0.1", ...)`, which uses **panoramaauth** to get an API key, calls the Panorama REST API, and parses XML into a result dict.
+- **Optional LLM summarization (LangChain):** After the Panorama API returns, **panorama_tools** may call **`_get_llm()`** from **tools/shared.py** (which returns a **LangChain** **ChatOllama** instance). Using **ChatPromptTemplate** from **langchain_core**, it sends the raw result to the LLM and gets a short narrative summary, which is attached as **`result["ai_analysis"]["summary"]`**. This step uses the same Ollama model as tool selection; if Ollama is unavailable, a short fallback summary is used.
+- The result (with or without `ai_analysis`) is returned over MCP to the client, then to the chat service, which may run `_normalize_result()` and then returns `{ role: "assistant", content: ... }` to FastAPI.
 - FastAPI persists the exchange to chat history and returns the response to the browser; the user sees the answer.
 
 ---
@@ -201,12 +232,12 @@ So: **the only “consumer” of Panorama MCP tools is the MCP client in mcp_cli
 |------|-----------|-------------------------------------------------------------|
 | 1 | User / frontend | User sends message; frontend POSTs to /api/chat with cookie. |
 | 2 | FastAPI | **Authn:** validate session → username; else 401. |
-| 3 | Chat service | `discover_tool()`: MCP `list_tools()` + LLM → `query_panorama_ip_object_group`, `{ ip_address: "11.0.0.1" }`. |
+| 3 | Chat service | `discover_tool()`: MCP `list_tools()` then **mcp_client_tool_selection** (LangChain + ChatOllama + Pydantic + Ollama) → `query_panorama_ip_object_group`, `{ ip_address: "11.0.0.1" }`. |
 | 4 | Chat service | **Authz:** `_check_tool_access()` → role allowed for this tool? Else error. |
 | 5 | Chat service | `execute_tool()` → `execute_panorama_ip_object_group_query("11.0.0.1", ...)` in mcp_client. |
 | 6 | MCP client | New MCP session; `call_tool("query_panorama_ip_object_group", arguments={...})` over HTTP to server. |
 | 7 | MCP server | Runs `query_panorama_ip_object_group` in tools/panorama_tools.py. |
-| 8 | Panorama tools | panoramaauth.get_api_key() → Panorama REST API → parse XML → result dict. |
+| 8 | Panorama tools | panoramaauth → Panorama REST API → parse XML → result dict; optionally **LangChain** (ChatPromptTemplate + _get_llm()) → **ai_analysis** summary. |
 | 9 | Back up stack | Result → chat service → _normalize_result() → FastAPI → persist + response. |
 | 10 | Frontend | User sees address groups containing 11.0.0.1. |
 

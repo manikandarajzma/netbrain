@@ -576,20 +576,11 @@ A catch-all exception handler returns a plain HTML page with the full Python tra
 ## 11. Startup and Server
 
 ```python
-# app.py (lines 550-561)
-def main():
-    import uvicorn
-    uvicorn.run(
-        "run_web:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-    )
+# run_web.py (when run as __main__)
+uvicorn.run("run_web:app", host="0.0.0.0", port=8000, reload=True, log_config=...)
 ```
 
-The app is started via `uvicorn`, an ASGI server. `reload=True` enables hot-reload for development — uvicorn watches for file changes and restarts automatically. In production this would be set to `False`.
-
-The `app` object is the ASGI callable: use `run_web:app` when running from the project root, or `atlas.app:app` when running from the parent directory.
+Run the web app with **`uv run python run_web.py`** from the project root. Reload and file-only logging are configured in code (no CLI flags needed). The app is served via **uvicorn**; in production you would set `reload=False` and run uvicorn directly if needed.
 
 ---
 

@@ -15,6 +15,10 @@ wheels/
 # Persisted chat history (per-user data)
 data/
 
+# Log files
+logs/
+*.log
+
 # React frontend build artifacts
 frontend/node_modules/
 frontend/dist/
