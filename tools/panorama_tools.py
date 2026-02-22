@@ -14,6 +14,7 @@ import ssl
 import json
 import asyncio
 import re
+import time as _time
 import aiohttp
 import xml.etree.ElementTree as ET
 import urllib.parse
@@ -24,6 +25,141 @@ from tools.shared import mcp, _get_llm, ChatPromptTemplate, setup_logging
 import panoramaauth
 
 logger = setup_logging(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Module-level caches (shared across requests, TTL = 5 minutes)
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL = 300.0
+
+# Device group list cache: (list[str], timestamp) | None
+_dg_cache: tuple[list, float] | None = None
+
+# Address object cache: "loc_type:loc_name" -> ({name: {type, value}}, timestamp)
+_addr_obj_cache: dict[str, tuple[dict, float]] = {}
+
+
+def _parse_address_entries(entries) -> dict:
+    """Parse XML address <entry> elements into {name: {type, value}} dict."""
+    result = {}
+    for entry in entries:
+        name = entry.get('name')
+        if not name:
+            continue
+        ip_netmask = entry.find('ip-netmask')
+        ip_range = entry.find('ip-range')
+        fqdn_el = entry.find('fqdn')
+        if ip_netmask is not None and ip_netmask.text:
+            result[name] = {"type": "ip-netmask", "value": ip_netmask.text.strip()}
+        elif ip_range is not None and ip_range.text:
+            result[name] = {"type": "ip-range", "value": ip_range.text.strip()}
+        elif fqdn_el is not None and fqdn_el.text:
+            result[name] = {"type": "fqdn", "value": fqdn_el.text.strip()}
+        else:
+            result[name] = {"type": None, "value": None}
+    return result
+
+
+async def _get_device_groups_cached(session, panorama_url: str, api_key: str, ssl_context) -> list:
+    """Return device group names from Panorama, refreshed every _CACHE_TTL seconds."""
+    global _dg_cache
+    now = _time.monotonic()
+    if _dg_cache and (now - _dg_cache[1]) < _CACHE_TTL:
+        logger.debug("Device groups: cache hit (%d groups)", len(_dg_cache[0]))
+        return _dg_cache[0]
+
+    names: list = []
+    try:
+        url = (
+            f"{panorama_url}/api/?type=config&action=get"
+            f"&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry"
+            f"&key={api_key}"
+        )
+        async with session.get(url, ssl=ssl_context, timeout=15) as resp:
+            if resp.status == 200:
+                root = ET.fromstring(await resp.text())
+                # Direct children only — .//entry would also match address/policy
+                # entries nested inside device groups, producing bogus DG names.
+                names = [e.get('name') for e in root.findall('./result/entry') if e.get('name')]
+                logger.debug("Device groups: fetched %d names from Panorama", len(names))
+    except Exception as exc:
+        logger.debug("Failed to fetch device group list: %s", exc)
+
+    _dg_cache = (names, now)
+    return names
+
+
+async def _get_address_objects_cached(
+    session, panorama_url: str, api_key: str, ssl_context,
+    location_type: str, location_name: Optional[str],
+) -> dict:
+    """Return all address objects for a location, refreshed every _CACHE_TTL seconds."""
+    key = f"{location_type}:{location_name or 'shared'}"
+    global _addr_obj_cache
+    now = _time.monotonic()
+    cached = _addr_obj_cache.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        logger.debug("Address objects: cache hit for %s (%d objects)", key, len(cached[0]))
+        return cached[0]
+
+    if location_type == "device-group":
+        xpath = (
+            f"/config/devices/entry[@name='localhost.localdomain']"
+            f"/device-group/entry[@name='{location_name}']/address"
+        )
+    else:
+        xpath = "/config/shared/address"
+
+    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+    objects: dict = {}
+    try:
+        async with session.get(url, ssl=ssl_context, timeout=30) as resp:
+            if resp.status == 200:
+                root = ET.fromstring(await resp.text())
+                objects = _parse_address_entries(root.findall('.//entry'))
+                logger.debug("Address objects: fetched %d from %s", len(objects), key)
+    except Exception as exc:
+        logger.debug("Failed to fetch address objects for %s: %s", key, exc)
+
+    _addr_obj_cache[key] = (objects, now)
+    return objects
+
+
+async def _fetch_address_groups_for_location(
+    session, panorama_url: str, api_key: str, ssl_context,
+    location_type: str, location_name: Optional[str],
+) -> list:
+    """Fetch all address group entries for one Panorama location. Returns list of dicts."""
+    if location_type == "device-group":
+        xpath = (
+            f"/config/devices/entry[@name='localhost.localdomain']"
+            f"/device-group/entry[@name='{location_name}']/address-group"
+        )
+    else:
+        xpath = "/config/shared/address-group"
+
+    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+    groups = []
+    try:
+        async with session.get(url, ssl=ssl_context, timeout=30) as resp:
+            if resp.status == 200:
+                root = ET.fromstring(await resp.text())
+                for entry in root.findall('.//entry'):
+                    gname = entry.get('name')
+                    if not gname:
+                        continue
+                    static = entry.find('static')
+                    members = [m.text for m in static.findall('member') if m.text] if static is not None else []
+                    groups.append({
+                        "name": gname,
+                        "members": members,
+                        "location_type": location_type,
+                        "location_name": location_name,
+                    })
+    except Exception as exc:
+        logger.debug("Failed to fetch address groups for %s %s: %s", location_type, location_name, exc)
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -305,326 +441,133 @@ async def query_panorama_ip_object_group(
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Step 1: Query address objects to find ones containing this IP
-            # Build list of locations to search
+            # Step 1: Build locations list, then fetch all address objects in parallel
             locations = []
-
-            # If device_group is specified, only search that device group
             if device_group:
                 locations.append(("device-group", device_group))
             else:
-                # If no device_group specified, search shared AND all device groups
                 locations.append(("shared", None))
+                dg_names = await _get_device_groups_cached(session, panorama_url, api_key, ssl_context)
+                for dg_name in dg_names:
+                    locations.append(("device-group", dg_name))
+                logger.debug("Searching %d location(s): shared + %d device group(s)", len(locations), len(dg_names))
 
-                # Get list of all device groups to search
-                logger.debug(f"Starting device group discovery (device_group=None, will search all groups)")
-                try:
-                    # Device groups are under /config/devices/entry[@name='localhost.localdomain']/device-group/entry
-                    # First, try to get the device groups from the correct location
-                    dg_list_url = f"{panorama_url}/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry&key={api_key}"
-                    logger.debug(f"Querying device groups list from: {dg_list_url[:200]}...")
-                    async with session.get(dg_list_url, ssl=ssl_context, timeout=15) as dg_response:
-                        logger.debug(f"Device groups list response status: {dg_response.status}")
-                        if dg_response.status == 200:
-                            dg_xml = await dg_response.text()
-                            logger.debug(f"Device groups XML response length: {len(dg_xml)}")
-                            logger.debug(f"Device groups XML (first 500 chars): {dg_xml[:500]}")
-                            try:
-                                dg_root = ET.fromstring(dg_xml)
-                                dg_entries = dg_root.findall('.//entry')
-                                logger.debug(f"Found {len(dg_entries)} device group entries in XML")
-                                for dg_entry in dg_entries:
-                                    dg_name = dg_entry.get('name')
-                                    if dg_name:
-                                        locations.append(("device-group", dg_name))
-                                        logger.debug(f"Added device group '{dg_name}' to search locations")
-                                    else:
-                                        logger.debug(f"Device group entry found but no 'name' attribute")
-                                logger.debug(f"Total locations to search after device group discovery: {len(locations)}")
-                            except ET.ParseError as e:
-                                logger.debug(f"Error parsing device groups list XML: {e}")
-                                import traceback
-                                logger.debug(f"Parse error traceback: {traceback.format_exc()}")
-                        else:
-                            error_text = await dg_response.text()
-                            logger.debug(f"Failed to get device groups list, status: {dg_response.status}, response: {error_text[:500]}")
-                except Exception as e:
-                    logger.debug(f"Error getting device groups list: {str(e)}")
-                    import traceback
-                    logger.debug(f"Device group discovery exception traceback: {traceback.format_exc()}")
-                    # Continue with just shared if we can't get device groups
+            # Parallel fetch of address objects for all locations
+            addr_obj_results = await asyncio.gather(
+                *[_get_address_objects_cached(session, panorama_url, api_key, ssl_context, lt, ln)
+                  for lt, ln in locations],
+                return_exceptions=True,
+            )
 
+            # Build location->(objects dict) map and filter by queried IP
+            location_objects: Dict[tuple, Dict] = {}
             matching_address_objects = []
+            for (lt, ln), obj_result in zip(locations, addr_obj_results):
+                if isinstance(obj_result, Exception):
+                    logger.debug("Error fetching address objects for %s %s: %s", lt, ln, obj_result)
+                    continue
+                location_objects[(lt, ln)] = obj_result
 
-            for location_type, location_name in locations:
-                try:
-                    # Build XPath for address objects
-                    if location_type == "device-group":
-                        xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{location_name}']/address"
-                    else:  # shared
-                        xpath = "/config/shared/address"
+                for obj_name, details in obj_result.items():
+                    obj_type = details.get("type")
+                    obj_value = details.get("value")
+                    if not obj_type or not obj_value:
+                        continue
 
-                    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
-                    logger.debug(f"Querying address objects from {location_type}: {url[:200]}...")
+                    matches = False
+                    logger.debug("Checking '%s' (%s: %s) in %s %s", obj_name, obj_type, obj_value, lt, ln or "shared")
+                    try:
+                        if obj_type == "ip-netmask":
+                            if '/' in obj_value:
+                                obj_network = ipaddress.ip_network(obj_value, strict=False)
+                                if is_cidr:
+                                    matches = (query_network == obj_network) or query_network.overlaps(obj_network)
+                                    logger.debug("CIDR vs CIDR: query=%s obj=%s match=%s", query_network, obj_network, matches)
+                                else:
+                                    matches = query_ip in obj_network
+                                    logger.debug("IP in CIDR: %s in %s = %s", query_ip, obj_network, matches)
+                            else:
+                                obj_ip = ipaddress.ip_address(obj_value)
+                                if is_cidr:
+                                    matches = obj_ip in query_network
+                                    logger.debug("CIDR contains IP: %s in %s = %s", obj_ip, query_network, matches)
+                                else:
+                                    matches = (query_ip == obj_ip)
+                                    logger.debug("IP vs IP: %s == %s = %s", query_ip, obj_ip, matches)
+                        elif obj_type == "ip-range":
+                            if '-' in obj_value:
+                                start_str, end_str = obj_value.split('-', 1)
+                                start = ipaddress.ip_address(start_str.strip())
+                                end = ipaddress.ip_address(end_str.strip())
+                                matches = start <= query_ip <= end
+                                logger.debug("IP in range %s-%s = %s", start, end, matches)
+                        # fqdn never matches an IP directly
+                    except (ValueError, ipaddress.AddressValueError) as exc:
+                        logger.debug("Comparison error for %s: %s", obj_name, exc)
 
-                    async with session.get(url, ssl=ssl_context, timeout=30) as response:
-                        if response.status == 200:
-                            xml_text = await response.text()
-                            logger.debug(f"Address objects XML response length: {len(xml_text)}")
-
-                            try:
-                                root = ET.fromstring(xml_text)
-                                # Find all address entries
-                                entries = root.findall('.//entry')
-                                logger.debug(f"Found {len(entries)} address objects in {location_type} {location_name or 'shared'}")
-
-                                for entry in entries:
-                                    obj_name = entry.get('name')
-                                    if not obj_name:
-                                        continue
-
-                                    logger.debug(f"Checking address object '{obj_name}' in {location_type} {location_name or 'shared'}")
-
-                                    # Check different IP formats in the address object
-                                    # Check for ip-netmask, ip-range, fqdn, etc.
-                                    ip_netmask = entry.find('ip-netmask')
-                                    ip_range = entry.find('ip-range')
-                                    fqdn = entry.find('fqdn')
-
-                                    matches = False
-                                    obj_type = None
-                                    obj_value = None
-
-                                    # Debug: print what we found in the entry
-                                    if ip_netmask is not None:
-                                        logger.debug(f"Object '{obj_name}' has ip-netmask: {ip_netmask.text}")
-                                    if ip_range is not None:
-                                        logger.debug(f"Object '{obj_name}' has ip-range: {ip_range.text}")
-                                    if fqdn is not None:
-                                        logger.debug(f"Object '{obj_name}' has fqdn: {fqdn.text}")
-
-                                    if ip_netmask is not None and ip_netmask.text:
-                                        # Check if IP matches the netmask/CIDR
-                                        obj_value = ip_netmask.text.strip()
-                                        obj_type = "ip-netmask"
-                                        try:
-                                            if '/' in obj_value:
-                                                # CIDR notation in object - check if query IP/network overlaps
-                                                obj_network = ipaddress.ip_network(obj_value, strict=False)
-                                                logger.debug(f"Comparing query {ip_address} (is_cidr={is_cidr}) with object {obj_name} value {obj_value}")
-                                                if is_cidr:
-                                                    # Both are CIDR - check if networks are the same
-                                                    # For exact match, compare the normalized networks
-                                                    # ip_network() automatically normalizes, so direct comparison should work
-                                                    matches = (query_network == obj_network)
-                                                    if not matches:
-                                                        # Also check if they overlap (one contains the other)
-                                                        matches = query_network.overlaps(obj_network)
-                                                    logger.debug(f"CIDR vs CIDR: query_net={query_network} (normalized), obj_net={obj_network} (normalized), exact_match={query_network == obj_network}, overlaps={query_network.overlaps(obj_network) if query_network != obj_network else False}, final_matches={matches}")
-                                                else:
-                                                    # Query is single IP, object is CIDR - check if IP is in network
-                                                    matches = query_ip in obj_network
-                                                    logger.debug(f"Single IP in CIDR: query_ip={query_ip}, obj_net={obj_network}, matches={matches}")
-                                            else:
-                                                # Single IP in object
-                                                obj_ip = ipaddress.ip_address(obj_value)
-                                                if is_cidr:
-                                                    # Query is CIDR, object is single IP - check if IP is in query network
-                                                    matches = obj_ip in query_network
-                                                    logger.debug(f"CIDR contains IP: query_net={query_network}, obj_ip={obj_ip}, matches={matches}")
-                                                else:
-                                                    # Both are single IPs - compare directly
-                                                    matches = (query_ip == obj_ip)
-                                                    logger.debug(f"IP vs IP: query_ip={query_ip}, obj_ip={obj_ip}, matches={matches}")
-                                        except (ValueError, ipaddress.AddressValueError) as e:
-                                            matches = False
-                                            logger.debug(f"Error comparing {ip_address} with {obj_value}: {e}")
-
-                                    elif ip_range is not None and ip_range.text:
-                                        obj_value = ip_range.text
-                                        obj_type = "ip-range"
-                                        # Check if IP is in range (format: "start-end")
-                                        if '-' in obj_value:
-                                            try:
-                                                start_ip, end_ip = obj_value.split('-', 1)
-                                                start = ipaddress.ip_address(start_ip.strip())
-                                                end = ipaddress.ip_address(end_ip.strip())
-                                                if is_cidr:
-                                                    # Query is CIDR - check if any IP in the network is in range
-                                                    # Simple check: if network address is in range
-                                                    matches = (start <= query_ip <= end)
-                                                else:
-                                                    # Query is single IP - check if it's between start and end
-                                                    matches = (start <= query_ip <= end)
-                                            except (ValueError, ipaddress.AddressValueError):
-                                                matches = False
-                                        else:
-                                            matches = False
-
-                                    elif fqdn is not None and fqdn.text:
-                                        obj_type = "fqdn"
-                                        obj_value = fqdn.text
-                                        # FQDN doesn't match IP directly
-                                        matches = False
-
-                                    if matches:
-                                        matching_address_objects.append({
-                                            "name": obj_name,
-                                            "type": obj_type,
-                                            "value": obj_value,
-                                            "location": location_type,
-                                            "device_group": location_name if location_type == "device-group" else None
-                                        })
-                                        logger.debug(f"\u2713 MATCH FOUND! Address object: {obj_name} ({obj_type}: {obj_value}) in {location_type} {location_name or 'shared'}")
-                                    else:
-                                        logger.debug(f"\u2717 No match for object '{obj_name}' (value: {obj_value or 'N/A'})")
-
-                            except ET.ParseError as e:
-                                logger.debug(f"Error parsing address objects XML: {e}")
-                        else:
-                            logger.debug(f"Address objects query failed with status {response.status}")
-
-                except Exception as e:
-                    logger.debug(f"Error querying address objects from {location_type}: {str(e)}")
+                    if matches:
+                        matching_address_objects.append({
+                            "name": obj_name,
+                            "type": obj_type,
+                            "value": obj_value,
+                            "location": lt,
+                            "device_group": ln if lt == "device-group" else None,
+                        })
+                        logger.debug("✓ MATCH: %s (%s: %s) in %s %s", obj_name, obj_type, obj_value, lt, ln or "shared")
 
             result["address_objects"] = matching_address_objects
+            logger.debug("Found %d matching address object(s) across %d location(s)", len(matching_address_objects), len(locations))
 
-            logger.debug(f"Finished searching address objects. Found {len(matching_address_objects)} matching objects.")
+            # Step 2: Fetch all address groups in parallel, resolve member details from cache (no N+1)
+            # Only query locations that have matching address objects (reduces traffic)
+            relevant_locations = (
+                list({(ao["location"], ao["device_group"]) for ao in matching_address_objects})
+                if matching_address_objects else locations
+            )
+            addr_grp_results = await asyncio.gather(
+                *[_fetch_address_groups_for_location(session, panorama_url, api_key, ssl_context, lt, ln)
+                  for lt, ln in relevant_locations],
+                return_exceptions=True,
+            )
 
-            # Step 2: Query address groups to find ones containing the matching address objects
-            for location_type, location_name in locations:
-                try:
-                    # Build XPath for address groups
-                    if location_type == "device-group":
-                        xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{location_name}']/address-group"
-                    else:  # shared
-                        xpath = "/config/shared/address-group"
+            matching_obj_names = {ao["name"] for ao in matching_address_objects}
+            for (lt, ln), grp_result in zip(relevant_locations, addr_grp_results):
+                if isinstance(grp_result, Exception):
+                    logger.debug("Error fetching address groups for %s %s: %s", lt, ln, grp_result)
+                    continue
+                loc_objs = location_objects.get((lt, ln), {})
+                logger.debug("Found %d address groups in %s %s", len(grp_result), lt, ln or "shared")
 
-                    url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
-                    logger.debug(f"Querying address groups from {location_type}: {url[:200]}...")
+                for grp in grp_result:
+                    gname = grp["name"]
+                    member_names = grp["members"]
 
-                    async with session.get(url, ssl=ssl_context, timeout=30) as response:
-                        if response.status == 200:
-                            xml_text = await response.text()
+                    # Check if any matching address object is a member of this group
+                    matching_member = next((m for m in member_names if m in matching_obj_names), None)
+                    if matching_member is None:
+                        continue
 
-                            try:
-                                root = ET.fromstring(xml_text)
-                                entries = root.findall('.//entry')
+                    # Resolve member details from cached address objects — no per-member HTTP call
+                    group_members = []
+                    for member_name in member_names:
+                        det = loc_objs.get(member_name, {})
+                        group_members.append({
+                            "name": member_name,
+                            "type": det.get("type"),
+                            "value": det.get("value"),
+                            "location": lt,
+                            "device_group": ln if lt == "device-group" else None,
+                        })
+                        logger.debug("✓ Member '%s': %s=%s", member_name, det.get("type"), det.get("value"))
 
-                                for entry in entries:
-                                    group_name = entry.get('name')
-                                    if not group_name:
-                                        continue
-
-                                    # Get static members (address objects in the group)
-                                    static = entry.find('static')
-                                    if static is not None:
-                                        members = static.findall('member')
-                                        member_names = [m.text for m in members if m.text]
-
-                                        # Check if any matching address object is in this group
-                                        for addr_obj in matching_address_objects:
-                                            if addr_obj["name"] in member_names:
-                                                # Found a matching group - now get all members with their IP values
-                                                group_members = []
-
-                                                # Query each member address object to get its IP value
-                                                for member_name in member_names:
-                                                    try:
-                                                        # Build XPath for the address object
-                                                        if location_type == "device-group":
-                                                            obj_xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{location_name}']/address/entry[@name='{member_name}']"
-                                                        else:  # shared
-                                                            obj_xpath = f"/config/shared/address/entry[@name='{member_name}']"
-
-                                                        obj_url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(obj_xpath)}&key={api_key}"
-                                                        logger.debug(f"Querying address object '{member_name}' from {location_type} for group '{group_name}': {obj_url[:200]}...")
-
-                                                        async with session.get(obj_url, ssl=ssl_context, timeout=30) as obj_response:
-                                                            if obj_response.status == 200:
-                                                                obj_xml = await obj_response.text()
-
-                                                                try:
-                                                                    obj_root = ET.fromstring(obj_xml)
-                                                                    obj_entry = obj_root.find('.//entry')
-
-                                                                    if obj_entry is not None:
-                                                                        # Extract IP value from different possible formats
-                                                                        ip_netmask = obj_entry.find('ip-netmask')
-                                                                        ip_range = obj_entry.find('ip-range')
-                                                                        fqdn = obj_entry.find('fqdn')
-
-                                                                        obj_type = None
-                                                                        obj_value = None
-
-                                                                        if ip_netmask is not None and ip_netmask.text:
-                                                                            obj_type = "ip-netmask"
-                                                                            obj_value = ip_netmask.text.strip()
-                                                                        elif ip_range is not None and ip_range.text:
-                                                                            obj_type = "ip-range"
-                                                                            obj_value = ip_range.text.strip()
-                                                                        elif fqdn is not None and fqdn.text:
-                                                                            obj_type = "fqdn"
-                                                                            obj_value = fqdn.text.strip()
-
-                                                                        group_members.append({
-                                                                            "name": member_name,
-                                                                            "type": obj_type,
-                                                                            "value": obj_value,
-                                                                            "location": location_type,
-                                                                            "device_group": location_name if location_type == "device-group" else None
-                                                                        })
-                                                                        logger.debug(f"\u2713 Found address object '{member_name}' in group '{group_name}': {obj_type}={obj_value}")
-
-                                                                except ET.ParseError as e:
-                                                                    logger.debug(f"Error parsing address object '{member_name}' XML: {e}")
-                                                                    # Still add the member name even if we can't get the value
-                                                                    group_members.append({
-                                                                        "name": member_name,
-                                                                        "type": "unknown",
-                                                                        "value": None,
-                                                                        "location": location_type,
-                                                                        "device_group": location_name if location_type == "device-group" else None
-                                                                    })
-                                                            else:
-                                                                logger.debug(f"Address object '{member_name}' query failed with status {obj_response.status}")
-                                                                # Still add the member name even if we can't get the value
-                                                                group_members.append({
-                                                                    "name": member_name,
-                                                                    "type": "unknown",
-                                                                    "value": None,
-                                                                    "location": location_type,
-                                                                    "device_group": location_name if location_type == "device-group" else None
-                                                                })
-
-                                                    except Exception as e:
-                                                        logger.debug(f"Error querying address object '{member_name}': {str(e)}")
-                                                        # Still add the member name even if we can't get the value
-                                                        group_members.append({
-                                                            "name": member_name,
-                                                            "type": "unknown",
-                                                            "value": None,
-                                                            "location": location_type,
-                                                            "device_group": location_name if location_type == "device-group" else None
-                                                        })
-
-                                                result["address_groups"].append({
-                                                    "name": group_name,
-                                                    "location": location_type,
-                                                    "device_group": location_name if location_type == "device-group" else None,
-                                                    "contains_address_object": addr_obj["name"],
-                                                    "members": group_members  # Include all members with their IP values
-                                                })
-                                                logger.debug(f"Found address group '{group_name}' containing address object '{addr_obj['name']}' with {len(group_members)} total members")
-                                                break
-
-                            except ET.ParseError as e:
-                                logger.debug(f"Error parsing address groups XML: {e}")
-                        else:
-                            logger.debug(f"Address groups query failed with status {response.status}")
-
-                except Exception as e:
-                    logger.debug(f"Error querying address groups from {location_type}: {str(e)}")
+                    result["address_groups"].append({
+                        "name": gname,
+                        "location": lt,
+                        "device_group": ln if lt == "device-group" else None,
+                        "contains_address_object": matching_member,
+                        "members": group_members,
+                    })
+                    logger.debug("Found address group '%s' containing '%s' with %d members", gname, matching_member, len(group_members))
 
             # Step 3: Query policies (security and NAT) that use the found address groups AND address objects
             result["policies"] = []
@@ -788,136 +731,136 @@ async def query_panorama_ip_object_group(
                             else:  # shared
                                 nat_xpath = f"/config/shared/{rulebase}/nat/rules/entry"
 
-                        nat_url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(nat_xpath)}&key={api_key}"
-                        logger.debug(f"Querying NAT policies from {location_type}: {nat_url[:200]}...")
+                            nat_url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(nat_xpath)}&key={api_key}"
+                            logger.debug(f"Querying NAT policies from {location_type} {rulebase}: {nat_url[:200]}...")
 
-                        async with session.get(nat_url, ssl=ssl_context, timeout=30) as nat_response:
-                            if nat_response.status == 200:
-                                nat_xml = await nat_response.text()
-                                try:
-                                    nat_root = ET.fromstring(nat_xml)
-                                    nat_entries = nat_root.findall('.//entry')
+                            async with session.get(nat_url, ssl=ssl_context, timeout=30) as nat_response:
+                                if nat_response.status == 200:
+                                    nat_xml = await nat_response.text()
+                                    try:
+                                        nat_root = ET.fromstring(nat_xml)
+                                        nat_entries = nat_root.findall('.//entry')
 
-                                    for entry in nat_entries:
-                                        rule_name = entry.get('name')
-                                        if not rule_name:
-                                            continue
+                                        for entry in nat_entries:
+                                            rule_name = entry.get('name')
+                                            if not rule_name:
+                                                continue
 
-                                        # Check source-translation and destination-translation for address group references
-                                        source_translation = entry.find('source-translation')
-                                        destination_translation = entry.find('destination-translation')
+                                            # Check source-translation and destination-translation for address group references
+                                            source_translation = entry.find('source-translation')
+                                            destination_translation = entry.find('destination-translation')
 
-                                        # Also check source and destination
-                                        source = entry.find('source')
-                                        destination = entry.find('destination')
+                                            # Also check source and destination
+                                            source = entry.find('source')
+                                            destination = entry.find('destination')
 
-                                        # Get source and destination members for checking
-                                        source_members_list = source.findall('member') if source is not None else []
-                                        dest_members_list = destination.findall('member') if destination is not None else []
-                                        source_members = [m.text for m in source_members_list if m.text]
-                                        dest_members = [m.text for m in dest_members_list if m.text]
+                                            # Get source and destination members for checking
+                                            source_members_list = source.findall('member') if source is not None else []
+                                            dest_members_list = destination.findall('member') if destination is not None else []
+                                            source_members = [m.text for m in source_members_list if m.text]
+                                            dest_members = [m.text for m in dest_members_list if m.text]
 
-                                        # Check if any of our address groups or objects are referenced
-                                        matched_groups = []
-                                        matched_objects = []
-                                        nat_type = None
+                                            # Check if any of our address groups or objects are referenced
+                                            matched_groups = []
+                                            matched_objects = []
+                                            nat_type = None
 
-                                        # Check source for groups and objects
-                                        if source is not None:
-                                            for group_name in group_info.keys():
-                                                if any(m == group_name for m in source_members):
-                                                    matched_groups.append(group_name)
-                                                    nat_type = "source" if nat_type is None else f"{nat_type}/source"
-
-                                            for obj_name in addr_object_info.keys():
-                                                if any(m == obj_name for m in source_members):
-                                                    matched_objects.append(obj_name)
-                                                    nat_type = "source" if nat_type is None else f"{nat_type}/source"
-
-                                        # Check destination for groups and objects
-                                        if destination is not None:
-                                            for group_name in group_info.keys():
-                                                if any(m == group_name for m in dest_members):
-                                                    if group_name not in matched_groups:
+                                            # Check source for groups and objects
+                                            if source is not None:
+                                                for group_name in group_info.keys():
+                                                    if any(m == group_name for m in source_members):
                                                         matched_groups.append(group_name)
-                                                    nat_type = "destination" if nat_type is None else f"{nat_type}/destination"
+                                                        nat_type = "source" if nat_type is None else f"{nat_type}/source"
 
-                                            for obj_name in addr_object_info.keys():
-                                                if any(m == obj_name for m in dest_members):
-                                                    if obj_name not in matched_objects:
+                                                for obj_name in addr_object_info.keys():
+                                                    if any(m == obj_name for m in source_members):
                                                         matched_objects.append(obj_name)
-                                                    nat_type = "destination" if nat_type is None else f"{nat_type}/destination"
+                                                        nat_type = "source" if nat_type is None else f"{nat_type}/source"
 
-                                        # Check source-translation (for groups only, as objects are typically not in translation)
-                                        if source_translation is not None:
-                                            static_ip = source_translation.find('static-ip')
-                                            if static_ip is not None:
-                                                translated_addr = static_ip.find('translated-address')
-                                                if translated_addr is not None:
-                                                    for group_name in group_info.keys():
-                                                        if translated_addr.text == group_name:
-                                                            if group_name not in matched_groups:
-                                                                matched_groups.append(group_name)
-                                                            nat_type = "source-translation" if nat_type is None else f"{nat_type}/source-translation"
+                                            # Check destination for groups and objects
+                                            if destination is not None:
+                                                for group_name in group_info.keys():
+                                                    if any(m == group_name for m in dest_members):
+                                                        if group_name not in matched_groups:
+                                                            matched_groups.append(group_name)
+                                                        nat_type = "destination" if nat_type is None else f"{nat_type}/destination"
 
-                                        # Check destination-translation (for groups only)
-                                        if destination_translation is not None:
-                                            static_ip = destination_translation.find('static-ip')
-                                            if static_ip is not None:
-                                                translated_addr = static_ip.find('translated-address')
-                                                if translated_addr is not None:
-                                                    for group_name in group_info.keys():
-                                                        if translated_addr.text == group_name:
-                                                            if group_name not in matched_groups:
-                                                                matched_groups.append(group_name)
-                                                            nat_type = "destination-translation" if nat_type is None else f"{nat_type}/destination-translation"
+                                                for obj_name in addr_object_info.keys():
+                                                    if any(m == obj_name for m in dest_members):
+                                                        if obj_name not in matched_objects:
+                                                            matched_objects.append(obj_name)
+                                                        nat_type = "destination" if nat_type is None else f"{nat_type}/destination"
 
-                                        # If we found any matches (groups or objects), add the policy
-                                        if matched_groups or matched_objects:
-                                            # Get service
-                                            service_elem = entry.find('service')
-                                            services = [s.text for s in service_elem.findall('member')] if service_elem is not None else []
+                                            # Check source-translation (for groups only)
+                                            if source_translation is not None:
+                                                static_ip = source_translation.find('static-ip')
+                                                if static_ip is not None:
+                                                    translated_addr = static_ip.find('translated-address')
+                                                    if translated_addr is not None:
+                                                        for group_name in group_info.keys():
+                                                            if translated_addr.text == group_name:
+                                                                if group_name not in matched_groups:
+                                                                    matched_groups.append(group_name)
+                                                                nat_type = "source-translation" if nat_type is None else f"{nat_type}/source-translation"
 
-                                            policy_key = f"{location_type}:{location_name or 'shared'}:{rule_name}:{rulebase}"
-                                            if policy_key not in policies_by_group:
-                                                policies_by_group[policy_key] = {
-                                                    "name": rule_name,
-                                                    "type": "nat",
-                                                    "rulebase": rulebase,  # Track if it's pre or post
-                                                    "location": location_type,
-                                                    "device_group": location_name if location_type == "device-group" else None,
-                                                    "nat_type": nat_type,
-                                                    "source": source_members,
-                                                    "destination": dest_members,
-                                                    "services": services,
-                                                    "address_groups": [],
-                                                    "address_objects": []
-                                                }
+                                            # Check destination-translation (for groups only)
+                                            if destination_translation is not None:
+                                                static_ip = destination_translation.find('static-ip')
+                                                if static_ip is not None:
+                                                    translated_addr = static_ip.find('translated-address')
+                                                    if translated_addr is not None:
+                                                        for group_name in group_info.keys():
+                                                            if translated_addr.text == group_name:
+                                                                if group_name not in matched_groups:
+                                                                    matched_groups.append(group_name)
+                                                                nat_type = "destination-translation" if nat_type is None else f"{nat_type}/destination-translation"
 
-                                            # Add matched groups
-                                            for group_name in matched_groups:
-                                                if group_name not in policies_by_group[policy_key]["address_groups"]:
-                                                    policies_by_group[policy_key]["address_groups"].append(group_name)
+                                            # If we found any matches (groups or objects), add the policy
+                                            if matched_groups or matched_objects:
+                                                # Get service
+                                                service_elem = entry.find('service')
+                                                services = [s.text for s in service_elem.findall('member')] if service_elem is not None else []
 
-                                            # Add matched objects
-                                            for obj_name in matched_objects:
-                                                if obj_name not in policies_by_group[policy_key]["address_objects"]:
-                                                    policies_by_group[policy_key]["address_objects"].append(obj_name)
+                                                policy_key = f"{location_type}:{location_name or 'shared'}:{rule_name}:{rulebase}"
+                                                if policy_key not in policies_by_group:
+                                                    policies_by_group[policy_key] = {
+                                                        "name": rule_name,
+                                                        "type": "nat",
+                                                        "rulebase": rulebase,
+                                                        "location": location_type,
+                                                        "device_group": location_name if location_type == "device-group" else None,
+                                                        "nat_type": nat_type,
+                                                        "source": source_members,
+                                                        "destination": dest_members,
+                                                        "services": services,
+                                                        "address_groups": [],
+                                                        "address_objects": []
+                                                    }
 
-                                            match_desc = []
-                                            if matched_groups:
-                                                match_desc.append(f"address groups: {', '.join(matched_groups)}")
-                                            if matched_objects:
-                                                match_desc.append(f"address objects: {', '.join(matched_objects)}")
+                                                # Add matched groups
+                                                for group_name in matched_groups:
+                                                    if group_name not in policies_by_group[policy_key]["address_groups"]:
+                                                        policies_by_group[policy_key]["address_groups"].append(group_name)
 
-                                            logger.debug(f"Found NAT policy '{rule_name}' ({rulebase}) using {', '.join(match_desc)} in {location_type} {location_name or 'shared'}")
+                                                # Add matched objects
+                                                for obj_name in matched_objects:
+                                                    if obj_name not in policies_by_group[policy_key]["address_objects"]:
+                                                        policies_by_group[policy_key]["address_objects"].append(obj_name)
 
-                                except ET.ParseError as e:
-                                    logger.debug(f"Error parsing NAT policies XML from {rulebase}: {e}")
-                            elif nat_response.status == 404:
-                                logger.debug(f"No NAT policies found in {rulebase} for {location_type} {location_name or 'shared'} (404)")
-                            else:
-                                logger.debug(f"NAT policies query failed with status {nat_response.status} for {rulebase}")
+                                                match_desc = []
+                                                if matched_groups:
+                                                    match_desc.append(f"address groups: {', '.join(matched_groups)}")
+                                                if matched_objects:
+                                                    match_desc.append(f"address objects: {', '.join(matched_objects)}")
+
+                                                logger.debug(f"Found NAT policy '{rule_name}' ({rulebase}) using {', '.join(match_desc)} in {location_type} {location_name or 'shared'}")
+
+                                    except ET.ParseError as e:
+                                        logger.debug(f"Error parsing NAT policies XML from {rulebase}: {e}")
+                                elif nat_response.status == 404:
+                                    logger.debug(f"No NAT policies found in {rulebase} for {location_type} {location_name or 'shared'} (404)")
+                                else:
+                                    logger.debug(f"NAT policies query failed with status {nat_response.status} for {rulebase}")
 
                     except Exception as e:
                         logger.debug(f"Error querying policies from {location_type}: {str(e)}")
@@ -1092,27 +1035,10 @@ async def query_panorama_address_group_members(
             else:
                 # If no device_group specified, search shared AND all device groups
                 locations.append(("shared", None))
-
-                # Get list of all device groups to search
-                logger.debug(f"Starting device group discovery (device_group=None, will search all groups)")
-                try:
-                    dg_list_url = f"{panorama_url}/api/?type=config&action=get&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry&key={api_key}"
-                    logger.debug(f"Querying device groups list from: {dg_list_url[:200]}...")
-                    async with session.get(dg_list_url, ssl=ssl_context, timeout=15) as dg_response:
-                        if dg_response.status == 200:
-                            dg_xml = await dg_response.text()
-                            try:
-                                dg_root = ET.fromstring(dg_xml)
-                                dg_entries = dg_root.findall('.//entry')
-                                for dg_entry in dg_entries:
-                                    dg_name = dg_entry.get('name')
-                                    if dg_name:
-                                        locations.append(("device-group", dg_name))
-                                        logger.debug(f"Added device group '{dg_name}' to search locations")
-                            except ET.ParseError as e:
-                                logger.debug(f"Error parsing device groups list XML: {e}")
-                except Exception as e:
-                    logger.debug(f"Error getting device groups list: {str(e)}")
+                dg_names = await _get_device_groups_cached(session, panorama_url, api_key, ssl_context)
+                for dg_name in dg_names:
+                    locations.append(("device-group", dg_name))
+                logger.debug("Searching %d location(s): shared + %d device group(s)", len(locations), len(dg_names))
 
             # Search for the address group
             found_group = None
@@ -1169,85 +1095,20 @@ async def query_panorama_address_group_members(
                 member_names = [m.text for m in members if m.text]
                 logger.debug(f"Address group '{address_group_name}' has {len(member_names)} members: {member_names}")
 
-                # Now query each address object to get its IP value
+                # Resolve member details from cache — no per-member HTTP call (eliminates N+1)
+                loc_objs = await _get_address_objects_cached(
+                    session, panorama_url, api_key, ssl_context, group_location, group_device_group
+                )
                 for member_name in member_names:
-                    try:
-                        # Build XPath for the address object
-                        if group_location == "device-group":
-                            obj_xpath = f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{group_device_group}']/address/entry[@name='{member_name}']"
-                        else:  # shared
-                            obj_xpath = f"/config/shared/address/entry[@name='{member_name}']"
-
-                        obj_url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(obj_xpath)}&key={api_key}"
-                        logger.debug(f"Querying address object '{member_name}' from {group_location}: {obj_url[:200]}...")
-
-                        async with session.get(obj_url, ssl=ssl_context, timeout=30) as obj_response:
-                            if obj_response.status == 200:
-                                obj_xml = await obj_response.text()
-
-                                try:
-                                    obj_root = ET.fromstring(obj_xml)
-                                    obj_entry = obj_root.find('.//entry')
-
-                                    if obj_entry is not None:
-                                        # Extract IP value from different possible formats
-                                        ip_netmask = obj_entry.find('ip-netmask')
-                                        ip_range = obj_entry.find('ip-range')
-                                        fqdn = obj_entry.find('fqdn')
-
-                                        obj_type = None
-                                        obj_value = None
-
-                                        if ip_netmask is not None and ip_netmask.text:
-                                            obj_type = "ip-netmask"
-                                            obj_value = ip_netmask.text.strip()
-                                        elif ip_range is not None and ip_range.text:
-                                            obj_type = "ip-range"
-                                            obj_value = ip_range.text.strip()
-                                        elif fqdn is not None and fqdn.text:
-                                            obj_type = "fqdn"
-                                            obj_value = fqdn.text.strip()
-
-                                        result["members"].append({
-                                            "name": member_name,
-                                            "type": obj_type,
-                                            "value": obj_value,
-                                            "location": group_location,
-                                            "device_group": group_device_group
-                                        })
-                                        logger.debug(f"\u2713 Found address object '{member_name}': {obj_type}={obj_value}")
-
-                                except ET.ParseError as e:
-                                    logger.debug(f"Error parsing address object '{member_name}' XML: {e}")
-                                    # Still add the member name even if we can't get the value
-                                    result["members"].append({
-                                        "name": member_name,
-                                        "type": "unknown",
-                                        "value": None,
-                                        "location": group_location,
-                                        "device_group": group_device_group
-                                    })
-                            else:
-                                logger.debug(f"Address object '{member_name}' query failed with status {obj_response.status}")
-                                # Still add the member name even if we can't get the value
-                                result["members"].append({
-                                    "name": member_name,
-                                    "type": "unknown",
-                                    "value": None,
-                                    "location": group_location,
-                                    "device_group": group_device_group
-                                })
-
-                    except Exception as e:
-                        logger.debug(f"Error querying address object '{member_name}': {str(e)}")
-                        # Still add the member name even if we can't get the value
-                        result["members"].append({
-                            "name": member_name,
-                            "type": "unknown",
-                            "value": None,
-                            "location": group_location,
-                            "device_group": group_device_group
-                        })
+                    det = loc_objs.get(member_name, {})
+                    result["members"].append({
+                        "name": member_name,
+                        "type": det.get("type"),
+                        "value": det.get("value"),
+                        "location": group_location,
+                        "device_group": group_device_group,
+                    })
+                    logger.debug("✓ Member '%s': %s=%s", member_name, det.get("type"), det.get("value"))
             else:
                 logger.debug(f"Address group '{address_group_name}' has no static members")
 
