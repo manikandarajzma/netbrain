@@ -3,7 +3,7 @@ import { fetchMe } from '../utils/api.js'
 
 export const useUserStore = create((set) => ({
   username: '',
-  role: '',
+  group: '',
   allowedCategories: null,
   isAuthenticated: false,
   loading: true,
@@ -14,7 +14,7 @@ export const useUserStore = create((set) => ({
       const data = await fetchMe()
       set({
         username: data.username || '',
-        role: data.role || '',
+        group: data.group || '',
         allowedCategories: data.allowed_categories,
         isAuthenticated: true,
         loading: false,

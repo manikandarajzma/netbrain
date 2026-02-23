@@ -5,7 +5,7 @@ import styles from './AppHeader.module.css'
 
 export default function AppHeader() {
   const displayName = useUserStore(s => s.displayName)
-  const role = useUserStore(s => s.role)
+  const group = useUserStore(s => s.group)
   const { theme, toggleTheme } = useTheme()
   const { status, label, tooltip } = useHealth()
 
@@ -19,7 +19,7 @@ export default function AppHeader() {
       <div className={styles.headerRight}>
         <span className={styles.userInfo}>
           {displayName()}
-          <span className={styles.userRole}>{role}</span>
+          <span className={styles.userRole}>{group}</span>
         </span>
         <button
           className={styles.themeToggle}

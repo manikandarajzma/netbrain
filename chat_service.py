@@ -263,12 +263,12 @@ def _check_tool_access(username: str | None, tool_name: str, session_id: str | N
     """Return an error message if the user's role forbids tool_name, else None."""
     if username is None:
         return None
-    from atlas.auth import get_role_for_session, get_user_role, get_allowed_tools
-    role = get_role_for_session(session_id) if session_id else get_user_role(username)
-    allowed = get_allowed_tools(role)
+    from atlas.auth import get_group_for_session, get_user_group, get_allowed_tools
+    group = get_group_for_session(session_id) if session_id else get_user_group(username)
+    allowed = get_allowed_tools(group)
     if allowed is not None and tool_name not in allowed:
         display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-        return f"Your role ({role}) does not have access to {display} queries."
+        return f"Your group ({group}) does not have access to {display} queries."
     return None
 
 

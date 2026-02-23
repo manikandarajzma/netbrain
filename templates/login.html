@@ -154,7 +154,7 @@
             <p class="error">Microsoft sign-in failed or OIDC is not configured. Please try again or contact your administrator.</p>
             {% endif %}
             {% if error_norole %}
-            <p class="error">Your account does not have an assigned role. Contact your administrator.</p>
+            <p class="error">Your account is not a member of an authorised group. Contact your administrator.</p>
             {% endif %}
 
             {% if oidc_configured %}

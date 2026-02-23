@@ -2,6 +2,7 @@
 Authentication for FastAPI app.
 Uses Microsoft Entra ID (OIDC) only. No local passwords; credentials are in Azure Key Vault.
 Sessions are stored in signed cookies (no server-side store), so they survive restarts and work across instances.
+Access is determined by group membership in the OIDC id_token's groups claim (group names: admin, netadmin).
 """
 import os
 import secrets
@@ -42,12 +43,12 @@ _SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or secrets.token_urlsa
 _session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
 
 # ---------------------------------------------------------------------------
-# Role-based access control
+# Group-based access control
 # ---------------------------------------------------------------------------
 
-# Maps role -> set of allowed MCP tool names.  None = all tools allowed.
+# Maps group -> set of allowed MCP tool names.  None = all tools allowed.
 # "guest" = no tools (used for unknown/invalid users; do not default to admin).
-ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
+GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
     "admin": None,
     "netadmin": {
         "query_network_path",
@@ -59,55 +60,40 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
     "guest": set(),  # least privilege: no tool access
 }
 
-# Maps role -> list of sidebar category slugs shown in the UI.  None = all.
-ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
+# Maps group -> list of sidebar category slugs shown in the UI.  None = all.
+GROUP_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
     "netadmin": ["atlas", "panorama"],
     "guest": [],
 }
 
-# ---------------------------------------------------------------------------
-# OIDC role resolution fallbacks (when Azure app roles aren't in the token)
-# ---------------------------------------------------------------------------
 
-# Azure security group -> role mapping (scalable):
-#    OIDC_GROUP_ROLE_MAP=<group-object-id>:netadmin,<group-object-id>:admin
-#    Requires: App Registration > Token configuration > Add groups claim
-OIDC_GROUP_ROLE_MAP: dict[str, str] = {}
-_oidc_group_map_env = os.getenv("OIDC_GROUP_ROLE_MAP", "")
-for _part in _oidc_group_map_env.strip().split(","):
-    _part = _part.strip()
-    if ":" in _part:
-        _gid, _role = _part.rsplit(":", 1)
-        OIDC_GROUP_ROLE_MAP[_gid.strip().lower()] = _role.strip().lower()
-
-
-def get_user_role(username: str) -> str:
-    """Return the role for *username*. With signed-cookie sessions there is no server-side store; use get_role_for_session(session_id) when you have the session. This returns 'guest' for any username."""
+def get_user_group(username: str) -> str:
+    """Return the group for *username*. With signed-cookie sessions there is no server-side store; use get_group_for_session(session_id) when you have the session. This returns 'guest' for any username."""
     return "guest"
 
 
-def get_allowed_tools(role: str) -> set[str] | None:
-    """Return the set of MCP tool names allowed for *role*, or None if all are allowed."""
-    return ROLE_ALLOWED_TOOLS.get(role)
+def get_allowed_tools(group: str) -> set[str] | None:
+    """Return the set of MCP tool names allowed for *group*, or None if all are allowed."""
+    return GROUP_ALLOWED_TOOLS.get(group)
 
 
-def get_allowed_categories(role: str) -> list[str] | None:
-    """Return the sidebar categories visible for *role*, or None if all are visible."""
-    return ROLE_ALLOWED_CATEGORIES.get(role)
+def get_allowed_categories(group: str) -> list[str] | None:
+    """Return the sidebar categories visible for *group*, or None if all are visible."""
+    return GROUP_ALLOWED_CATEGORIES.get(group)
 
 
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
 
-def create_session(username: str, *, role: str = "admin",
+def create_session(username: str, *, group: str = "admin",
                    auth_mode: str = "oidc",
                    tokens: dict | None = None) -> str:
     """Create a session; returns signed cookie value (no server-side store). tokens are not stored (signed cookie size limit)."""
     payload = {
         "username": username,
-        "role": role,
+        "group": group,
         "auth_mode": auth_mode,
         "created_at": time.time(),
     }
@@ -135,12 +121,12 @@ def get_username_for_session(session_id: Optional[str]) -> Optional[str]:
     return sess.get("username")
 
 
-def get_role_for_session(session_id: Optional[str]) -> str:
-    """Return role for session_id. Invalid/missing session returns 'guest' (no access)."""
+def get_group_for_session(session_id: Optional[str]) -> str:
+    """Return group for session_id. Invalid/missing session returns 'guest' (no access)."""
     sess = get_session(session_id)
     if sess is None:
         return "guest"
-    return sess.get("role", "guest")
+    return sess.get("group", "guest")
 
 
 def destroy_session(session_id: Optional[str]) -> None:
@@ -149,34 +135,47 @@ def destroy_session(session_id: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Group Object ID mapping (for cloud-only Entra ID groups)
+# ---------------------------------------------------------------------------
+# On-prem synced groups: leave these unset — sAMAccountName in token matches directly.
+# Cloud-only groups: set these to the group Object IDs from Entra ID > Groups > <group> > Overview.
+_ADMIN_GROUP_ID = os.getenv("ATLAS_ADMIN_GROUP_ID", "").strip().lower()
+_NETADMIN_GROUP_ID = os.getenv("ATLAS_NETADMIN_GROUP_ID", "").strip().lower()
+
+# Build Object ID -> group name lookup (only populated when env vars are set)
+_GROUP_ID_MAP: dict[str, str] = {}
+if _ADMIN_GROUP_ID:
+    _GROUP_ID_MAP[_ADMIN_GROUP_ID] = "admin"
+if _NETADMIN_GROUP_ID:
+    _GROUP_ID_MAP[_NETADMIN_GROUP_ID] = "netadmin"
+
+
+# ---------------------------------------------------------------------------
 # OIDC helpers
 # ---------------------------------------------------------------------------
 
-def extract_role_from_token(token_claims: dict) -> Optional[str]:
-    """Extract the Atlas role from Azure token claims.
+def extract_group_from_token(token_claims: dict) -> Optional[str]:
+    """Resolve access level from the groups claim in the OIDC id_token.
 
-    Priority order:
-    1. Azure 'roles' claim (app roles assigned via Enterprise Application)
-    2. OIDC_GROUP_ROLE_MAP (Azure security group -> role)
+    Two modes:
+    - On-prem synced groups: configure token config to emit sAMAccountName.
+      The groups claim will contain the name directly (e.g. "admin", "netadmin").
+    - Cloud-only groups: set ATLAS_ADMIN_GROUP_ID / ATLAS_NETADMIN_GROUP_ID env
+      vars to the group Object IDs. The groups claim contains GUIDs which are
+      mapped to the group name here.
 
-    Returns None if no role could be resolved (user has no access).
+    Returns None if the user is not a member of any recognised group.
     """
-    # 1. Check Azure app roles
-    roles = token_claims.get("roles", [])
-    for r in roles:
-        r_lower = r.lower().strip()
-        if r_lower in ROLE_ALLOWED_TOOLS:
-            return r_lower
-
-    # 2. Check Azure security groups
-    if OIDC_GROUP_ROLE_MAP:
-        groups = token_claims.get("groups", [])
-        for gid in groups:
-            role = OIDC_GROUP_ROLE_MAP.get(str(gid).lower())
-            if role and role in ROLE_ALLOWED_TOOLS:
-                return role
-
-    # No role found — user has no access
+    for group in token_claims.get("groups", []):
+        g_lower = str(group).lower().strip()
+        # Cloud-only: match by Object ID
+        if _GROUP_ID_MAP:
+            name = _GROUP_ID_MAP.get(g_lower)
+            if name:
+                return name
+        # On-prem synced: match by sAMAccountName
+        if g_lower in GROUP_ALLOWED_TOOLS:
+            return g_lower
     return None
 
 

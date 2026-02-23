@@ -26,11 +26,11 @@ from atlas.auth import (
     OIDC_SESSION_TTL,
     create_session,
     destroy_session,
-    extract_role_from_token,
+    extract_group_from_token,
     extract_username_from_token,
     get_allowed_categories,
-    get_role_for_session,
-    get_user_role,
+    get_group_for_session,
+    get_user_group,
     get_username_for_session,
 )
 
@@ -205,27 +205,14 @@ async def auth_callback(request: Request):
     if not userinfo:
         return RedirectResponse(url="/login?error=oidc", status_code=302)
 
-    # Azure PIM-activated app roles appear in the access_token, not the id_token.
-    # Merge roles from access_token into userinfo if present.
-    access_token_str = token.get("access_token", "")
-    if access_token_str and not userinfo.get("roles"):
-        try:
-            _at_payload = access_token_str.split(".")[1]
-            _at_payload += "=" * (4 - len(_at_payload) % 4)
-            _at_claims = _json.loads(_base64.urlsafe_b64decode(_at_payload))
-            if _at_claims.get("roles"):
-                userinfo = {**userinfo, "roles": _at_claims["roles"]}
-        except Exception:
-            pass
-
     username = extract_username_from_token(userinfo)
-    role = extract_role_from_token(userinfo)
-    if role is None:
+    group = extract_group_from_token(userinfo)
+    if group is None:
         return RedirectResponse(url="/login?error=norole", status_code=302)
 
     session_id = create_session(
         username,
-        role=role,
+        group=group,
         auth_mode="oidc",
         tokens={
             "access_token": token.get("access_token"),
@@ -262,11 +249,11 @@ async def api_me(request: Request):
     if not username:
         return response_401_clear_session(request)
     sid = get_session_id(request)
-    role = get_role_for_session(sid)
-    categories = get_allowed_categories(role)
+    group = get_group_for_session(sid)
+    categories = get_allowed_categories(group)
     return {
         "username": username,
-        "role": role,
+        "group": group,
         "allowed_categories": categories,
     }
 
@@ -285,12 +272,12 @@ async def index(request: Request):
 
     # Fallback to Jinja2 template
     sid = get_session_id(request)
-    role = get_role_for_session(sid)
-    categories = get_allowed_categories(role)
+    group = get_group_for_session(sid)
+    categories = get_allowed_categories(group)
     return templates.TemplateResponse("index.html", {
         "request": request,
         "username": username,
-        "role": role,
+        "group": group,
         "allowed_categories": categories,
     })
 
