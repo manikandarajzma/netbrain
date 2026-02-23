@@ -117,9 +117,6 @@ def _get_llm():
 # Configuration constants
 # ---------------------------------------------------------------------------
 
-# NetBrain
-NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
-
 # Splunk
 SPLUNK_HOST = os.getenv("SPLUNK_HOST", "192.168.15.110")
 SPLUNK_PORT = os.getenv("SPLUNK_PORT", "8089")

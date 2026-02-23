@@ -54,6 +54,7 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
         "check_path_allowed",
         "query_panorama_ip_object_group",
         "query_panorama_address_group_members",
+        "find_unused_panorama_objects",
     },
     "guest": set(),  # least privilege: no tool access
 }

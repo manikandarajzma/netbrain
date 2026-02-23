@@ -5,9 +5,10 @@ Provides two exported helper functions used by netbrain_tools.py:
     - _add_panorama_zones_to_hops
     - _add_panorama_device_groups_to_hops
 
-And two MCP tool functions:
+And three MCP tool functions:
     - query_panorama_ip_object_group
     - query_panorama_address_group_members
+    - find_unused_panorama_objects
 """
 
 import ssl
@@ -1373,3 +1374,209 @@ Keep the summary concise and informative. Focus on the key findings."""
         result["error"] = f"Error querying Panorama: {str(e)}"
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Orphan / unused-object scan
+# ---------------------------------------------------------------------------
+
+_POLICY_SPECIAL_MEMBERS: frozenset = frozenset({"any", "any-ipv4", "any-ipv6"})
+
+
+async def _fetch_policy_references_for_location(
+    session: aiohttp.ClientSession,
+    panorama_url: str,
+    api_key: str,
+    ssl_context,
+    location_type: str,
+    location_name: str | None,
+) -> set:
+    """
+    Return the set of all object/group names referenced in source or destination
+    of every security and NAT rule in this location (pre + post rulebase).
+    Returns empty set on any error (non-fatal).
+    """
+    referenced: set = set()
+    for rulebase in ("pre-rulebase", "post-rulebase"):
+        for rule_type in ("security", "nat"):
+            if location_type == "device-group":
+                xpath = (
+                    f"/config/devices/entry[@name='localhost.localdomain']"
+                    f"/device-group/entry[@name='{location_name}']"
+                    f"/{rulebase}/{rule_type}/rules/entry"
+                )
+            else:
+                xpath = f"/config/shared/{rulebase}/{rule_type}/rules/entry"
+            params = {"type": "config", "action": "get", "xpath": xpath, "key": api_key}
+            try:
+                async with session.get(
+                    f"{panorama_url}/api/", params=params, ssl=ssl_context,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status not in (200,):
+                        continue
+                    xml_text = await resp.text()
+                    root = ET.fromstring(xml_text)
+                    for entry in root.findall(".//entry"):
+                        for tag in ("source", "destination"):
+                            node = entry.find(tag)
+                            if node is None:
+                                continue
+                            for m in node.findall("member"):
+                                if m.text and m.text not in _POLICY_SPECIAL_MEMBERS:
+                                    referenced.add(m.text)
+            except Exception as e:
+                logger.debug(
+                    "_fetch_policy_references_for_location error "
+                    "(%s %s, %s/%s): %s", location_type, location_name, rulebase, rule_type, e
+                )
+    return referenced
+
+
+async def _find_unused_panorama_objects_impl(
+    device_group: str | None = None,
+    include_shared: bool = True,
+) -> dict:
+    """
+    Scan all Panorama locations and return orphaned address objects and unused
+    address groups.  Direct policy reference is the only measure — group
+    membership does NOT protect an object from being considered orphaned.
+    """
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        return {"error": "Failed to authenticate with Panorama."}
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    panorama_url = panoramaauth.PANORAMA_URL
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Build locations list
+            locations: list[tuple[str, str | None]] = []
+            if include_shared:
+                locations.append(("shared", None))
+            if device_group:
+                locations.append(("device-group", device_group))
+            else:
+                dgs = await _get_device_groups_cached(session, panorama_url, api_key, ssl_context)
+                for dg in dgs:
+                    locations.append(("device-group", dg))
+
+            # Parallel: address objects, address groups, policy references
+            addr_obj_results, addr_grp_results, policy_ref_results = await asyncio.gather(
+                asyncio.gather(
+                    *[_get_address_objects_cached(session, panorama_url, api_key, ssl_context, lt, ln)
+                      for lt, ln in locations],
+                    return_exceptions=True,
+                ),
+                asyncio.gather(
+                    *[_fetch_address_groups_for_location(session, panorama_url, api_key, ssl_context, lt, ln)
+                      for lt, ln in locations],
+                    return_exceptions=True,
+                ),
+                asyncio.gather(
+                    *[_fetch_policy_references_for_location(session, panorama_url, api_key, ssl_context, lt, ln)
+                      for lt, ln in locations],
+                    return_exceptions=True,
+                ),
+            )
+
+        # Collect all names referenced in any policy
+        referenced_in_policy: set = set()
+        for r in policy_ref_results:
+            if isinstance(r, set):
+                referenced_in_policy.update(r)
+
+        # Build flat list of all address objects
+        all_objects: list[dict] = []
+        for (lt, ln), result in zip(locations, addr_obj_results):
+            if isinstance(result, Exception) or not isinstance(result, dict):
+                continue
+            for name, obj in result.items():
+                all_objects.append({
+                    "name": name,
+                    "type": obj.get("type") or "",
+                    "value": obj.get("value") or "",
+                    "location": lt,
+                    "device_group": ln,
+                })
+
+        # Build flat list of all address groups
+        all_groups: list[dict] = []
+        for (lt, ln), result in zip(locations, addr_grp_results):
+            if isinstance(result, Exception) or not isinstance(result, list):
+                continue
+            for grp in result:
+                members = grp.get("members", [])
+                all_groups.append({
+                    "name": grp["name"],
+                    "members": members,
+                    "member_count": len(members),
+                    "location": lt,
+                    "device_group": ln,
+                })
+
+        # Objects that belong to a group which IS referenced in a policy are protected
+        protected_objects: set = set()
+        for grp in all_groups:
+            if grp["name"] in referenced_in_policy:
+                protected_objects.update(grp["members"])
+
+        orphaned_objects = sorted(
+            [obj for obj in all_objects
+             if obj["name"] not in referenced_in_policy and obj["name"] not in protected_objects],
+            key=lambda x: (x["device_group"] or "", x["name"]),
+        )
+        unused_groups = sorted(
+            [grp for grp in all_groups if grp["name"] not in referenced_in_policy],
+            key=lambda x: (x["device_group"] or "", x["name"]),
+        )
+
+        return {
+            "orphaned_address_objects": orphaned_objects,
+            "unused_address_groups": unused_groups,
+            "device_groups_scanned": [ln for lt, ln in locations if lt == "device-group"],
+        }
+
+    except Exception as e:
+        logger.error("_find_unused_panorama_objects_impl error: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def find_unused_panorama_objects(
+    device_group: Optional[str] = None,
+    include_shared: bool = True,
+) -> Dict[str, Any]:
+    """
+    Find orphaned address objects and unused address groups in Panorama.
+
+    An address object is orphaned if it is not directly referenced in the source
+    or destination of any security or NAT policy. Group membership does NOT
+    protect an object — if the group is unused, the object is still orphaned.
+    An address group is unused if it is not directly referenced in any policy.
+
+    Use for: "orphaned objects", "unused objects", "unused address groups",
+    "objects not referenced by any policy", "cleanup panorama objects",
+    "find unused panorama objects", "what objects are orphaned".
+    Do NOT use for: looking up specific IPs, group members, path queries.
+
+    Examples:
+    - "give me all the orphaned objects" → (no args)
+    - "show unused address groups" → (no args)
+    - "orphaned objects in leander" → device_group="leander"
+
+    Args:
+        device_group: Limit scan to one device group (default: scan all device groups)
+        include_shared: Include shared address objects/groups (default True)
+
+    Returns:
+        dict: orphaned_address_objects, unused_address_groups, device_groups_scanned
+    """
+    logger.debug(
+        "find_unused_panorama_objects called with device_group=%s, include_shared=%s",
+        device_group, include_shared,
+    )
+    return await _find_unused_panorama_objects_impl(device_group, include_shared)

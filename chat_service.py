@@ -26,6 +26,7 @@ def _is_obviously_in_scope(prompt: str) -> bool:
         "object group", "address group", "panorama", "palo alto",
         "firewall rule", "security rule", "security policy",
         "device group", "address object", "ip group",
+        "orphan", "unused", "not referenced", "cleanup panorama",
     ))
     path_kw = any(k in lower for k in (
         "network path", "path from", "path to", "traffic allowed",
@@ -56,10 +57,11 @@ def is_query_in_scope(prompt: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 TOOL_DISPLAY_NAMES: dict[str, str] = {
-    "check_path_allowed": "Atlas",
-    "query_network_path": "Atlas",
+    "check_path_allowed": "NetBrain",
+    "query_network_path": "NetBrain",
     "query_panorama_ip_object_group": "Panorama",
     "query_panorama_address_group_members": "Panorama",
+    "find_unused_panorama_objects": "Panorama",
     "get_splunk_recent_denies": "Splunk",
 }
 
@@ -69,6 +71,7 @@ _TOOL_TIMEOUTS: dict[str, float] = {
     "get_splunk_recent_denies": 95.0,
     "query_panorama_ip_object_group": 65.0,
     "query_panorama_address_group_members": 65.0,
+    "find_unused_panorama_objects": 180.0,
 }
 
 MAX_AGENT_ITERATIONS = 3
@@ -131,6 +134,7 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
             "Tool selection rules: "
             "IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies; "
             "address group names → query_panorama_address_group_members; "
+            "orphaned/unused objects or address groups → find_unused_panorama_objects; "
             "path/connectivity queries → query_network_path or check_path_allowed. "
             "When the user's reply is short, check the conversation history "
             "to understand what they are clarifying and combine it with the original request."
@@ -207,6 +211,16 @@ def _normalize_result(
             for k, v in result.items():
                 new_result[k] = v
             return new_result
+
+    if tool_name == "find_unused_panorama_objects" and isinstance(result, dict) and "error" not in result:
+        orphaned = len(result.get("orphaned_address_objects", []))
+        unused = len(result.get("unused_address_groups", []))
+        result = dict(result)
+        result["direct_answer"] = (
+            f"Found {orphaned} orphaned address object{'s' if orphaned != 1 else ''} "
+            f"and {unused} unused address group{'s' if unused != 1 else ''}"
+        )
+        return result
 
     if tool_name == "query_panorama_ip_object_group" and isinstance(result, dict) and prompt and "error" not in result:
         queried_ip = result.get("queried_ip") or result.get("ip_address")

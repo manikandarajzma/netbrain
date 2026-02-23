@@ -81,7 +81,10 @@ export default function AssistantMessage({ content }) {
     }
 
     const isPanorama = arrayKeys.includes('address_objects') || arrayKeys.includes('address_groups') || arrayKeys.includes('policies') || arrayKeys.includes('members')
-    const tableOrder = isPanorama ? ['members', 'address_objects', 'address_groups', 'policies'] : arrayKeys
+      || arrayKeys.includes('orphaned_address_objects') || arrayKeys.includes('unused_address_groups')
+    const tableOrder = isPanorama
+      ? ['members', 'address_objects', 'address_groups', 'policies', 'orphaned_address_objects', 'unused_address_groups']
+      : arrayKeys
 
     for (const key of tableOrder) {
       if (!arrayKeys.includes(key) || key === 'path_hops') continue

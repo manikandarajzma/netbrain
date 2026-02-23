@@ -18,6 +18,8 @@ export const exampleQueries = [
     queries: [
       'What address group is 11.0.0.1 part of?',
       'What IPs are in address group leander_web?',
+      'Give me all orphaned address objects',
+      'Show unused address groups',
     ],
   },
   {

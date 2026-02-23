@@ -16,9 +16,10 @@ import asyncio
 import aiohttp
 from typing import Optional, Dict, Any, List
 
-from tools.shared import mcp, NETBRAIN_URL, setup_logging
+from tools.shared import mcp, setup_logging
 logger = setup_logging(__name__)
 import netbrainauth
+from netbrainauth import NETBRAIN_URL
 from tools.panorama_tools import _add_panorama_zones_to_hops, _add_panorama_device_groups_to_hops
 
 
@@ -1587,8 +1588,8 @@ async def _check_path_allowed_impl(
 async def query_network_path(
     source: str,
     destination: str,
-    protocol: str,
-    port: str,
+    protocol: str = "IP",
+    port: str = "0",
     is_live: int = 1,
     continue_on_policy_denial: bool = True
 ):

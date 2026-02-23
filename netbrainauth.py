@@ -47,13 +47,41 @@ if os.path.exists(_env_path):
     load_dotenv(_env_path)
 
 # NetBrain server URL
-NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
+NETBRAIN_URL = os.getenv("NETBRAIN_URL")
 
 # NetBrain username for authentication
 USERNAME = os.getenv("NETBRAIN_USERNAME", "")
 
 # NetBrain password for authentication
 PASSWORD = os.getenv("NETBRAIN_PASSWORD", "")
+
+# If credentials are missing from .env, try Azure Key Vault
+if not USERNAME or not PASSWORD:
+    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
+    if _vault_url:
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.keyvault.secrets import SecretClient
+            _credential = DefaultAzureCredential()
+            _client = SecretClient(vault_url=_vault_url, credential=_credential)
+            if not USERNAME:
+                _secret_name = os.getenv("NETBRAIN_USERNAME_KEYVAULT_SECRET_NAME", "NETBRAIN-USERNAME")
+                try:
+                    _secret = _client.get_secret(_secret_name)
+                    if _secret and _secret.value:
+                        USERNAME = _secret.value
+                except Exception as e:
+                    print(f"Key Vault: could not load secret '{_secret_name}' from {_vault_url}: {e}")
+            if not PASSWORD:
+                _secret_name = os.getenv("NETBRAIN_PASSWORD_KEYVAULT_SECRET_NAME", "NETBRAIN-PASSWORD")
+                try:
+                    _secret = _client.get_secret(_secret_name)
+                    if _secret and _secret.value:
+                        PASSWORD = _secret.value
+                except Exception as e:
+                    print(f"Key Vault: could not load secret '{_secret_name}' from {_vault_url}: {e}")
+        except Exception as e:
+            print(f"Key Vault: failed to initialize client for NetBrain credentials: {e}")
 
 # Authentication ID for external users (LDAP/AD/TACACS)
 AUTHENTICATION_ID = os.getenv("NETBRAIN_AUTH_ID") or None
