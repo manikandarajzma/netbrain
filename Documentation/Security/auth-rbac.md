@@ -2,7 +2,7 @@
 
 This guide covers how to set up Microsoft Entra ID (OIDC) authentication with Privileged Identity Management (PIM) and role-based access control (RBAC) for Atlas.
 
-**No local passwords.** Authentication is OIDC only. All credentials (Azure app registration, NetBrain API, Panorama, NetBox, Splunk, etc.) should be sourced from **Azure Key Vault** (or equivalent) and injected into the environment; do not store secrets in `.env` in production.
+**No local passwords.** Authentication is OIDC only. All credentials (Azure app registration, NetBrain API, Panorama, Splunk, etc.) should be sourced from **Azure Key Vault** (or equivalent) and injected into the environment; do not store secrets in `.env` in production.
 
 ---
 
@@ -244,7 +244,7 @@ def _check_tool_access(username: str | None, tool_name: str) -> str | None:
     return None
 ```
 
-This check runs in `process_message()` both for pre-filled tool calls and for the agent discovery loop. If denied, the user sees: _"Your role (netadmin) does not have access to NetBox queries."_
+This check runs in `process_message()` both for pre-filled tool calls and for the agent discovery loop. If denied, the user sees: _"Your role (netadmin) does not have access to Splunk queries."_
 
 ### UI-Side Category Filtering (index.html)
 
@@ -258,11 +258,6 @@ The sidebar only renders categories the user's role permits, using Jinja2 condit
 </div>
 {% endif %}
 
-{% if allowed_categories is none or "netbox" in allowed_categories %}
-<div class="example-category" data-category="netbox">
-    ...
-</div>
-{% endif %}
 ```
 
 `admin` users see all categories (`allowed_categories = None`). `netadmin` users only see Atlas and Panorama.
@@ -291,6 +286,4 @@ The header shows the logged-in user's email and role:
 
 Sessions are stored in **signed cookies** (no server-side store), so they survive app restarts and work across multiple instances when `SESSION_SECRET` is set.
 
-Backend credentials (NetBrain, Panorama, NetBox, Splunk, etc.) are also typically sourced from Azure Key Vault. **NetBox:** if `NETBOX_TOKEN` is not set in the environment but `AZURE_KEYVAULT_URL` is set, the app loads the token from Key Vault (default secret name `NETBOX-TOKEN`; override with `NETBOX_TOKEN_KEYVAULT_SECRET_NAME`). The same Azure identity (e.g. `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`) is used for Key Vault access.
-
-**If it used to work and stopped:** NetBox tools run in the **MCP server** process (separate from the FastAPI app). That process must have the same environment: ensure `AZURE_KEYVAULT_URL` and the Azure app credentials are available when the MCP server starts (e.g. same `.env` in its working directory, or the same env injection you use for the web app). Check MCP server logs for `Key Vault: could not load secret` — the message will show the underlying error (e.g. permission, wrong secret name, or credential failure).
+Backend credentials (NetBrain, Panorama, Splunk, etc.) are also typically sourced from Azure Key Vault. The same Azure identity (e.g. `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`) is used for Key Vault access.

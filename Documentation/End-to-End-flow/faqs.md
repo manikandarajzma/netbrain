@@ -47,7 +47,7 @@ In Atlas, `chatStore.js` holds all chat state: `messages`, `conversationHistory`
 
 30 minutes was chosen as a balance between security and usability for a network tooling application:
 
-- **Security posture** — Atlas has access to sensitive network infrastructure (Panorama, NetBox, Splunk, path analysis). A short TTL limits the window of exposure if a session cookie is stolen or a workstation is left unattended.
+- **Security posture** — Atlas has access to sensitive network infrastructure (Panorama, Splunk, path analysis). A short TTL limits the window of exposure if a session cookie is stolen or a workstation is left unattended.
 - **Usage pattern** — Most queries complete in under a minute. A 30-minute window comfortably covers active use without constant re-authentication, while still expiring idle sessions.
 - **Alignment with enterprise standards** — 30 minutes is a common idle timeout for internal tooling in security-conscious environments.
 
@@ -101,9 +101,6 @@ The source of truth for every tool schema is the function signature + docstring 
 |---|---|---|
 | `query_panorama_ip_object_group` | [tools/panorama_tools.py](../../tools/panorama_tools.py#L210) | 210 |
 | `query_panorama_address_group_members` | [tools/panorama_tools.py](../../tools/panorama_tools.py#L1032) | 1032 |
-| `get_rack_details` | [tools/netbox_tools.py](../../tools/netbox_tools.py#L129) | 129 |
-| `list_racks` | [tools/netbox_tools.py](../../tools/netbox_tools.py#L602) | 602 |
-| `get_device_rack_location` | [tools/netbox_tools.py](../../tools/netbox_tools.py#L897) | 897 |
 | `query_network_path` | [tools/netbrain_tools.py](../../tools/netbrain_tools.py#L1587) | 1587 |
 | `check_path_allowed` | [tools/netbrain_tools.py](../../tools/netbrain_tools.py#L1630) | 1630 |
 | `get_splunk_recent_denies` | [tools/splunk_tools.py](../../tools/splunk_tools.py#L241) | 241 |
@@ -117,11 +114,9 @@ For a query like `"What address group is 11.0.0.1 part of?"`, the LLM receives t
 You are a network infrastructure assistant.
 Always call a tool — never answer from memory or prior context.
 Tool selection rules:
-short rack IDs like 'A4', 'B2' → get_rack_details;
-device names with dashes like 'leander-dc-leaf1' → get_device_rack_location;
 IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies;
 address group names → query_panorama_address_group_members;
-list/all racks → list_racks.
+path/connectivity queries → query_network_path or check_path_allowed.
 ...
 ```
 
@@ -149,7 +144,7 @@ What address group is 11.0.0.1 part of?
       }
     }
   },
-  // ... all 8 registered tools
+  // ... all registered tools
 ]
 ```
 
@@ -176,9 +171,9 @@ A static string that tells the LLM which tool to pick for which query pattern:
 "You are a network infrastructure assistant.
 Always call a tool — never answer from memory or prior context.
 Tool selection rules:
-short rack IDs like 'A4', 'B2' → get_rack_details;
 IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies;
-address group names → query_panorama_address_group_members; ..."
+address group names → query_panorama_address_group_members;
+path/connectivity queries → query_network_path or check_path_allowed. ..."
 ```
 
 This never changes at runtime. It is the primary mechanism for disambiguating between tools that could both match a query.

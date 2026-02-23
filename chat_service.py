@@ -31,16 +31,13 @@ def _is_obviously_in_scope(prompt: str) -> bool:
         "network path", "path from", "path to", "traffic allowed",
         "path allowed", "can reach", "connectivity", "path",
     ))
-    netbox_kw = any(k in lower for k in (
-        "rack", "netbox", "racked", "device location",
-    ))
     splunk_kw = any(k in lower for k in (
         "splunk", "deny", "denied", "denies", "firewall log",
         "recent deny", "deny event",
     ))
     if has_ip and (panorama_kw or path_kw or splunk_kw):
         return True
-    if panorama_kw or path_kw or netbox_kw or splunk_kw:
+    if panorama_kw or path_kw or splunk_kw:
         return True
     if len(_IP_OR_CIDR_RE.findall(prompt or "")) >= 2:
         return True
@@ -63,9 +60,6 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "query_network_path": "Atlas",
     "query_panorama_ip_object_group": "Panorama",
     "query_panorama_address_group_members": "Panorama",
-    "get_rack_details": "NetBox",
-    "list_racks": "NetBox",
-    "get_device_rack_location": "NetBox",
     "get_splunk_recent_denies": "Splunk",
 }
 
@@ -73,9 +67,6 @@ _TOOL_TIMEOUTS: dict[str, float] = {
     "query_network_path": 385.0,
     "check_path_allowed": 370.0,
     "get_splunk_recent_denies": 95.0,
-    "get_device_rack_location": 65.0,
-    "list_racks": 65.0,
-    "get_rack_details": 65.0,
     "query_panorama_ip_object_group": 65.0,
     "query_panorama_address_group_members": 65.0,
 }
@@ -138,12 +129,10 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
             "You are a network infrastructure assistant. "
             "Always call a tool — never answer from memory or prior context. "
             "Tool selection rules: "
-            "short rack IDs like 'A4', 'B2' → get_rack_details; "
-            "device names with dashes like 'leander-dc-leaf1' → get_device_rack_location; "
             "IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies; "
             "address group names → query_panorama_address_group_members; "
-            "list/all racks → list_racks. "
-            "When the user's reply is short (e.g. a site name), check the conversation history "
+            "path/connectivity queries → query_network_path or check_path_allowed. "
+            "When the user's reply is short, check the conversation history "
             "to understand what they are clarifying and combine it with the original request."
         ))
     ]
@@ -206,64 +195,6 @@ def _normalize_result(
                 f"No deny events found for {ip} in the last 24 hours. "
                 "Try a different IP or time range, or check that Splunk has Palo Alto logs for that period."
             )
-    if isinstance(result, dict) and result.get("intent") == "rack_locatior":
-        result = dict(result)
-        result["intent"] = "rack_location_only"
-
-    if isinstance(result, dict) and "yes_no_answer" in result:
-        # Only keep yes_no_answer when the prompt is actually a verification question
-        # ("is device X in rack Y?"), not a plain location query ("where is X racked?")
-        keep_yes_no = False
-        if prompt:
-            pl = prompt.lower()
-            keep_yes_no = (
-                ("in rack" in pl or "at rack" in pl or "in the rack" in pl)
-                and any(w in pl for w in ("is ", "are ", "was ", "does ", "correct", "right"))
-            )
-        if keep_yes_no:
-            yes_no_msg = result.pop("yes_no_answer")
-            new_result = {"yes_no_answer": yes_no_msg}
-            new_result.update(result)
-            return new_result
-        else:
-            result = dict(result)
-            result.pop("yes_no_answer", None)
-
-    if tool_name == "get_rack_details" and isinstance(result, dict) and prompt and "error" not in result:
-        prompt_lower = prompt.lower()
-        rack_name = result.get("rack_name", "rack")
-        site_name = result.get("site", "")
-        location_str = f"{rack_name} at {site_name}" if site_name else rack_name
-        metric_answer = None
-        if "space utilization" in prompt_lower or "utilization" in prompt_lower:
-            util_value = result.get("space_utilization")
-            if util_value is not None:
-                metric_answer = f"Space utilization of {location_str} is {util_value}%"
-        elif "occupied" in prompt_lower and "unit" in prompt_lower:
-            occupied = result.get("occupied_units")
-            if occupied is not None:
-                metric_answer = f"{location_str} has {occupied} occupied units"
-        elif "available" in prompt_lower and "unit" in prompt_lower:
-            height = result.get("height")
-            occupied = result.get("occupied_units")
-            if height is not None and occupied is not None:
-                metric_answer = f"{location_str} has {height - occupied} available units (out of {height} total)"
-        elif "status" in prompt_lower:
-            status = result.get("status")
-            if status:
-                metric_answer = f"Status of {location_str} is: {status}"
-        elif "height" in prompt_lower:
-            height = result.get("height")
-            if height is not None:
-                metric_answer = f"{location_str} has a height of {height} units"
-        if metric_answer:
-            result = dict(result)
-            new_result = {"metric_answer": metric_answer}
-            for k, v in result.items():
-                if k != "metric_answer":
-                    new_result[k] = v
-            return new_result
-
     if tool_name == "query_panorama_address_group_members" and isinstance(result, dict) and "error" not in result:
         members = result.get("members", [])
         group_name = result.get("address_group_name", "this group")
@@ -404,11 +335,10 @@ async def process_message(
         tool_call = ai_msg.tool_calls[0]
         sel_tool_name = tool_call["name"]
         tool_args = dict(tool_call["args"])
+        # Strip invalid optional args — llama3.1:8b sends {} or "" instead of omitting them
+        tool_args = {k: v for k, v in tool_args.items() if v not in ({}, "")}
         tool_call_id = tool_call.get("id") or f"call_{sel_tool_name}_{iteration}"
         last_tool_name = sel_tool_name
-
-        if sel_tool_name == "get_device_rack_location" and tool_args.get("intent") == "rack_location_only":
-            del tool_args["intent"]
 
         if discover_only:
             return {

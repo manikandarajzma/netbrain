@@ -43,4 +43,4 @@ Open **http://localhost:5173** (log in at http://localhost:8000/login first so t
 
 ## Other issues
 
-For chat/API issues, MCP server, Ollama, NetBox, or auth, see the main [README Troubleshooting](../../README.md#troubleshooting) section.
+For chat/API issues, MCP server, Ollama, or auth, see the main [README Troubleshooting](../../README.md#troubleshooting) section.

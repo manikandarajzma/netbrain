@@ -49,16 +49,6 @@
                     </div>
                 </div>
                 {% endif %}
-                {% if allowed_categories is none or "netbox" in allowed_categories %}
-                <div class="example-category" data-category="netbox">
-                    <div class="example-category-label">🔧 NetBox</div>
-                    <div class="example-chips">
-                        <button type="button" class="example-chip" data-query="Where is leander-dc-border-leaf1 racked?">Where is leander-dc-border-leaf1 racked?</button>
-                        <button type="button" class="example-chip" data-query="Rack A4">Rack A4</button>
-                        <button type="button" class="example-chip" data-query="List racks at Leander">List racks at Leander</button>
-                    </div>
-                </div>
-                {% endif %}
                 {% if allowed_categories is none or "panorama" in allowed_categories %}
                 <div class="example-category" data-category="panorama">
                     <div class="example-category-label">🔥 Panorama</div>
@@ -86,7 +76,7 @@
                     <button type="button" class="attach-remove" onclick="clearAttachment()" title="Remove attachment">&times;</button>
                 </div>
                 <form onsubmit="return send(event)">
-                    <input id="input" type="text" placeholder="Ask about paths, devices, racks, Panorama, Splunk..." autocomplete="off">
+                    <input id="input" type="text" placeholder="Ask about paths, Panorama address groups, Splunk deny events..." autocomplete="off">
                     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="onFileSelect(this)">
                     <button type="button" class="upload-btn" id="uploadBtn" title="Upload spreadsheet (.xlsx, .csv) for batch queries" onclick="document.getElementById('fileInput').click()">&#128206;</button>
                     <button type="submit" id="sendBtn" aria-label="Send">&#8593;</button>

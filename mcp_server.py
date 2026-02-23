@@ -6,7 +6,6 @@ shared FastMCP instance, then starts the server.
 
 Domain modules:
   - tools.splunk_tools   : get_splunk_recent_denies
-  - tools.netbox_tools   : get_rack_details, list_racks, get_device_rack_location
   - tools.panorama_tools : query_panorama_ip_object_group, query_panorama_address_group_members
   - tools.netbrain_tools : query_network_path, check_path_allowed
 """
@@ -26,7 +25,6 @@ from tools.shared import mcp, MCP_SERVER_HOST, MCP_SERVER_PORT
 
 # Import domain modules – the act of importing triggers @mcp.tool() registration
 import tools.splunk_tools      # noqa: F401
-import tools.netbox_tools      # noqa: F401
 import tools.panorama_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
 

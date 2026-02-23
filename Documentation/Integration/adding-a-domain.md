@@ -29,8 +29,7 @@ atlas/
 │   ├── shared.py            ← credentials loaded here at startup
 │   ├── netbrain_tools.py    ← @mcp.tool() definitions
 │   ├── panorama_tools.py
-│   ├── splunk_tools.py
-│   └── netbox_tools.py
+│   └── splunk_tools.py
 └── mcp_server.py            ← imports tool modules to trigger registration
 ```
 
@@ -152,9 +151,9 @@ async def get_api_key() -> str | None:
     return _api_key
 ```
 
-### Pattern C — credentials passed directly (e.g., Splunk, NetBox)
+### Pattern C — credentials passed directly (e.g., Splunk)
 
-Some APIs (Splunk, NetBox) accept credentials on every request — no session management needed. In this case, skip the auth module entirely and import credentials directly from `tools/shared.py` in the tool module.
+Some APIs (like Splunk) accept credentials on every request — no session management needed. In this case, skip the auth module entirely and import credentials directly from `tools/shared.py` in the tool module.
 
 ---
 
@@ -271,7 +270,6 @@ Add one import line. The act of importing the module triggers all `@mcp.tool()` 
 
 # Import domain modules – the act of importing triggers @mcp.tool() registration
 import tools.splunk_tools      # noqa: F401
-import tools.netbox_tools      # noqa: F401
 import tools.panorama_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
 import tools.servicenow_tools  # noqa: F401   ← add this line

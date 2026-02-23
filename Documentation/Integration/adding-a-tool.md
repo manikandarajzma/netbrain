@@ -140,15 +140,12 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "query_network_path":                 "Atlas",
     "query_panorama_ip_object_group":     "Panorama",
     "query_panorama_address_group_members": "Panorama",
-    "get_rack_details":                   "NetBox",
-    "list_racks":                         "NetBox",
-    "get_device_rack_location":           "NetBox",
     "get_splunk_recent_denies":           "Splunk",
     "get_device_interfaces":              "NetBrain",   # ← add this
 }
 ```
 
-Use the system name (e.g., `"NetBrain"`, `"Panorama"`, `"Splunk"`, `"NetBox"`). This is what the user sees.
+Use the system name (e.g., `"NetBrain"`, `"Panorama"`, `"Splunk"`). This is what the user sees.
 
 ---
 
@@ -161,9 +158,6 @@ _TOOL_TIMEOUTS: dict[str, float] = {
     "query_network_path":        385.0,   # NetBrain path polling can be slow
     "check_path_allowed":        370.0,
     "get_splunk_recent_denies":   95.0,   # Includes Splunk job polling
-    "get_device_rack_location":   65.0,
-    "list_racks":                 65.0,
-    "get_rack_details":           65.0,
     "query_panorama_ip_object_group":       65.0,
     "query_panorama_address_group_members": 65.0,
     "get_device_interfaces":      30.0,   # ← add this (fast API call)

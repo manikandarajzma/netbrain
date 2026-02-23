@@ -39,7 +39,7 @@ def setup_logging(name: str) -> logging.Logger:
     Usage in each module::
 
         from tools.shared import setup_logging
-        logger = setup_logging(__name__)   # e.g. "tools.netbox_tools"
+        logger = setup_logging(__name__)   # e.g. "tools.splunk_tools"
         logger.debug("something happened")
     """
     logger = logging.getLogger(name)
@@ -72,7 +72,7 @@ mcp.llm = None
 mcp.llm_error = None
 
 # ---------------------------------------------------------------------------
-# LLM helper (used by NetBox and Panorama for AI analysis)
+# LLM helper (used by Panorama for AI analysis)
 # ---------------------------------------------------------------------------
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate  # re-exported for convenience
@@ -119,38 +119,6 @@ def _get_llm():
 
 # NetBrain
 NETBRAIN_URL = os.getenv("NETBRAIN_URL", "http://localhost")
-
-# NetBox
-NETBOX_URL = os.getenv("NETBOX_URL", "http://192.168.15.109:8080").rstrip("/")
-# Load once per process at import time. Repeated "Loaded..." in logs usually means process restarts (e.g. uvicorn --reload).
-NETBOX_TOKEN = os.getenv("NETBOX_TOKEN", "")
-if not NETBOX_TOKEN:
-    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
-    if _vault_url:
-        _secret_name = os.getenv("NETBOX_TOKEN_KEYVAULT_SECRET_NAME", "NETBOX-TOKEN")
-        for _name in (_secret_name, "netbox-token", "NetBoxToken"):
-            try:
-                from azure.identity import DefaultAzureCredential
-                from azure.keyvault.secrets import SecretClient
-                _credential = DefaultAzureCredential()
-                _client = SecretClient(vault_url=_vault_url, credential=_credential)
-                _secret = _client.get_secret(_name)
-                if _secret and _secret.value:
-                    NETBOX_TOKEN = _secret.value
-                    logger.info("Loaded NETBOX_TOKEN from Azure Key Vault secret '%s'", _name)
-                    break
-            except Exception as e:
-                if _name == _secret_name:
-                    logger.warning(
-                        "Key Vault: could not load secret '%s' from %s: %s. "
-                        "Ensure this process has AZURE_CLIENT_ID/SECRET/TENANT_ID (or managed identity) and the app has 'Get' on secrets.",
-                        _name, _vault_url, e,
-                    )
-                continue
-        else:
-            if not NETBOX_TOKEN:
-                logger.warning("NETBOX_TOKEN not in env and not found in Key Vault (tried %s). NetBox tools will fail.", _secret_name)
-NETBOX_VERIFY_SSL = os.getenv("NETBOX_VERIFY_SSL", "true").lower() in ["1", "true", "yes"]
 
 # Splunk
 SPLUNK_HOST = os.getenv("SPLUNK_HOST", "192.168.15.110")

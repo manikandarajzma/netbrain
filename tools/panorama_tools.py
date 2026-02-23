@@ -362,10 +362,10 @@ async def query_panorama_ip_object_group(
     - "find address group for 192.168.1.5" → ip_address="192.168.1.5"
 
     If query is just a bare IP with no context, ask: "What would you like to do with [IP]?
-    1) Query Panorama for object groups  2) Look up device in NetBox  3) Look up rack in NetBox  4) Query network path"
+    1) Query Panorama for object groups  2) Query network path"
 
     **HANDLING FOLLOW-UP RESPONSES:**
-    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Look up device in NetBox, 3) Look up rack in NetBox, 4) Query network path"
+    - If conversation history shows a previous clarification question was asked in the standard format: "What would you like to do with [IP]? 1) Query Panorama for object groups, 2) Query network path"
     - AND the current query is just "1" → user selected option 1 (Panorama) → use this tool with ip_address from earlier history.
 
     Args:

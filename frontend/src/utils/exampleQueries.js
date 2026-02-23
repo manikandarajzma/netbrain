@@ -12,16 +12,6 @@ export const exampleQueries = [
     ],
   },
   {
-    category: 'netbox',
-    label: 'NetBox',
-    icon: '\uD83D\uDD27',
-    queries: [
-      'Where is leander-dc-border-leaf1 racked?',
-      'Show me rack A4 at Leander',
-      'List racks at Leander',
-    ],
-  },
-  {
     category: 'panorama',
     label: 'Panorama',
     icon: '\uD83D\uDD25',

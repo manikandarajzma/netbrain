@@ -1,6 +1,6 @@
 # Atlas - AI-Powered Network Infrastructure Assistant
 
-**Atlas** is an intelligent network infrastructure assistant built on the Model Context Protocol (MCP), providing natural language access to path queries (via NetBrain API), NetBox device/rack lookups, Panorama address groups, and Splunk firewall deny events.
+**Atlas** is an intelligent network infrastructure assistant built on the Model Context Protocol (MCP), providing natural language access to path queries (via NetBrain API), Panorama address groups, and Splunk firewall deny events.
 
 ---
 
@@ -62,18 +62,17 @@ The system uses a **client-server architecture** with AI-powered tool selection:
                              │      (mcp_server.py)                │
                              │  Exposes tools via MCP:             │
                              │  • Path queries (NetBrain API)      │
-                             │  • NetBox device/rack lookups       │
                              │  • Panorama address groups          │
                              │  • Splunk deny events               │
                              └─────────────┬───────────────────────┘
                                            │
-                    ┌──────────────────────┼───────────────────────┐
+                    ┌──────────────────────┬───────────────────────┐
                     ▼                      ▼                       ▼
-            ┌───────────────┐     ┌──────────────┐     ┌─────────────────┐
-            │  NetBrain API │     │ NetBox API   │     │ Panorama/Splunk │
-            │  (netbrainauth│     │              │     │   (panoramaauth)│
-            │   .py)        │     │              │     │                 │
-            └───────────────┘     └──────────────┘     └─────────────────┘
+            ┌───────────────┐     ┌──────────────────┐     ┌────────────┐
+            │  NetBrain API │     │ Panorama XML API │     │ Splunk API │
+            │  (netbrainauth│     │  (panoramaauth   │     │            │
+            │   .py)        │     │   .py)           │     │            │
+            └───────────────┘     └──────────────────┘     └────────────┘
 ```
 
 ### Key Components
@@ -111,7 +110,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 
 5. **MCP Server** (`mcp_server.py`)
    - Exposes network infrastructure tools via MCP protocol
-   - Integrates with NetBrain API, NetBox, Panorama, Splunk APIs
+   - Integrates with NetBrain API, Panorama, and Splunk APIs
    - Runs independently on port 8765
    - Must be started before the web client
 
@@ -185,7 +184,6 @@ atlas/
 | **Ollama** | Latest | LLM for tool selection (runs locally) |
 | **uv** or **pip** | Latest | Python package management |
 | **NetBrain** | N/A | Network path calculation API (optional) |
-| **NetBox** | N/A | Device/rack management API (optional) |
 | **Panorama** | N/A | Palo Alto address group API (optional) |
 | **Splunk** | N/A | Firewall log search API (optional) |
 
@@ -253,23 +251,7 @@ export NETBRAIN_URL="http://your-netbrain-server.com"
 $env:NETBRAIN_URL="http://your-netbrain-server.com"
 ```
 
-### 2. NetBox Configuration
-
-Set NetBox URL and token via environment variables:
-
-```bash
-# Linux/Mac
-export NETBOX_URL="http://192.168.15.109:8080"
-export NETBOX_TOKEN="your_netbox_api_token"
-export NETBOX_VERIFY_SSL="false"  # Optional: disable SSL verification
-
-# Windows PowerShell
-$env:NETBOX_URL="http://192.168.15.109:8080"
-$env:NETBOX_TOKEN="your_netbox_api_token"
-$env:NETBOX_VERIFY_SSL="false"
-```
-
-### 3. Panorama Configuration (Optional)
+### 2. Panorama Configuration (Optional)
 
 Edit `panoramaauth.py` to set your Panorama credentials:
 
@@ -278,7 +260,7 @@ PANORAMA_HOST = "your-panorama-host.com"
 API_KEY = "your_api_key"
 ```
 
-### 4. Splunk Configuration (Optional)
+### 3. Splunk Configuration (Optional)
 
 Edit `mcp_server.py` to configure Splunk connection:
 
@@ -289,7 +271,7 @@ SPLUNK_USERNAME = "your_username"
 SPLUNK_PASSWORD = "your_password"
 ```
 
-### 5. Web UI Authentication
+### 4. Web UI Authentication
 
 Sign-in uses **Microsoft Entra ID (OIDC)** only. There are no local passwords. Configure Azure App Registration and set in your environment (typically from **Azure Key Vault** in production):
 
@@ -314,7 +296,7 @@ uv run python mcp_server.py
 **Output:**
 ```
 INFO: MCP Server starting on http://127.0.0.1:8765
-INFO: Server initialized with tools: check_path_allowed, query_network_path, get_device_rack_location, ...
+INFO: Server initialized with tools: check_path_allowed, query_network_path, query_panorama_ip_object_group, ...
 ```
 
 **Important:**
@@ -410,48 +392,7 @@ The MCP server exposes the following tools:
 
 ---
 
-### 3. `get_device_rack_location`
-**Purpose:** Look up device rack location and details in NetBox
-
-**Parameters:**
-- `device_name` (required): Device name to look up
-- `format` (optional): Output format (table, json, minimal)
-- `expected_rack` (optional): For yes/no questions like "is device X in rack Y?"
-
-**Returns:** Rack location, position, site, device type, IPs, etc.
-
-**Example Queries:**
-- *"Where is leander-dc-border-leaf1 racked?"*
-- *"Is roundrock-dc-leaf1 in rack A4?"*
-
----
-
-### 4. `get_rack_details`
-**Purpose:** Get details about a specific rack
-
-**Parameters:**
-- `rack_name` (required): Rack name (e.g., "A4", "B12")
-- `site_name` (optional): Site name to disambiguate
-
-**Returns:** Rack height, occupied units, space utilization, mounted devices
-
-**Example Query:** *"Show me details for rack A4 at Leander"*
-
----
-
-### 5. `list_racks`
-**Purpose:** List all racks at a site or globally
-
-**Parameters:**
-- `site_name` (optional): Filter by site name
-
-**Returns:** Table of all racks with utilization metrics
-
-**Example Query:** *"List all racks at Leander DC"*
-
----
-
-### 6. `query_panorama_ip_object_group`
+### 3. `query_panorama_ip_object_group`
 **Purpose:** Find which address group(s) contain an IP or CIDR
 
 **Parameters:**
@@ -463,7 +404,7 @@ The MCP server exposes the following tools:
 
 ---
 
-### 7. `query_panorama_address_group_members`
+### 4. `query_panorama_address_group_members`
 **Purpose:** List all members of an address group
 
 **Parameters:**
@@ -475,7 +416,7 @@ The MCP server exposes the following tools:
 
 ---
 
-### 8. `get_splunk_recent_denies`
+### 5. `get_splunk_recent_denies`
 **Purpose:** Search Splunk for recent firewall deny events
 
 **Parameters:**
@@ -504,21 +445,6 @@ The MCP server exposes the following tools:
 Find path from 10.0.0.1 to 10.0.1.1
 Is traffic from 10.0.0.1 to 10.0.1.1 on TCP port 80 allowed?
 Query path from 192.168.1.10 to 192.168.2.20 using TCP port 443
-```
-
-#### NetBox Device Queries
-```
-Where is leander-dc-border-leaf1 racked?
-Rack location of roundrock-dc-leaf1
-Is roundrock-dc-leaf1 in rack A4?
-```
-
-#### NetBox Rack Queries
-```
-Rack details for A4
-Show rack A1 at Leander
-List all racks at Leander DC
-What is the space utilization of rack A4?
 ```
 
 #### Panorama Queries
@@ -562,15 +488,14 @@ ollama pull llama3.1:8b
 
 ---
 
-### 3. NetBox/Panorama/Splunk Tools Fail
+### 3. Panorama/Splunk Tools Fail
 
 **Cause:** API credentials or URLs are incorrect
 
 **Solution:** Check environment variables and credential files:
-- `NETBOX_URL` and `NETBOX_TOKEN`
 - `netbrainauth.py` for NetBrain credentials
 - `panoramaauth.py` for Panorama credentials
-- `mcp_server.py` for Splunk credentials
+- `SPLUNK_HOST`, `SPLUNK_USER`, `SPLUNK_PASSWORD` for Splunk credentials
 
 ---
 
