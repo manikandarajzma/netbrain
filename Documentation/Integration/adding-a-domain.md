@@ -1,6 +1,6 @@
-# Adding a New Integration
+# Adding a New Domain / Integration
 
-This guide covers connecting a brand new external system to Atlas — for example, adding ServiceNow, Cisco DNA Center, or any other API that doesn't have an existing tool file.
+This guide covers connecting a brand new external domain or system to Atlas — for example, adding ServiceNow, Cisco DNA Center, or any other API that doesn't have an existing tool file.
 
 Once the integration is wired up, follow [adding-a-tool.md](./adding-a-tool.md) to add individual tools within it.
 
@@ -9,7 +9,7 @@ Once the integration is wired up, follow [adding-a-tool.md](./adding-a-tool.md) 
 ## Checklist
 
 - [ ] 1. Add credentials to `tools/shared.py`
-- [ ] 2. Create the auth module (`newdomainauth.py`)
+- [ ] 2. Create the service credential module (`newdomainauth.py`)
 - [ ] 3. Create the tool module (`tools/newdomain_tools.py`)
 - [ ] 4. Register the module in `mcp_server.py`
 - [ ] 5. Add `.env` variables
@@ -17,7 +17,7 @@ Once the integration is wired up, follow [adding-a-tool.md](./adding-a-tool.md) 
 
 ---
 
-## How the existing integrations are structured
+## File layout of existing integrations
 
 Each integration follows the same three-file pattern:
 
@@ -74,86 +74,27 @@ if not SERVICENOW_USER or not SERVICENOW_PASSWORD:
 
 ---
 
-## Step 2: Create the auth module
+## Step 2: Create the backend service credential module
 
 Create `newdomainauth.py` in the atlas root (alongside `netbrainauth.py`, `panoramaauth.py`). Its job is to manage session/token state and expose a single function the tool module calls to get a valid credential.
 
 Choose the pattern that matches how the external API authenticates:
 
-### Pattern A — session token with TTL (e.g., NetBrain)
+### Credential pattern A — session token with TTL (e.g., NetBrain)
 
-```python
-# servicenowauth.py
-"""
-ServiceNow authentication — session token management.
-Caches the token and refreshes it proactively after TOKEN_TTL_SECONDS.
-"""
-import os
-import time
-import requests
-from typing import Optional
+The external API requires a login call that returns a short-lived session token. Cache the token in a module-level variable and re-fetch it when it expires.
 
-_token: Optional[str] = None
-_token_obtained_at: float = 0.0
-TOKEN_TTL_SECONDS = 30 * 60   # 30 minutes
+See [`netbrainauth.py`](../../netbrainauth.py) for a complete working example. Key elements: a module-level `_token` variable, a `TOKEN_TTL_SECONDS` constant, a `get_token()` function that returns the cached token or fetches a new one, and a `clear_token_cache()` function used when a tool receives an unexpected 401 response.
 
-SERVICENOW_URL      = os.getenv("SERVICENOW_URL", "")
-SERVICENOW_USER     = os.getenv("SERVICENOW_USER", "")
-SERVICENOW_PASSWORD = os.getenv("SERVICENOW_PASSWORD", "")
+### Credential pattern B — API key cached indefinitely (e.g., Panorama)
 
+The external API uses an API key that does not expire. Fetch it once (from Key Vault or environment) and cache it for the process lifetime.
 
-def get_token() -> Optional[str]:
-    global _token, _token_obtained_at
-    if _token and (time.time() - _token_obtained_at) < TOKEN_TTL_SECONDS:
-        return _token
-    _token = None
-    if not SERVICENOW_USER or not SERVICENOW_PASSWORD:
-        return None
-    try:
-        resp = requests.post(
-            f"{SERVICENOW_URL}/api/now/auth/token",
-            json={"username": SERVICENOW_USER, "password": SERVICENOW_PASSWORD},
-            timeout=10,
-            verify=False,
-        )
-        if resp.status_code == 200:
-            _token = resp.json().get("token")
-            _token_obtained_at = time.time()
-            return _token
-    except Exception as e:
-        print(f"ServiceNow auth error: {e}")
-    return None
+See [`panoramaauth.py`](../../panoramaauth.py) for a working example.
 
+### Credential pattern C — credentials passed directly (e.g., Splunk)
 
-def clear_token_cache():
-    global _token, _token_obtained_at
-    _token = None
-    _token_obtained_at = 0.0
-```
-
-### Pattern B — API key cached indefinitely (e.g., Panorama)
-
-```python
-# newdomainauth.py
-import asyncio
-import logging
-
-logger = logging.getLogger(__name__)
-_api_key: str | None = None
-
-
-async def get_api_key() -> str | None:
-    global _api_key
-    if _api_key:
-        return _api_key
-    # ... fetch and cache key ...
-    _api_key = fetched_key
-    return _api_key
-```
-
-### Pattern C — credentials passed directly (e.g., Splunk)
-
-Some APIs (like Splunk) accept credentials on every request — no session management needed. In this case, skip the auth module entirely and import credentials directly from `tools/shared.py` in the tool module.
+Some APIs accept credentials on every request — no session management needed. Skip the credential module entirely and import the username/password constants directly from `tools/shared.py` in the tool module.
 
 ---
 
@@ -304,9 +245,9 @@ Follow [adding-a-tool.md](./adding-a-tool.md) for each tool, starting at Step 3 
 
 ---
 
-## SSL certificate verification
+## HTTPS TLS settings for API calls
 
-Most internal systems use self-signed certificates. Bypass SSL verification with:
+Most internal systems use self-signed certificates. Bypass TLS verification with:
 
 ```python
 ssl_ctx = ssl.create_default_context()

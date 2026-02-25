@@ -7,7 +7,7 @@ Atlas exposes one MCP tool for querying Splunk for firewall deny events involvin
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Authentication](#authentication)
+2. [Splunk API Credentials](#splunk-api-credentials)
 3. [MCP Tool](#mcp-tool)
 4. [Query Pipeline](#query-pipeline)
 5. [Event Normalisation](#event-normalisation)
@@ -37,7 +37,7 @@ Splunk is queried via its **REST API** (port 8089, the management port) using a 
 
 ---
 
-## Authentication
+## Splunk API Credentials
 
 Unlike Panorama and NetBrain, the Splunk tool does **not** cache its session key. A fresh login is performed on every tool invocation.
 
@@ -187,7 +187,7 @@ The Splunk REST API runs on port **8089** (management port). Port 8000 is the we
 
 Searching all indexes can be slow on large Splunk deployments. If deny events are consistently in a known index (e.g. `index=firewall`), the search query could be scoped to that index to improve performance. This is currently hardcoded in `_splunk_search_impl`.
 
-### SSL certificate verification disabled
+### HTTPS TLS verification disabled
 
 All Splunk API calls disable SSL verification (`ssl.CERT_NONE`) because Splunk commonly uses a self-signed certificate on the management port. This is appropriate for internal environments.
 

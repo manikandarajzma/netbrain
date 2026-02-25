@@ -7,7 +7,7 @@ Atlas exposes two MCP tools for querying NetBrain for hop-by-hop network paths a
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Authentication](#authentication)
+2. [NetBrain API Credentials](#netbrain-api-credentials)
 3. [MCP Tools](#mcp-tools)
 4. [Query Pipeline](#query-pipeline)
 5. [Caching Mechanisms](#caching-mechanisms)
@@ -41,9 +41,9 @@ NetBrain is queried via its **REST API** using a session token obtained from `ne
 
 ---
 
-## Authentication
+## NetBrain API Credentials
 
-Authentication is handled by `netbrainauth.py` using NetBrain's Session API.
+API credentials are handled by `netbrainauth.py` using NetBrain's Session API.
 
 ### Credential Source
 
@@ -238,7 +238,7 @@ Subsequent queries skip this step entirely since the cache is already populated.
 
 ### Token cache
 
-The session token is cached with a 30-minute TTL in `netbrainauth.py` (see [Authentication](#authentication)).
+The session token is cached with a 30-minute TTL in `netbrainauth.py` (see [NetBrain API Credentials](#netbrain-api-credentials)).
 
 ---
 
@@ -282,7 +282,7 @@ Zone queries are hardcoded to use template name `"Global"`. If the Panorama depl
 
 With `is_live=1` (the default), NetBrain queries the actual network devices for up-to-date routing and interface state. This is slower than baseline mode (`is_live=0`) and may time out if devices are unreachable. Use `is_live=0` for faster queries against NetBrain's cached topology data.
 
-### SSL certificate verification disabled
+### HTTPS TLS verification disabled
 
 All NetBrain and Panorama API calls in the path tools disable SSL verification. This is appropriate for internal lab/enterprise environments with self-signed certificates.
 

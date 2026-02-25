@@ -192,7 +192,7 @@ async def call_mcp_tool(tool_name: str, tool_arguments: dict, timeout: float = 6
                         return json.loads(m.group())
                     except json.JSONDecodeError:
                         pass
-                return {"result": result_text}
+                return result_text
     except asyncio.TimeoutError:
         return {"error": f"{tool_name} timed out. Please try again."}
     except Exception as e:

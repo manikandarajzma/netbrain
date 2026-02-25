@@ -80,7 +80,7 @@ The response contains `tool_display_name: "Panorama"`. The UI updates `currentSt
 
 ---
 
-## Step 3: Authentication & Authorization (FastAPI)
+## Step 3: Session & RBAC Check (FastAPI)
 
 **File:** [app.py](../../app.py), [auth.py](../../auth.py)
 
@@ -305,7 +305,7 @@ The MCP client sends a JSON-RPC `tools/call` message over the streamable-http tr
 
 **File:** [tools/panorama_tools.py](../../tools/panorama_tools.py)
 
-### Panorama authentication (panoramaauth.py)
+### Panorama API key retrieval (panoramaauth.py)
 
 **File:** [panoramaauth.py](../../panoramaauth.py)
 

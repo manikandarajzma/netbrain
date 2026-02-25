@@ -77,7 +77,7 @@ The response contains `tool_display_name: "Splunk"`. The UI updates `currentStat
 
 ---
 
-## Step 3: Authentication & Authorization (FastAPI)
+## Step 3: Session & RBAC Check (FastAPI)
 
 **File:** [app.py](../../app.py), [auth.py](../../auth.py)
 

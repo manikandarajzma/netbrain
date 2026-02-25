@@ -1,8 +1,22 @@
 """
-Authentication for FastAPI app.
-Uses Microsoft Entra ID (OIDC) only. No local passwords; credentials are in Azure Key Vault.
-Sessions are stored in signed cookies (no server-side store), so they survive restarts and work across instances.
-Access is determined by group membership in the OIDC id_token's groups claim (group names: admin, netadmin).
+Authentication for Atlas (FastAPI).
+
+Identity provider: Microsoft Entra ID via OIDC. No local passwords.
+All backend credentials (NetBrain, Panorama, Splunk) are stored in Azure Key Vault.
+
+Session storage: signed cookies (itsdangerous URLSafeTimedSerializer).
+There is no server-side session store — the session payload is the cookie itself.
+This means sessions survive app restarts and work across multiple instances without
+a shared cache, as long as SESSION_SECRET is the same on all instances.
+
+Access control: group membership from the OIDC id_token `groups` claim.
+Two active groups are recognised: "admin" (full access) and "netadmin" (limited).
+Any session that does not resolve to a known group is treated as "guest" (no access).
+
+Enforcement is two-layered:
+  1. At sign-in: extract_group_from_token() resolves the group or rejects the login.
+  2. On every tool call: chat_service._check_tool_access() reads the group from the
+     session cookie and checks it against GROUP_ALLOWED_TOOLS before running any tool.
 """
 import os
 import secrets
@@ -38,8 +52,12 @@ AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0"
 # Session TTL for OIDC (30 minutes)
 OIDC_SESSION_TTL = 1800
 
-# Signed cookie sessions: same secret across instances so sessions work after restart and with multiple app instances
+# SESSION_SECRET should be set in .env for production so sessions survive restarts
+# and work across multiple app instances. If unset, a random secret is generated
+# per process, which means all existing sessions are invalidated on every restart.
 _SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or secrets.token_urlsafe(32)
+# salt scopes the serializer to this app — prevents cookies from one app being
+# replayed against another app that shares the same secret.
 _session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
 
 # ---------------------------------------------------------------------------
@@ -56,6 +74,7 @@ GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
         "query_panorama_ip_object_group",
         "query_panorama_address_group_members",
         "find_unused_panorama_objects",
+        "search_documentation",
     },
     "guest": set(),  # least privilege: no tool access
 }
@@ -63,13 +82,19 @@ GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
 # Maps group -> list of sidebar category slugs shown in the UI.  None = all.
 GROUP_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
-    "netadmin": ["atlas", "panorama"],
+    "netadmin": ["netbrain", "panorama", "docs"],
     "guest": [],
 }
 
 
 def get_user_group(username: str) -> str:
-    """Return the group for *username*. With signed-cookie sessions there is no server-side store; use get_group_for_session(session_id) when you have the session. This returns 'guest' for any username."""
+    """Fallback group lookup by username.
+
+    Because sessions are stored in signed cookies (no server-side store), the group
+    cannot be looked up from a username alone. Callers that have a session cookie value
+    should use get_group_for_session(session_id) instead.
+    Always returns 'guest' — the safest default when the session is unavailable.
+    """
     return "guest"
 
 
@@ -90,7 +115,16 @@ def get_allowed_categories(group: str) -> list[str] | None:
 def create_session(username: str, *, group: str = "admin",
                    auth_mode: str = "oidc",
                    tokens: dict | None = None) -> str:
-    """Create a session; returns signed cookie value (no server-side store). tokens are not stored (signed cookie size limit)."""
+    """Serialise a session payload into a signed cookie value.
+
+    The returned string is stored directly as the cookie value — there is no
+    server-side session entry. The payload is signed (not encrypted) so it can
+    be read by the client but cannot be tampered with.
+
+    tokens is accepted for interface compatibility but is intentionally not
+    stored — OAuth tokens are too large for a cookie and are not needed after
+    the group is resolved at sign-in.
+    """
     payload = {
         "username": username,
         "group": group,

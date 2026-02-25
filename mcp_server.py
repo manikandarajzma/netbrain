@@ -27,6 +27,7 @@ from tools.shared import mcp, MCP_SERVER_HOST, MCP_SERVER_PORT
 import tools.splunk_tools      # noqa: F401
 import tools.panorama_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
+import tools.docs_tool         # noqa: F401
 
 logger = logging.getLogger("atlas.server")
 
@@ -50,8 +51,8 @@ async def health_check(request: Request) -> JSONResponse:
 
 if __name__ == "__main__":
     # Send all logs to file only (no console output)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_file_path = os.path.join(script_dir, "mcp_server.log")
+    log_file_path = "/var/log/atlas/mcp_server.log"
+    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s [%(name)s] %(message)s",

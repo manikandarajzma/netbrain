@@ -9,6 +9,7 @@ import MetricBadge from './MetricBadge.jsx'
 import DirectAnswerBadge from './DirectAnswerBadge.jsx'
 import ErrorMessage from './ErrorMessage.jsx'
 import JsonFallback from './JsonFallback.jsx'
+import MarkdownContent from './MarkdownContent.jsx'
 import PathVisualization from '../path/PathVisualization.jsx'
 import DataTable from '../tables/DataTable.jsx'
 import VerticalTable from '../tables/VerticalTable.jsx'
@@ -108,9 +109,10 @@ export default function AssistantMessage({ content }) {
     return groups
   }, [content])
 
-  // String content
+  // String content — render as markdown so tool responses with headings,
+  // bold, code blocks and horizontal rules display correctly.
   if (classified.type === 'text') {
-    return <>{classified.content}</>
+    return <MarkdownContent text={classified.content} />
   }
 
   // Object content

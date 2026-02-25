@@ -1,6 +1,6 @@
-# Adding a New Tool to an Existing Domain
+# Adding a New MCP Tool
 
-This guide covers adding a new MCP tool to a domain module that already exists — for example, adding a new NetBrain query to [tools/netbrain_tools.py](../../tools/netbrain_tools.py), a new Splunk search to [tools/splunk_tools.py](../../tools/splunk_tools.py), and so on.
+This guide covers adding a new MCP tool to an existing integration module — for example, adding a new NetBrain query to [tools/netbrain_tools.py](../../tools/netbrain_tools.py), a new Splunk search to [tools/splunk_tools.py](../../tools/splunk_tools.py), and so on.
 
 To add an entirely new integration (new file, new auth, new credentials), see [adding-a-domain.md](./adding-a-domain.md) first, then return here.
 
@@ -8,7 +8,7 @@ To add an entirely new integration (new file, new auth, new credentials), see [a
 
 ## Checklist
 
-- [ ] 1. Write the implementation function in the domain tool file
+- [ ] 1. Write the implementation function in the integration tool file
 - [ ] 2. Write the `@mcp.tool()` wrapper
 - [ ] 3. Update `TOOL_DISPLAY_NAMES` in `chat_service.py`
 - [ ] 4. Update `_TOOL_TIMEOUTS` in `chat_service.py`
@@ -22,7 +22,7 @@ To add an entirely new integration (new file, new auth, new credentials), see [a
 
 ## Step 1: Write the Implementation Function
 
-Add a private `async def _my_tool_impl(...)` function in the domain tool file. Keep business logic here and away from the `@mcp.tool()` wrapper.
+Add a private `async def _my_tool_impl(...)` function in the integration tool file. Keep business logic here and away from the `@mcp.tool()` wrapper.
 
 ```python
 # tools/netbrain_tools.py  (example: get_device_interfaces)

@@ -13,7 +13,13 @@ if str(_parent) not in sys.path:
     sys.path.insert(0, str(_parent))
 
 # Log to file only (no console).
-_log_file = _root / "atlas_web.log"
+# Use /var/log/atlas in production (created by systemd LogsDirectory=atlas).
+# Fall back to the project directory in dev where /var/log/atlas may not be writable.
+_log_file = Path("/var/log/atlas/atlas_web.log")
+try:
+    _log_file.parent.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    _log_file = _root / "atlas_web.log"
 _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
 _file_handler.setFormatter(logging.Formatter(
     "%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -50,13 +56,13 @@ if __name__ == "__main__":
     _log_config_path = _root / "log_config.json"
     if _log_config_path.exists():
         _log_cfg = json.loads(_log_config_path.read_text())
-        _log_cfg["handlers"]["file"]["filename"] = str(_root / "atlas_web.log")
+        _log_cfg["handlers"]["file"]["filename"] = str(_log_file)
     else:
         _log_cfg = None
 
     print(
-        f"Atlas web server starting at http://{_host}:{_port} (reload on). Logs: atlas_web.log\n"
-        "Server runs in foreground; press Ctrl+C to stop. If the prompt returns, check atlas_web.log for errors.",
+        f"Atlas web server starting at http://{_host}:{_port} (reload on). Logs: {_log_file}\n"
+        f"Server runs in foreground; press Ctrl+C to stop. If the prompt returns, check {_log_file} for errors.",
         flush=True,
     )
     import socket as _socket
@@ -74,6 +80,7 @@ if __name__ == "__main__":
             "run_web:app",
             fd=_sock.fileno(),
             reload=True,
+            reload_excludes=["*.pyc", "__pycache__", "*.log", ".git"],
             log_config=_log_cfg,
         )
     except Exception as e:

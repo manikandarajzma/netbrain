@@ -7,7 +7,7 @@ Atlas exposes two MCP tools for querying Palo Alto Panorama's XML API for addres
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Authentication](#authentication)
+2. [Panorama API Credentials](#panorama-api-credentials)
 3. [MCP Tools](#mcp-tools)
 4. [Query Pipeline](#query-pipeline)
 5. [Caching Mechanisms](#caching-mechanisms)
@@ -41,9 +41,9 @@ Panorama uses a **candidate config model** — the XML API `action=get` always r
 
 ---
 
-## Authentication
+## Panorama API Credentials
 
-Authentication is handled by `panoramaauth.py`.
+API credentials are handled by `panoramaauth.py`.
 
 ### Credential Source
 
@@ -154,7 +154,7 @@ Step 2: Fetch pre-rulebase + post-rulebase security rules
 
 All caches live at **module level** in `panoramaauth.py` and `panorama_tools.py`, so they are shared across all MCP tool invocations for the lifetime of the server process.
 
-### 1. API Key Cache (`panoramaauth._api_key`)
+### 1. Panorama API key in-process cache (`panoramaauth._api_key`)
 
 - **What:** The Panorama session API key string.
 - **TTL:** No automatic expiry — persists until the server restarts or `clear_api_key_cache()` is called.
@@ -351,7 +351,7 @@ Panorama invalidates API keys after extended inactivity. If a bulk operation run
 
 Panorama's XML API response time degrades as the candidate config grows. With 6,000+ objects in a device group, individual `action=set` calls can slow from ~100ms to several seconds. The caching and parallel fetching in Atlas mitigate this for read queries, but write-heavy scripts will always be bounded by Panorama's processing capacity.
 
-### SSL certificate verification
+### HTTPS TLS verification
 
 All API calls disable SSL certificate verification (`ssl.CERT_NONE`, `check_hostname=False`) because Panorama typically uses a self-signed certificate. This is intentional and appropriate for internal lab environments.
 

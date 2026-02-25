@@ -1,6 +1,6 @@
 export const exampleQueries = [
   {
-    category: 'atlas',
+    category: 'netbrain',
     label: 'NetBrain',
     icon: '\uD83C\uDF10',
     queries: [
@@ -28,6 +28,17 @@ export const exampleQueries = [
     icon: '\uD83D\uDCCA',
     queries: [
       'Recent deny events for 10.0.0.250',
+    ],
+  },
+  {
+    category: 'docs',
+    label: 'Documentation',
+    icon: '\uD83D\uDCDA',
+    queries: [
+      'How does authentication work?',
+      'How is tool access enforced?',
+      'How do I add a new tool?',
+      'How do sessions work?',
     ],
   },
 ]

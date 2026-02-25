@@ -84,7 +84,7 @@ The response contains `tool_display_name: "NetBrain"`. The UI updates `currentSt
 
 ---
 
-## Step 3: Authentication & Authorization (FastAPI)
+## Step 3: Session & RBAC Check (FastAPI)
 
 **File:** [app.py](../../app.py), [auth.py](../../auth.py)
 
@@ -299,38 +299,6 @@ The MCP client sends a JSON-RPC `tools/call` message over the streamable-http tr
 ## Step 8: netbrain_tools.py — Tool Execution
 
 **File:** [tools/netbrain_tools.py](../../tools/netbrain_tools.py)
-
-### NetBrain authentication (netbrainauth.py)
-
-**File:** [netbrainauth.py](../../netbrainauth.py)
-
-```python
-auth_token = netbrainauth.get_auth_token()
-```
-
-`get_auth_token()` checks for a module-level cached token first. The cache has a 30-minute TTL (`TOKEN_TTL_SECONDS = 1800`). If the token is missing or expired:
-
-1. Reads `NETBRAIN_USERNAME` and `NETBRAIN_PASSWORD` from environment variables (loaded from `.env`).
-2. POSTs to the NetBrain Session API:
-   ```
-   POST {NETBRAIN_URL}/ServicesAPI/API/V1/Session
-   Content-Type: application/json
-
-   { "username": "...", "password": "...", "authentication_id": "..." }
-   ```
-   The optional `authentication_id` supports external auth providers (LDAP/AD/TACACS).
-3. Parses the JSON response — success is indicated by `statusCode: 790200`:
-   ```json
-   { "statusCode": 790200, "token": "abc123...", "statusDescription": "Success" }
-   ```
-4. Caches the token in the module-level `_access_token` variable.
-
-All subsequent API calls include the token in a `Token` header:
-```python
-headers = {"Content-Type": "application/json", "Accept": "application/json", "Token": auth_token}
-```
-
-**Token refresh on 401:** If an API call returns HTTP 401 (server-side expiry before the TTL), the code calls `netbrainauth.clear_token_cache()` and immediately re-authenticates, then retries the failed request once.
 
 ### Protocol and port mapping
 

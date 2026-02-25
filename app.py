@@ -177,7 +177,19 @@ async def auth_microsoft(request: Request):
 
 @app.get("/auth/callback")
 async def auth_callback(request: Request):
-    """Handle Microsoft OIDC callback."""
+    """Handle the Microsoft OIDC redirect after the user authenticates.
+
+    Flow:
+      1. Exchange the authorisation code for tokens (authlib handles PKCE/state).
+      2. Decode the id_token JWT payload to get the user's claims, including the
+         `groups` claim containing Entra ID group Object IDs.
+         We decode the JWT ourselves rather than relying on authlib's userinfo
+         because the `groups` claim is only present in the id_token, not in the
+         /userinfo endpoint response (Microsoft does not include group memberships
+         in the userinfo endpoint).
+      3. Resolve the group from the claims (auth.py). Reject if not in a known group.
+      4. Create a signed session cookie and redirect to the main app.
+    """
     if oauth is None:
         return RedirectResponse(url="/login?error=oidc", status_code=302)
 
@@ -187,7 +199,9 @@ async def auth_callback(request: Request):
         print(f"OIDC token error: {exc}", flush=True)
         return RedirectResponse(url="/login?error=oidc", status_code=302)
 
-    # Get user claims from id_token; fall back to authlib's parsed userinfo
+    # Decode the id_token JWT payload (middle segment, base64url-encoded JSON).
+    # We do not verify the signature here — authlib already verified it during
+    # authorize_access_token(). We just need the claims dict.
     import json as _json
     import base64 as _base64
     userinfo = {}
@@ -195,10 +209,12 @@ async def auth_callback(request: Request):
     if id_token:
         try:
             payload = id_token.split(".")[1]
+            # JWT base64url omits padding — restore it before decoding.
             payload += "=" * (4 - len(payload) % 4)
             userinfo = _json.loads(_base64.urlsafe_b64decode(payload))
         except Exception:
             pass
+    # Fall back to authlib's parsed userinfo if id_token decoding failed.
     if not userinfo:
         userinfo = token.get("userinfo") or {}
 
@@ -206,10 +222,13 @@ async def auth_callback(request: Request):
         return RedirectResponse(url="/login?error=oidc", status_code=302)
 
     username = extract_username_from_token(userinfo)
+    # Resolve group from the `groups` claim in the token. Returns None if the
+    # user is not a member of any recognised group — reject the login.
     group = extract_group_from_token(userinfo)
     if group is None:
         return RedirectResponse(url="/login?error=norole", status_code=302)
 
+    # Bake username + group into a signed cookie. No server-side session store.
     session_id = create_session(
         username,
         group=group,
@@ -226,8 +245,8 @@ async def auth_callback(request: Request):
         key=SESSION_COOKIE,
         value=session_id,
         max_age=SESSION_MAX_AGE_OIDC,
-        httponly=True,
-        samesite="lax",
+        httponly=True,   # not accessible from JavaScript
+        samesite="lax",  # sent on top-level navigations; blocks CSRF
     )
     return r
 

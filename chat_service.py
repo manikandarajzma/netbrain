@@ -52,6 +52,44 @@ def is_query_in_scope(prompt: str) -> Dict[str, Any]:
     return {"in_scope": True, "reason": "Passed through to LLM"}
 
 
+def _is_doc_query(prompt: str) -> bool:
+    """Return True if the query is a documentation/how-it-works question.
+
+    Small local LLMs often output tool calls as plain text instead of structured
+    function calls when there are many tools. Documentation queries are detected
+    here and routed directly to search_documentation, bypassing LLM tool selection.
+    """
+    if not prompt:
+        return False
+    # Queries with IPs are always network queries, never docs
+    if _IP_OR_CIDR_RE.search(prompt):
+        return False
+    lower = prompt.lower()
+    # Action keywords that indicate a live network query (not a doc question)
+    # Product names alone (netbrain, panorama, splunk) are NOT excluded —
+    # "end to end flow for netbrain" is a doc query even though it says "netbrain".
+    network_action_kw = any(k in lower for k in (
+        "firewall rule", "security rule", "address group",
+        "path from", "path to", "can reach",
+        "orphan", "unused object", "address object",
+        "deny event", "recent deny",
+    ))
+    if network_action_kw:
+        return False
+    # Documentation question patterns
+    doc_kw = any(k in lower for k in (
+        "how does", "how do", "how is", "how are",
+        "what is", "what are", "what does",
+        "explain", "describe", "tell me about",
+        "end to end", "end-to-end", "flow for", "flow of",
+        "authentication", "session", "rbac", "tool access",
+        "add a new tool", "add a tool", "add a new domain",
+        "troubleshoot", "troubleshooting",
+        "documentation", "how it works", "how atlas",
+    ))
+    return doc_kw
+
+
 # ---------------------------------------------------------------------------
 # Tool display names + timeouts
 # ---------------------------------------------------------------------------
@@ -260,7 +298,16 @@ def _normalize_result(
 # ---------------------------------------------------------------------------
 
 def _check_tool_access(username: str | None, tool_name: str, session_id: str | None = None) -> str | None:
-    """Return an error message if the user's role forbids tool_name, else None."""
+    """Return an error message if the user's group forbids tool_name, else None.
+
+    Group is resolved from the signed session cookie (session_id) when available,
+    which is the normal path for browser requests. The username fallback is used
+    when no session cookie is present and always resolves to 'guest' (no access),
+    so it effectively blocks unauthenticated tool calls.
+
+    This check runs on every tool call and cannot be bypassed by prompt injection
+    because it reads the group from the server-signed cookie, not from user input.
+    """
     if username is None:
         return None
     from atlas.auth import get_group_for_session, get_user_group, get_allowed_tools
@@ -313,6 +360,15 @@ async def process_message(
             msg = await synthesize_final_answer(prompt, tool_name, result)
             return {"role": "assistant", "content": msg}
         return {"role": "assistant", "content": _normalize_result(tool_name, result, prompt)}
+
+    # Short-circuit: documentation queries go directly to search_documentation.
+    # Small local LLMs (llama3.1:8b) often output tool calls as plain text when
+    # there are many tools, so we bypass LLM tool selection for doc questions.
+    if not discover_only and _is_doc_query(prompt):
+        result = await call_mcp_tool("search_documentation", {"query": prompt}, timeout=30.0)
+        if result and not (isinstance(result, dict) and "error" in result):
+            return {"role": "assistant", "content": result}
+        # Fall through to LLM if doc search fails or returns nothing
 
     # Fetch tools from MCP server and build LLM with bind_tools()
     mcp_tools = await _fetch_mcp_tools()
