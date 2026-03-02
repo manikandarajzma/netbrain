@@ -19,114 +19,41 @@
 
 ## Architecture
 
-The system uses a **client-server architecture** with AI-powered tool selection:
+The following sequence diagram shows the request flow for a typical query:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Web Browser                             │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTPS
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Nginx                                    │
-│              (reverse proxy / TLS termination)                  │
-│  • Forwards requests to FastAPI on port 8000                    │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP (localhost:8000)
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    FastAPI Web Server                           │
-│                   (app.py)                                      │
-│  • Authentication (auth.py, OIDC or local)                      │
-│  • Chat API (/api/chat, /api/discover, /api/me)                 │
-│  • Serves React build (frontend/dist/) in production            │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Chat Service Layer                            │
-│                  (chat_service.py)                              │
-│  • Query parsing & routing                                      │
-│  • Conversation history management                              │
-│  • Result normalization                                         │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  LLM Tool Selection  (mcp_client_tool_selection.py)       │  │
-│  │  • Ollama/Llama3.1:8b  • Intent classification            │  │
-│  │  • Parameter extraction from natural language             │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ tool name + parameters
-                             ▼
-             ┌──────────────────────────────────┐
-             │    MCP Client  (mcp_client.py)   │
-             │  • Session management            │
-             │  • Tool execution                │
-             │  • HTTP transport (port 8765)    │
-             └──────────────────┬───────────────┘
-                                │ streamable-http
-                                ▼
-                             ┌─────────────────────────────────────┐
-                             │       MCP Server                    │
-                             │      (mcp_server.py)                │
-                             │  Exposes tools via MCP:             │
-                             │  • Path queries (NetBrain API)      │
-                             │  • Panorama address groups          │
-                             │  • Splunk deny events               │
-                             └─────────────┬───────────────────────┘
-                                           │
-                    ┌──────────────────────┬───────────────────────┐
-                    ▼                      ▼                       ▼
-            ┌───────────────┐     ┌──────────────────┐     ┌────────────┐
-            │  NetBrain API │     │ Panorama XML API │     │ Splunk API │
-            │  (netbrainauth│     │  (panoramaauth   │     │            │
-            │   .py)        │     │   .py)           │     │            │
-            └───────────────┘     └──────────────────┘     └────────────┘
+   User         Nginx       Web Server     Ollama LLM    MCP Server       APIs
+    |              |              |               |             |            |
+    |── query ────▶|              |               |             |            |
+    |              |── proxy ────▶|               |             |            |
+    |              |              |                             |            |
+    |              |              |──── ListToolsRequest ──────▶|            |
+    |              |              |◀─── ListToolsResult ────────|            |
+    |              |              |               |             |            |
+    |              |              |── query +    ▶|             |            |
+    |              |              |   tool list   |             |            |
+    |              |              |◀─ tool name + |             |            |
+    |              |              |   params ─────|             |            |
+    |              |              |               |             |            |
+    |              |              |──── CallToolRequest ───────▶|            |
+    |              |              |               |             |── request ▶|
+    |              |              |               |             |◀─ response─|
+    |              |              |◀─── CallToolResult ─────────|            |
+    |              |              |               |             |            |
+    |◀─ response ──|◀─ response ──|               |             |            |
 ```
 
-### Key Components
+**Components:**
 
-1. **FastAPI Web Server** (`app.py`)
-   - Serves the React build from `frontend/dist/` in production
-   - Handles authentication (local or Microsoft OIDC)
-   - Provides `/api/chat`, `/api/discover`, `/api/me` endpoints
-   - RBAC: role-based access to tool categories
-   - Auto-reloads on code changes (development mode)
-
-7. **React Frontend** (`frontend/`)
-   - React 18 SPA with Zustand state management
-   - Vite dev server with API proxying for development
-   - Component-based architecture with CSS Modules
-   - See [frontend/frontend.md](frontend/frontend.md) for full details
-
-2. **Chat Service** (`chat_service.py`)
-   - Orchestrates tool discovery and execution
-   - Manages conversation context
-   - Implements agentic loop (retry on failure)
-   - Normalizes and formats results
-
-3. **LLM Tool Selection** (`mcp_client_tool_selection.py`)
-   - Uses Ollama (Llama3.1:8b) for intelligent tool selection
-   - Extracts parameters from natural language queries
-   - Handles clarification questions
-   - Structured output via Pydantic schemas
-
-4. **MCP Client** (`mcp_client.py`)
-   - Connects to MCP server via HTTP transport
-   - Executes selected tools
-   - Handles streaming responses
-   - Session management
-
-5. **MCP Server** (`mcp_server.py`)
-   - Exposes network infrastructure tools via MCP protocol
-   - Integrates with NetBrain API, Panorama, and Splunk APIs
-   - Runs independently on port 8765
-   - Must be started before the web client
-
-6. **Authentication Modules**
-   - `netbrainauth.py`: NetBrain API credentials
-   - `panoramaauth.py`: Panorama firewall credentials
-   - `auth.py`: Local web UI authentication
+| Component | File(s) | Role |
+|---|---|---|
+| Nginx | — | TLS termination, reverse proxy to port 8000 |
+| Web Server | `app.py` | Auth (OIDC), REST API, session management |
+| Chat Service | `chat_service.py` | Orchestrates tool discovery and execution |
+| Ollama LLM | `mcp_client_tool_selection.py` | Selects tool and extracts parameters from natural language |
+| MCP Client | `mcp_client.py` | Calls MCP server via streamable-http (port 8765) |
+| MCP Server | `mcp_server.py` | Executes tools against NetBrain, Panorama, Splunk APIs |
+| APIs | `netbrainauth.py`, `panoramaauth.py`, `splunkauth.py` | NetBrain path queries, Panorama address groups, Splunk deny events |
 
 ---
 
