@@ -41,6 +41,59 @@ Open **http://localhost:5173** (log in at http://localhost:8000/login first so t
 
 ---
 
-## Other issues
+## Chat Returns Nothing or "No result"
 
-For chat/API issues, MCP server, Ollama, or auth, see the main [README Troubleshooting](../../README.md#troubleshooting) section.
+**Cause:** MCP server is not running
+
+**Solution:** Start the MCP server:
+```bash
+sudo systemctl start atlas-mcp
+```
+
+---
+
+## "Tool selection failed" or "LLM did not select a tool"
+
+**Cause:** Ollama is not running or model is not pulled
+
+**Solution:**
+```bash
+# Start Ollama (if not running)
+ollama serve
+
+# Pull the model (if not already pulled)
+ollama pull llama3.1:8b
+```
+
+---
+
+## Panorama/Splunk Tools Fail
+
+**Cause:** API credentials or URLs are incorrect
+
+**Solution:** Check environment variables and credential files:
+- `netbrainauth.py` for NetBrain credentials
+- `panoramaauth.py` for Panorama credentials
+- `SPLUNK_HOST`, `SPLUNK_USER`, `SPLUNK_PASSWORD` for Splunk credentials
+
+---
+
+## Browser Shows Old Cached UI
+
+**Cause:** Browser is caching old HTML/CSS/JS files
+
+**Solution:** Hard refresh the browser:
+- **Windows/Linux:** Ctrl + Shift + R or Ctrl + F5
+- **Mac:** Cmd + Shift + R
+
+---
+
+## Import Errors
+
+**Cause:** Dependencies not installed
+
+**Solution:**
+```bash
+cd atlas
+uv sync  # or: pip install -e .
+```

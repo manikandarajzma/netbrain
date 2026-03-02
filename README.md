@@ -418,59 +418,7 @@ Recent deny events for 192.168.1.1 in the last 24 hours
 
 ## Troubleshooting
 
-### 1. Chat Returns Nothing or "No result"
-
-**Cause:** MCP server is not running
-
-**Solution:** Start the MCP server first in Terminal 1 (see [Running the Application](#running-the-application))
-
----
-
-### 2. "Tool selection failed" or "LLM did not select a tool"
-
-**Cause:** Ollama is not running or model is not pulled
-
-**Solution:**
-```bash
-# Start Ollama (if not running)
-ollama serve
-
-# Pull the model (if not already pulled)
-ollama pull llama3.1:8b
-```
-
----
-
-### 3. Panorama/Splunk Tools Fail
-
-**Cause:** API credentials or URLs are incorrect
-
-**Solution:** Check environment variables and credential files:
-- `netbrainauth.py` for NetBrain credentials
-- `panoramaauth.py` for Panorama credentials
-- `SPLUNK_HOST`, `SPLUNK_USER`, `SPLUNK_PASSWORD` for Splunk credentials
-
----
-
-### 4. Browser Shows Old Cached UI
-
-**Cause:** Browser is caching old HTML/CSS/JS files
-
-**Solution:** Hard refresh the browser:
-- **Windows/Linux:** Ctrl + Shift + R or Ctrl + F5
-- **Mac:** Cmd + Shift + R
-
----
-
-### 5. Import Errors
-
-**Cause:** Dependencies not installed
-
-**Solution:**
-```bash
-cd atlas
-uv sync  # or: pip install -e .
-```
+See [Documentation/General/troubleshooting/troubleshooting.md](Documentation/General/troubleshooting/troubleshooting.md) for common issues and solutions.
 
 ---
 
