@@ -57,7 +57,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 │  LLM Tool Selection      │    │    MCP Client                │
 │  (mcp_client_tool_       │    │    (mcp_client.py)           │
 │   selection.py)          │    │  • Session management        │
-│  • Ollama/Qwen2.5:14b    │    │  • Tool execution            │
+│  • Ollama/Llama3.1:8b    │    │  • Tool execution            │
 │  • Intent classification │    │  • Streaming responses       │
 │  • Parameter extraction  │    │                              │
 └──────────────────────────┘    └──────────────┬───────────────┘
@@ -103,7 +103,7 @@ The system uses a **client-server architecture** with AI-powered tool selection:
    - Normalizes and formats results
 
 3. **LLM Tool Selection** (`mcp_client_tool_selection.py`)
-   - Uses Ollama (Qwen2.5:14b) for intelligent tool selection
+   - Uses Ollama (Llama3.1:8b) for intelligent tool selection
    - Extracts parameters from natural language queries
    - Handles clarification questions
    - Structured output via Pydantic schemas
