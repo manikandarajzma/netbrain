@@ -47,22 +47,25 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 │                   Chat Service Layer                            │
 │                  (chat_service.py)                              │
 │  • Query parsing & routing                                      │
-│  • Tool discovery & execution                                   │
 │  • Conversation history management                              │
 │  • Result normalization                                         │
-└─────────────┬───────────────────────────────────┬───────────────┘
-              │                                   │
-              ▼                                   ▼
-┌──────────────────────────┐    ┌──────────────────────────────┐
-│  LLM Tool Selection      │    │    MCP Client                │
-│  (mcp_client_tool_       │    │    (mcp_client.py)           │
-│   selection.py)          │    │  • Session management        │
-│  • Ollama/Llama3.1:8b    │    │  • Tool execution            │
-│  • Intent classification │    │  • Streaming responses       │
-│  • Parameter extraction  │    │                              │
-└──────────────────────────┘    └──────────────┬───────────────┘
-                                               │ MCP Protocol
-                                               ▼
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  LLM Tool Selection  (mcp_client_tool_selection.py)       │  │
+│  │  • Ollama/Llama3.1:8b  • Intent classification            │  │
+│  │  • Parameter extraction from natural language             │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ tool name + parameters
+                             ▼
+             ┌──────────────────────────────────┐
+             │    MCP Client  (mcp_client.py)   │
+             │  • Session management            │
+             │  • Tool execution                │
+             │  • HTTP transport (port 8765)    │
+             └──────────────────┬───────────────┘
+                                │ streamable-http
+                                ▼
                              ┌─────────────────────────────────────┐
                              │       MCP Server                    │
                              │      (mcp_server.py)                │
