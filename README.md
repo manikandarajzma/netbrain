@@ -389,8 +389,8 @@ The MCP server exposes the following tools:
 
 ### Web UI
 
-1. Open **http://localhost:8000** in your browser
-2. Log in with **admin** / **admin** (or your configured credentials)
+1. Open the Atlas URL in your browser (via Nginx, e.g. **https://atlas.yourcompany.com**)
+2. Log in with your **Microsoft account** (OIDC via Azure Entra ID)
 3. Type natural language queries in the chat box:
 
 #### Path Queries
