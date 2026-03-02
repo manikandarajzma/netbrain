@@ -19,41 +19,70 @@
 
 ## Architecture
 
-The following sequence diagram shows the request flow for a typical query:
+The system uses a **client-server architecture** with AI-powered tool selection:
 
 ```
-   User         Nginx       Web Server     Ollama LLM    MCP Server       APIs
-    |              |              |               |             |            |
-    |── query ────▶|              |               |             |            |
-    |              |── proxy ────▶|               |             |            |
-    |              |              |                             |            |
-    |              |              |──── ListToolsRequest ──────▶|            |
-    |              |              |◀─── ListToolsResult ────────|            |
-    |              |              |               |             |            |
-    |              |              |── query +    ▶|             |            |
-    |              |              |   tool list   |             |            |
-    |              |              |◀─ tool name + |             |            |
-    |              |              |   params ─────|             |            |
-    |              |              |               |             |            |
-    |              |              |──── CallToolRequest ───────▶|            |
-    |              |              |               |             |── request ▶|
-    |              |              |               |             |◀─ response─|
-    |              |              |◀─── CallToolResult ─────────|            |
-    |              |              |               |             |            |
-    |◀─ response ──|◀─ response ──|               |             |            |
+┌─────────────────────────────────────────────────────────────────┐
+│                         Web Browser                             │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTPS
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Nginx                                    │
+│              (reverse proxy / TLS termination)                  │
+│  • Forwards requests to FastAPI on port 8000                    │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTP (localhost:8000)
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FastAPI Web Server                           │
+│                   (app.py)                                      │
+│  • Authentication (auth.py, OIDC)                               │
+│  • Chat API (/api/chat, /api/discover, /api/me)                 │
+│  • RBAC: role-based access to tool categories                   │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Chat Service Layer                            │
+│                  (chat_service.py)                              │
+│  • Query parsing & routing                                      │
+│  • Conversation history management                              │
+│  • Result normalization                                         │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  LLM Tool Selection  (mcp_client_tool_selection.py)       │  │
+│  │  • Ollama/Llama3.1:8b  • Intent classification            │  │
+│  │  • Parameter extraction from natural language             │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ tool name + parameters
+                             ▼
+             ┌──────────────────────────────────┐
+             │    MCP Client  (mcp_client.py)   │
+             │  • Session management            │
+             │  • Tool execution                │
+             │  • HTTP transport (port 8765)    │
+             └──────────────────┬───────────────┘
+                                │ streamable-http
+                                ▼
+                             ┌─────────────────────────────────────┐
+                             │       MCP Server                    │
+                             │      (mcp_server.py)                │
+                             │  Exposes tools via MCP:             │
+                             │  • Path queries (NetBrain API)      │
+                             │  • Panorama address groups          │
+                             │  • Splunk deny events               │
+                             └─────────────┬───────────────────────┘
+                                           │
+                    ┌──────────────────────┬───────────────────────┐
+                    ▼                      ▼                       ▼
+            ┌───────────────┐     ┌──────────────────┐     ┌────────────┐
+            │  NetBrain API │     │ Panorama XML API │     │ Splunk API │
+            │  (netbrainauth│     │  (panoramaauth   │     │            │
+            │   .py)        │     │   .py)           │     │            │
+            └───────────────┘     └──────────────────┘     └────────────┘
 ```
-
-**Components:**
-
-| Component | File(s) | Role |
-|---|---|---|
-| Nginx | — | TLS termination, reverse proxy to port 8000 |
-| Web Server | `app.py` | Auth (OIDC), REST API, session management |
-| Chat Service | `chat_service.py` | Orchestrates tool discovery and execution |
-| Ollama LLM | `mcp_client_tool_selection.py` | Selects tool and extracts parameters from natural language |
-| MCP Client | `mcp_client.py` | Calls MCP server via streamable-http (port 8765) |
-| MCP Server | `mcp_server.py` | Executes tools against NetBrain, Panorama, Splunk APIs |
-| APIs | `netbrainauth.py`, `panoramaauth.py`, `splunkauth.py` | NetBrain path queries, Panorama address groups, Splunk deny events |
 
 ---
 
