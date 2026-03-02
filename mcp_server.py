@@ -52,8 +52,12 @@ async def health_check(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     # Send all logs to file only (no console output)
     log_file_path = "/var/log/atlas/mcp_server.log"
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
+    try:
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
+    except (PermissionError, OSError):
+        log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_server.log")
+        file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",

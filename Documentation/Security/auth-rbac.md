@@ -4,7 +4,7 @@
 
 Atlas uses Microsoft Entra ID (OIDC) for user authentication. Access is controlled by Entra ID group membership — no local passwords, no PIM, no Azure app roles.
 
-When a user signs in, their group memberships are read from the OIDC `id_token` and mapped to one of two access levels (`admin` or `netadmin`). The resolved group is baked into a signed session cookie and checked on every tool call.
+When a user signs in, their group memberships are read from the OIDC `id_token` and mapped to a configured access level. The resolved group is baked into a signed session cookie and checked on every tool call.
 
 **All backend credentials** (NetBrain, Panorama, Splunk) are stored in Azure Key Vault — not in the session or in user-facing tokens.
 
@@ -144,25 +144,23 @@ Group membership is enforced twice: at sign-in (group is locked into the signed 
 
 **Access levels defined in auth.py:**
 
+Group names and their permitted tools are configured in `GROUP_ALLOWED_TOOLS` and `GROUP_ALLOWED_CATEGORIES` in `auth.py`. The structure is:
+
 ```python
-# auth.py
+# auth.py — group names are configurable; add, rename, or remove groups here
 GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
-    "admin": None,   # None = all tools allowed
-    "netadmin": {
-        "query_network_path",
-        "check_path_allowed",
-        "query_panorama_ip_object_group",
-        "query_panorama_address_group_members",
-        "find_unused_panorama_objects",
-        "search_documentation",
+    "full_access_group": None,          # None = all tools allowed
+    "limited_access_group": {           # explicit allowlist of tool names
+        "tool_a",
+        "tool_b",
     },
-    "guest": set(),  # no tools
+    "no_access_group": set(),           # empty set = no tool access (least privilege)
 }
 
 GROUP_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
-    "admin": None,                              # all sidebar categories
-    "netadmin": ["netbrain", "panorama", "docs"],
-    "guest": [],
+    "full_access_group": None,          # None = all sidebar categories
+    "limited_access_group": ["cat_a", "cat_b"],
+    "no_access_group": [],
 }
 ```
 
@@ -186,7 +184,7 @@ if access_err:
     return {"role": "assistant", "content": access_err}
 ```
 
-The group is read from the **server-signed cookie**, not from the prompt. A user cannot escalate by saying "pretend you are admin" — the RBAC check runs in Python code, independently of the LLM.
+The group is read from the **server-signed cookie**, not from the prompt. A user cannot escalate privileges through prompt injection — the RBAC check runs in Python code, independently of the LLM.
 
 ---
 
@@ -206,8 +204,8 @@ The group is read from the **server-signed cookie**, not from the prompt. A user
 
 ## On-Prem Synced vs Cloud-Only Groups
 
-**Cloud-only groups** (default): The `groups` claim contains Object IDs (GUIDs). Set `ATLAS_ADMIN_GROUP_ID` and `ATLAS_NETADMIN_GROUP_ID` to the Object IDs from Entra ID → Groups → Overview.
+**Cloud-only groups** (default): The `groups` claim contains Object IDs (GUIDs). Set the `ATLAS_*_GROUP_ID` env vars to the Object IDs from Entra ID → Groups → Overview. Each env var maps a GUID to a group name defined in `GROUP_ALLOWED_TOOLS`.
 
-**On-prem synced groups**: Configure the Entra ID token to emit `sAMAccountName` in the `groups` claim. The group name (`"admin"`, `"netadmin"`) is matched directly — no env vars needed.
+**On-prem synced groups**: Configure the Entra ID token to emit `sAMAccountName` in the `groups` claim. The group name is matched directly against the keys in `GROUP_ALLOWED_TOOLS` — no env vars needed.
 
 Both modes can coexist: Object ID lookup runs first, then falls back to sAMAccountName matching.

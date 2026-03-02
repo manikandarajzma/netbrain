@@ -191,15 +191,32 @@ def _pick_file(query: str) -> str | None:
 # LLM-based section selection
 # ---------------------------------------------------------------------------
 
+# Broad/conceptual queries — return the whole file, don't attempt section filtering.
+# These questions ask HOW a system works overall, not about a specific config item.
+_BROAD_QUERY_RE = re.compile(
+    r"\b(how does|how do|how is|how are|what is|what are|what does|what are"
+    r"|explain|describe|tell me about|overview|end.?to.?end|flow for|flow of"
+    r"|walk me through|architecture|works?)\b",
+    re.IGNORECASE,
+)
+
+
 def _pick_sections(content: str, query: str) -> str:
     """Return only the sections of *content* relevant to *query*.
 
-    Sends just the section headings (not content) to the LLM and asks it
-    which section numbers are needed. Falls back to the full file on any error.
+    Broad/conceptual queries (how does X work, explain X) always return the
+    full file — those questions need every section to be answered completely.
+    Narrow queries (what is the .env file, what port) go through LLM section
+    selection to return only the relevant parts.
     Files with ≤ 3 sections are returned whole — not worth the extra call.
     """
     from langchain_ollama import ChatOllama
     from langchain_core.messages import SystemMessage, HumanMessage
+
+    # Broad questions need the whole file
+    if _BROAD_QUERY_RE.search(query):
+        logger.info("Broad query detected — returning full content for query %r", query)
+        return content
 
     sections = _split_sections(content)
     if len(sections) <= 3:
@@ -219,10 +236,13 @@ def _pick_sections(content: str, query: str) -> str:
     messages = [
         SystemMessage(content=(
             "You are a documentation section selector. "
-            "Given a numbered list of section headings and a user query, "
+            "Given a numbered list of section headings (with a short content preview) and a user query, "
             "return the numbers of ALL sections needed to fully answer the query. "
-            "Return ONLY comma-separated integers (e.g. '0,2,3'). "
-            "No explanation. No other text."
+            "Rules: "
+            "1. For broad or conceptual questions (how does X work, explain X, what is X), include ALL sections. "
+            "2. For narrow questions about a specific setting or step, include only the directly relevant sections. "
+            "3. When in doubt, include more sections rather than fewer. "
+            "Return ONLY comma-separated integers (e.g. '0,2,3'). No explanation. No other text."
         )),
         HumanMessage(content=(
             f"Sections:\n{header_lines}\n\n"
@@ -249,6 +269,12 @@ def _pick_sections(content: str, query: str) -> str:
 
     if not indices:
         logger.warning("LLM returned no valid section indices for query %r (raw: %r)", query, raw)
+        return content
+
+    # Safety net: if fewer than 2 sections chosen from a large file, return the whole file.
+    # A single-section result on a 6-section file almost always means the model under-selected.
+    if len(indices) == 1 and len(sections) >= 5:
+        logger.info("Single section from %d-section file — returning full content for query %r", len(sections), query)
         return content
 
     logger.info(

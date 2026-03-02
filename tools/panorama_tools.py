@@ -40,6 +40,14 @@ _dg_cache: tuple[list, float] | None = None
 # Address object cache: "loc_type:loc_name" -> ({name: {type, value}}, timestamp)
 _addr_obj_cache: dict[str, tuple[dict, float]] = {}
 
+# Zone cache: template_name -> (interface_lower_to_zone dict, timestamp)
+_zone_cache: dict = {}
+_ZONE_CACHE_TTL = 300.0
+
+# Device group mapping cache: {"hostname_serial": dict, "serial_dg": dict, "ts": float} | None
+_dg_fw_cache: dict | None = None
+_DG_FW_CACHE_TTL = 300.0
+
 
 def _parse_address_entries(entries) -> dict:
     """Parse XML address <entry> elements into {name: {type, value}} dict."""
@@ -72,22 +80,41 @@ async def _get_device_groups_cached(session, panorama_url: str, api_key: str, ss
 
     names: list = []
     try:
+        xpath = "/config/devices/entry[@name='localhost.localdomain']/device-group/entry"
         url = (
             f"{panorama_url}/api/?type=config&action=get"
-            f"&xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry"
-            f"&key={api_key}"
+            f"&xpath={urllib.parse.quote(xpath)}&key={api_key}"
         )
-        async with session.get(url, ssl=ssl_context, timeout=15) as resp:
+        async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+            resp_text = await resp.text()
             if resp.status == 200:
-                root = ET.fromstring(await resp.text())
-                # Direct children only — .//entry would also match address/policy
-                # entries nested inside device groups, producing bogus DG names.
-                names = [e.get('name') for e in root.findall('./result/entry') if e.get('name')]
-                logger.debug("Device groups: fetched %d names from Panorama", len(names))
+                root = ET.fromstring(resp_text)
+                xml_status = root.attrib.get('status')
+                if xml_status != 'success':
+                    logger.warning("Device groups: Panorama returned status='%s'. Response: %s", xml_status, resp_text[:500])
+                else:
+                    # Direct children only — .//entry would also match address/policy
+                    # entries nested inside device groups, producing bogus DG names.
+                    names = [e.get('name') for e in root.findall('./result/entry') if e.get('name')]
+                    if not names:
+                        # Fallback: some Panorama versions may have a different response structure
+                        logger.warning("Device groups: ./result/entry returned 0, trying fallback. Response: %s", resp_text[:500])
+                        result_el = root.find('./result')
+                        if result_el is not None:
+                            names = [e.get('name') for e in result_el if e.get('name')]
+                    logger.debug("Device groups: fetched %d names from Panorama", len(names))
+            else:
+                logger.warning("Device groups fetch failed: HTTP %d: %s", resp.status, resp_text[:200])
     except Exception as exc:
-        logger.debug("Failed to fetch device group list: %s", exc)
+        logger.warning("Failed to fetch device group list: %s", exc)
 
-    _dg_cache = (names, now)
+    # Only cache successful (non-empty) results with full TTL.
+    # Cache empty/failed results with a 30s TTL so the next request retries.
+    if names:
+        _dg_cache = (names, now)
+    else:
+        logger.warning("Device groups: got 0 groups from Panorama — will retry in 30s")
+        _dg_cache = ([], now - _CACHE_TTL + 30)
     return names
 
 
@@ -114,16 +141,24 @@ async def _get_address_objects_cached(
 
     url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
     objects: dict = {}
+    fetch_ok = False
     try:
-        async with session.get(url, ssl=ssl_context, timeout=30) as resp:
+        async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=45)) as resp:
             if resp.status == 200:
                 root = ET.fromstring(await resp.text())
                 objects = _parse_address_entries(root.findall('.//entry'))
                 logger.debug("Address objects: fetched %d from %s", len(objects), key)
+                fetch_ok = True
+            else:
+                logger.warning("Address objects fetch failed for %s: HTTP %d", key, resp.status)
     except Exception as exc:
-        logger.debug("Failed to fetch address objects for %s: %s", key, exc)
+        logger.warning("Failed to fetch address objects for %s: %s", key, exc)
 
-    _addr_obj_cache[key] = (objects, now)
+    # Cache successful results with full TTL; retry failures after 30s
+    if fetch_ok:
+        _addr_obj_cache[key] = (objects, now)
+    else:
+        _addr_obj_cache[key] = (objects, now - _CACHE_TTL + 30)
     return objects
 
 
@@ -161,6 +196,240 @@ async def _fetch_address_groups_for_location(
     except Exception as exc:
         logger.debug("Failed to fetch address groups for %s %s: %s", location_type, location_name, exc)
     return groups
+
+
+# ---------------------------------------------------------------------------
+# Panorama zone and device group query functions
+# ---------------------------------------------------------------------------
+
+async def get_zones_for_firewall_interfaces(
+    firewall_name: str,
+    interfaces: List[str],
+    firewall_serial: Optional[str] = None,
+    template: Optional[str] = None
+) -> Dict[str, Optional[str]]:
+    """
+    Get security zones for multiple firewall interfaces.
+
+    Args:
+        firewall_name: Name of the firewall device
+        interfaces: List of interface names (e.g., ["ethernet1/1", "ethernet1/2"])
+        firewall_serial: Serial number of the firewall (optional)
+        template: Template name (default: "Global")
+
+    Returns:
+        dict: Mapping of interface name to zone name
+    """
+    result = {interface: None for interface in interfaces}
+
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        logger.error(f"Could not retrieve API key for {firewall_name}")
+        return result
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    headers = {
+        "X-PAN-KEY": api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    template_name = template or "Global"
+    logger.debug(f"Querying zones from template '{template_name}' for firewall '{firewall_name}'")
+
+    # Check zone cache
+    now = _time.monotonic()
+    cached = _zone_cache.get(template_name)
+    if cached and (now - cached[1]) < _ZONE_CACHE_TTL:
+        interface_to_zone = cached[0]
+        logger.debug(f"Zone cache hit for template '{template_name}' ({len(interface_to_zone)} entries)")
+        for interface in interfaces:
+            if not interface:
+                continue
+            interface_str = str(interface).strip()
+            interface_lower = interface_str.lower()
+            if interface_str in interface_to_zone:
+                result[interface] = interface_to_zone[interface_str]
+            elif interface_lower in interface_to_zone:
+                result[interface] = interface_to_zone[interface_lower]
+        return result
+
+    api_versions = ["v10.2", "v10.1", "v10.0", "v9.1", "v9.0"]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            zones_found = False
+            for api_version in api_versions:
+                url_variants = [
+                    f"{panoramaauth.PANORAMA_URL}/restapi/{api_version}/network/zones?location=template&template={template_name}",
+                    f"{panoramaauth.PANORAMA_URL}/restapi/{api_version}/network/zones?location=template&template={template_name}&vsys=vsys1"
+                ]
+
+                for url in url_variants:
+                    async with session.get(url, headers=headers, ssl=ssl_context, timeout=30) as response:
+                        if response.status == 501:
+                            await response.text()
+                            continue
+                        if response.status != 200:
+                            await response.text()
+                            continue
+
+                        zones_data = await response.json()
+
+                        if isinstance(zones_data, dict) and "result" in zones_data:
+                            zones_result = zones_data.get("result", {})
+                            zone_entries = []
+                            if isinstance(zones_result, dict):
+                                if "entry" in zones_result:
+                                    zone_entries = zones_result["entry"] if isinstance(zones_result["entry"], list) else [zones_result["entry"]]
+                                elif isinstance(zones_result, list):
+                                    zone_entries = zones_result
+
+                            interface_to_zone = {}
+                            for zone_entry in zone_entries:
+                                if not isinstance(zone_entry, dict):
+                                    continue
+                                zone_name = zone_entry.get("@name") or zone_entry.get("name")
+                                if not zone_name:
+                                    continue
+                                network = zone_entry.get("network", {})
+                                layer3 = network.get("layer3", {}) if isinstance(network, dict) else {}
+                                members = layer3.get("member", []) if isinstance(layer3, dict) else []
+                                if not isinstance(members, list):
+                                    members = [members] if members else []
+                                for member in members:
+                                    if member:
+                                        member_str = str(member).strip()
+                                        interface_to_zone[member_str] = zone_name
+                                        interface_to_zone[member_str.lower()] = zone_name
+
+                            for interface in interfaces:
+                                if not interface:
+                                    continue
+                                interface_str = str(interface).strip()
+                                interface_lower = interface_str.lower()
+                                if interface_str in interface_to_zone:
+                                    result[interface] = interface_to_zone[interface_str]
+                                elif interface_lower in interface_to_zone:
+                                    result[interface] = interface_to_zone[interface_lower]
+                                else:
+                                    for member_intf, zone in interface_to_zone.items():
+                                        if interface_lower == member_intf.lower():
+                                            result[interface] = zone
+                                            break
+
+                            _zone_cache[template_name] = (interface_to_zone, _time.monotonic())
+                            zones_found = True
+                            break
+
+                    if zones_found:
+                        break
+
+                if zones_found:
+                    break
+
+            if not zones_found:
+                logger.error("Failed to retrieve zones with any supported API version")
+
+    except Exception as e:
+        logger.error(f"Exception querying zones: {str(e)}")
+
+    return result
+
+
+async def get_device_groups_for_firewalls(
+    firewall_names: List[str]
+) -> Dict[str, Optional[str]]:
+    """
+    Get device groups for multiple firewalls.
+
+    Uses two API calls + a 5-minute cache:
+      1. show devices all -> hostname -> serial map
+      2. config get device-group -> serial -> device-group map
+
+    Args:
+        firewall_names: List of firewall device names
+
+    Returns:
+        dict: Mapping of firewall name to device group name
+    """
+    global _dg_fw_cache
+    result = {fw: None for fw in firewall_names}
+
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        logger.error("Could not retrieve API key for device group query")
+        return result
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    now = _time.monotonic()
+
+    if _dg_fw_cache and (now - _dg_fw_cache["ts"]) < _DG_FW_CACHE_TTL:
+        hostname_serial = _dg_fw_cache["hostname_serial"]
+        serial_dg = _dg_fw_cache["serial_dg"]
+        logger.debug("Device group cache hit (%d devices, %d serial->DG mappings)", len(hostname_serial), len(serial_dg))
+    else:
+        hostname_serial: dict = {}
+        serial_dg: dict = {}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                devices_url = f"{panoramaauth.PANORAMA_URL}/api/?type=op&cmd=<show><devices><all></all></devices></show>&key={api_key}"
+                async with session.get(devices_url, ssl=ssl_context, timeout=30) as resp:
+                    if resp.status == 200:
+                        root = ET.fromstring(await resp.text())
+                        for dev in root.findall('.//entry'):
+                            hn_el = dev.find('hostname')
+                            sn_el = dev.find('serial')
+                            hostname = hn_el.text if hn_el is not None else None
+                            serial = sn_el.text if sn_el is not None else dev.get('name')
+                            if hostname and serial:
+                                hostname_serial[hostname.lower()] = serial
+                        logger.debug("Device map: %d hostname->serial entries", len(hostname_serial))
+
+                dg_xpath = "/config/devices/entry[@name='localhost.localdomain']/device-group"
+                dg_url = f"{panoramaauth.PANORAMA_URL}/api/?type=config&action=get&xpath={urllib.parse.quote(dg_xpath)}&key={api_key}"
+                async with session.get(dg_url, ssl=ssl_context, timeout=30) as resp:
+                    if resp.status == 200:
+                        root = ET.fromstring(await resp.text())
+                        for dg_entry in root.findall('.//entry'):
+                            dg_name = dg_entry.get('name')
+                            if not dg_name:
+                                continue
+                            for dev_entry in dg_entry.findall('devices/entry'):
+                                serial = dev_entry.get('name')
+                                if serial:
+                                    serial_dg[serial] = dg_name
+                        logger.debug("Device group map: %d serial->DG entries", len(serial_dg))
+
+        except Exception as e:
+            logger.error("Exception building device group map: %s", e)
+
+        _dg_fw_cache = {"hostname_serial": hostname_serial, "serial_dg": serial_dg, "ts": now}
+
+    for fw_name in firewall_names:
+        fw_lower = fw_name.lower()
+        serial = hostname_serial.get(fw_lower)
+        if serial is None:
+            for hn, sn in hostname_serial.items():
+                if fw_lower in hn or hn in fw_lower:
+                    serial = sn
+                    logger.debug("Fuzzy matched '%s' -> hostname '%s' -> serial '%s'", fw_name, hn, sn)
+                    break
+        if serial:
+            dg = serial_dg.get(serial, "Shared")
+            result[fw_name] = dg
+            logger.debug("Firewall '%s' -> serial '%s' -> device group '%s'", fw_name, serial, dg)
+        else:
+            logger.debug("No device found for firewall '%s'", fw_name)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -210,82 +479,72 @@ async def _add_panorama_zones_to_hops(simplified_hops: List[Dict[str, Any]]) -> 
 
                 firewall_interface_map[fw_name]["hops"].append(hop_info)
 
-    # Query Panorama for zones
-    for fw_name, fw_data in firewall_interface_map.items():
-        if fw_data["interfaces"]:
-            try:
-                zones = await panoramaauth.get_zones_for_firewall_interfaces(
-                    firewall_name=fw_name,
-                    interfaces=fw_data["interfaces"],
-                    template="Global"  # Explicitly use "Global" template
-                )
+    # Query Panorama for zones — all firewalls in parallel
+    fw_items = [(fw_name, fw_data) for fw_name, fw_data in firewall_interface_map.items() if fw_data["interfaces"]]
+    if not fw_items:
+        return
 
-                # Add zone information to firewall hops
-                logger.debug(f"Server - Adding zones to {len(fw_data['hops'])} hops for {fw_name}")
-                for hop_info in fw_data["hops"]:
-                    in_intf = hop_info.get("in_interface")
-                    out_intf = hop_info.get("out_interface")
+    zone_results = await asyncio.gather(*[
+        get_zones_for_firewall_interfaces(
+            firewall_name=fw_name,
+            interfaces=fw_data["interfaces"],
+            template="Global"
+        )
+        for fw_name, fw_data in fw_items
+    ], return_exceptions=True)
 
-                    # Extract interface names again for matching
-                    in_intf_name = None
-                    out_intf_name = None
+    for (fw_name, fw_data), zones in zip(fw_items, zone_results):
+        if isinstance(zones, Exception):
+            logger.debug(f"Error querying Panorama for {fw_name}: {zones}")
+            continue
 
-                    if in_intf:
-                        if isinstance(in_intf, dict):
-                            in_intf_name = in_intf.get("intfDisplaySchemaObj", {}).get("value") or in_intf.get("PhysicalInftName") or in_intf.get("name")
-                        else:
-                            in_intf_name = str(in_intf)
+        logger.debug(f"Server - Adding zones to {len(fw_data['hops'])} hops for {fw_name}")
+        for hop_info in fw_data["hops"]:
+            in_intf = hop_info.get("in_interface")
+            out_intf = hop_info.get("out_interface")
 
-                    if out_intf:
-                        if isinstance(out_intf, dict):
-                            out_intf_name = out_intf.get("intfDisplaySchemaObj", {}).get("value") or out_intf.get("PhysicalInftName") or out_intf.get("name")
-                        else:
-                            out_intf_name = str(out_intf)
+            # Extract interface names again for matching
+            in_intf_name = None
+            out_intf_name = None
 
-                    logger.debug(f"Server - Matching zones for {fw_name}: in_intf_name={in_intf_name}, out_intf_name={out_intf_name}, zones={zones}")
+            if in_intf:
+                if isinstance(in_intf, dict):
+                    in_intf_name = in_intf.get("intfDisplaySchemaObj", {}).get("value") or in_intf.get("PhysicalInftName") or in_intf.get("name")
+                else:
+                    in_intf_name = str(in_intf)
 
-                    # Match zones with case-insensitive interface name matching
-                    if in_intf_name:
-                        # Try exact match first
-                        if in_intf_name in zones and zones[in_intf_name]:
-                            hop_info["in_zone"] = zones[in_intf_name]
-                            logger.debug(f"Server - Set in_zone for {fw_name} hop to {zones[in_intf_name]} (exact match)")
-                        else:
-                            # Try case-insensitive match
-                            in_intf_lower = in_intf_name.lower()
-                            matched_zone = None
-                            for zone_intf, zone_name in zones.items():
-                                if zone_intf and zone_intf.lower() == in_intf_lower:
-                                    matched_zone = zone_name
-                                    break
+            if out_intf:
+                if isinstance(out_intf, dict):
+                    out_intf_name = out_intf.get("intfDisplaySchemaObj", {}).get("value") or out_intf.get("PhysicalInftName") or out_intf.get("name")
+                else:
+                    out_intf_name = str(out_intf)
 
-                            if matched_zone:
-                                hop_info["in_zone"] = matched_zone
-                                logger.debug(f"Server - Set in_zone for {fw_name} hop to {matched_zone} (case-insensitive match)")
+            logger.debug(f"Server - Matching zones for {fw_name}: in_intf_name={in_intf_name}, out_intf_name={out_intf_name}, zones={zones}")
 
-                    if out_intf_name:
-                        # Try exact match first
-                        if out_intf_name in zones and zones[out_intf_name]:
-                            hop_info["out_zone"] = zones[out_intf_name]
-                            logger.debug(f"Server - Set out_zone for {fw_name} hop to {zones[out_intf_name]} (exact match)")
-                        else:
-                            # Try case-insensitive match
-                            out_intf_lower = out_intf_name.lower()
-                            matched_zone = None
-                            for zone_intf, zone_name in zones.items():
-                                if zone_intf and zone_intf.lower() == out_intf_lower:
-                                    matched_zone = zone_name
-                                    break
+            # Match zones with case-insensitive interface name matching
+            if in_intf_name:
+                if in_intf_name in zones and zones[in_intf_name]:
+                    hop_info["in_zone"] = zones[in_intf_name]
+                    logger.debug(f"Server - Set in_zone for {fw_name} hop to {zones[in_intf_name]} (exact match)")
+                else:
+                    in_intf_lower = in_intf_name.lower()
+                    matched_zone = next((z for i, z in zones.items() if i and i.lower() == in_intf_lower), None)
+                    if matched_zone:
+                        hop_info["in_zone"] = matched_zone
+                        logger.debug(f"Server - Set in_zone for {fw_name} hop to {matched_zone} (case-insensitive match)")
 
-                            if matched_zone:
-                                hop_info["out_zone"] = matched_zone
-                                logger.debug(f"Server - Set out_zone for {fw_name} hop to {matched_zone} (case-insensitive match)")
+            if out_intf_name:
+                if out_intf_name in zones and zones[out_intf_name]:
+                    hop_info["out_zone"] = zones[out_intf_name]
+                    logger.debug(f"Server - Set out_zone for {fw_name} hop to {zones[out_intf_name]} (exact match)")
+                else:
+                    out_intf_lower = out_intf_name.lower()
+                    matched_zone = next((z for i, z in zones.items() if i and i.lower() == out_intf_lower), None)
+                    if matched_zone:
+                        hop_info["out_zone"] = matched_zone
+                        logger.debug(f"Server - Set out_zone for {fw_name} hop to {matched_zone} (case-insensitive match)")
 
-                logger.debug(f"Zones for {fw_name}: {zones}")
-            except Exception as e:
-                logger.debug(f"Error querying Panorama for {fw_name}: {str(e)}")
-                import traceback
-                logger.debug(f"Panorama query traceback: {traceback.format_exc()}")
+        logger.debug(f"Zones for {fw_name}: {zones}")
 
 
 async def _add_panorama_device_groups_to_hops(simplified_hops: List[Dict[str, Any]]) -> None:
@@ -317,7 +576,7 @@ async def _add_panorama_device_groups_to_hops(simplified_hops: List[Dict[str, An
         firewall_list = list(firewall_names)
         logger.debug(f"Server - Querying device groups for firewalls: {firewall_list}")
 
-        device_groups = await panoramaauth.get_device_groups_for_firewalls(
+        device_groups = await get_device_groups_for_firewalls(
             firewall_names=firewall_list
         )
 

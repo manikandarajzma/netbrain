@@ -232,99 +232,72 @@ async def get_device_type_mapping() -> Dict[int, str]:
                 "Token": auth_token
             }
 
-            # Fetch a sample of devices to extract device types
-            # Note: API requires limit between 10 and 100
-            params = {
-                "version": 1,
-                "skip": 0,
-                "limit": 100  # Maximum allowed by API
-            }
+            # Paginate through all devices (API page size capped at 100)
+            device_name_to_type = {}
+            skip = 0
+            page_size = 100
 
-            logger.debug(f"Calling Devices API: {devices_endpoint} with params: {params}")
             async with aiohttp.ClientSession() as session:
-                async with session.get(devices_endpoint, headers=token_headers, params=params, ssl=ssl_context, timeout=30) as response:
-                    devices_api_debug["status"] = response.status
-                    logger.debug(f"Devices API response status: {response.status}")
-                    if response.status == 200:
+                while True:
+                    params = {"version": 1, "skip": skip, "limit": page_size}
+                    logger.debug(f"Calling Devices API: {devices_endpoint} skip={skip}")
+                    async with session.get(devices_endpoint, headers=token_headers, params=params, ssl=ssl_context, timeout=30) as response:
+                        devices_api_debug["status"] = response.status
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.debug(f"Devices API returned HTTP {response.status}: {error_text[:500]}")
+                            devices_api_debug["error"] = f"HTTP {response.status}: {error_text[:200]}"
+                            break
+
                         data = await response.json()
-                        logger.debug(f"Devices API response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-                        logger.debug(f"Devices API statusCode: {data.get('statusCode') if isinstance(data, dict) else 'N/A'}")
-
-                        if data.get("statusCode") == 790200:
-                            devices = data.get("devices", [])
-                            devices_api_debug["devices_count"] = len(devices)
-                            logger.debug(f"Fetched {len(devices)} devices from devices API")
-
-                            if len(devices) == 0:
-                                logger.warning("Devices API returned 0 devices!")
-                                devices_api_debug["error"] = "Devices API returned 0 devices"
-                                # Try without limit parameter
-                                logger.debug("Retrying Devices API without limit parameter...")
-                                async with session.get(devices_endpoint, headers=token_headers, ssl=ssl_context, timeout=30) as retry_response:
-                                    devices_api_debug["retry_status"] = retry_response.status
-                                    if retry_response.status == 200:
-                                        retry_data = await retry_response.json()
-                                        if retry_data.get("statusCode") == 790200:
-                                            devices = retry_data.get("devices", [])
-                                            devices_api_debug["devices_count"] = len(devices)
-                                            logger.debug(f"Retry fetched {len(devices)} devices")
-
-                            # Extract device type mappings from devices
-                            # Since Devices API doesn't provide numeric IDs, we'll try to find them
-                            # or build a name-based cache for later lookup
-                            device_name_to_type = {}  # Cache for device name -> type name
-
-                            for dev in devices:
-                                dev_name = dev.get("name") or dev.get("hostname") or dev.get("mgmtIP")
-                                dev_type_name = dev.get("subTypeName") or dev.get("deviceTypeName") or dev.get("typeName")
-
-                                # Debug: Print first few devices to see structure
-                                if len(device_name_to_type) < 3:
-                                    logger.debug(f"Sample device - name: '{dev_name}', subTypeName: '{dev_type_name}', keys: {list(dev.keys())[:10]}")
-
-                                # Try to find numeric device type ID
-                                dev_type_id = dev.get("deviceType") or dev.get("devType") or dev.get("typeId")
-
-                                if dev_type_id and dev_type_name:
-                                    try:
-                                        device_type_map[int(dev_type_id)] = str(dev_type_name)
-                                    except (ValueError, TypeError):
-                                        pass
-
-                                # Also build name-based cache for fallback
-                                if dev_name and dev_type_name:
-                                    device_name_to_type[str(dev_name)] = str(dev_type_name)
-
-                            logger.debug(f"Built name-based cache with {len(device_name_to_type)} entries")
-                            if len(device_name_to_type) > 0:
-                                logger.debug(f"Sample cache entries: {list(device_name_to_type.items())[:5]}")
-
-                            # Store name-based cache as a module-level variable for later use
-                            _device_name_to_type_cache = device_name_to_type
-                            devices_api_debug["cache_built"] = len(device_name_to_type) > 0
-                            devices_api_debug["cache_size"] = len(device_name_to_type)
-
-                            if device_type_map:
-                                logger.debug(f"Successfully loaded {len(device_type_map)} device type mappings from devices API")
-                                _device_type_cache = device_type_map
-                                return device_type_map
-                            elif device_name_to_type:
-                                logger.debug(f"Built name-based device type cache with {len(device_name_to_type)} entries (no numeric IDs found)")
-                                logger.debug(f"Name cache sample: {list(device_name_to_type.keys())[:10]}")
-                                # Return empty dict but cache is available for name-based lookup
-                                _device_type_cache = {}  # Cache empty dict to avoid repeated failed attempts
-                                return {}
-                            else:
-                                logger.warning("No devices found or no device types extracted!")
-                                devices_api_debug["error"] = "No device types extracted from devices"
-                        else:
+                        if data.get("statusCode") != 790200:
                             status_desc = data.get('statusDescription', 'No description') if isinstance(data, dict) else 'Unknown'
                             logger.debug(f"Devices API returned statusCode {data.get('statusCode')}: {status_desc}")
                             devices_api_debug["error"] = f"statusCode {data.get('statusCode')}: {status_desc}"
-                    else:
-                        error_text = await response.text()
-                        logger.debug(f"Devices API returned HTTP {response.status}: {error_text[:500]}")
-                        devices_api_debug["error"] = f"HTTP {response.status}: {error_text[:200]}"
+                            break
+
+                        page_devices = data.get("devices", [])
+                        logger.debug(f"Fetched {len(page_devices)} devices (skip={skip})")
+
+                        for dev in page_devices:
+                            dev_name = dev.get("name") or dev.get("hostname") or dev.get("mgmtIP")
+                            dev_type_name = dev.get("subTypeName") or dev.get("deviceTypeName") or dev.get("typeName")
+                            dev_type_id = dev.get("deviceType") or dev.get("devType") or dev.get("typeId")
+
+                            if len(device_name_to_type) < 3:
+                                logger.debug(f"Sample device - name: '{dev_name}', subTypeName: '{dev_type_name}', keys: {list(dev.keys())[:10]}")
+
+                            if dev_type_id and dev_type_name:
+                                try:
+                                    device_type_map[int(dev_type_id)] = str(dev_type_name)
+                                except (ValueError, TypeError):
+                                    pass
+
+                            if dev_name and dev_type_name:
+                                device_name_to_type[str(dev_name)] = str(dev_type_name)
+
+                        if len(page_devices) < page_size:
+                            break  # Last page
+                        skip += page_size
+
+            devices_api_debug["devices_count"] = len(device_name_to_type)
+            devices_api_debug["cache_built"] = len(device_name_to_type) > 0
+            devices_api_debug["cache_size"] = len(device_name_to_type)
+            logger.debug(f"Built name-based cache with {len(device_name_to_type)} entries total")
+
+            _device_name_to_type_cache = device_name_to_type
+
+            if device_type_map:
+                logger.debug(f"Successfully loaded {len(device_type_map)} device type mappings from devices API")
+                _device_type_cache = device_type_map
+                return device_type_map
+            elif device_name_to_type:
+                logger.debug(f"Built name-based device type cache with {len(device_name_to_type)} entries (no numeric IDs found)")
+                _device_type_cache = {}
+                return {}
+            else:
+                logger.warning("No devices found or no device types extracted!")
+                devices_api_debug["error"] = "No device types extracted from devices"
         except Exception as e:
             logger.debug(f"Error fetching from devices API: {e}")
             import traceback

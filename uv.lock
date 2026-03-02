@@ -132,6 +132,7 @@ dependencies = [
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
     { name = "cryptography" },
+    { name = "environment" },
     { name = "fastapi" },
     { name = "fastmcp" },
     { name = "itsdangerous" },
@@ -162,6 +163,7 @@ requires-dist = [
     { name = "azure-identity", specifier = ">=1.15.0" },
     { name = "azure-keyvault-secrets", specifier = ">=4.7.0" },
     { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "environment" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastmcp", specifier = ">=0.9.0" },
     { name = "itsdangerous", specifier = ">=2.1.0" },
@@ -588,6 +590,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/f5/22/900cb125c76b7aaa4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/15/545e2b6cf2e3be84bc1ed85613edd75b8aea69807a71c26f4ca6a9258e82/email_validator-2.3.0-py3-none-any.whl", hash = "sha256:80f13f623413e6b197ae73bb10bf4eb0908faf509ad8362c5edeb0be7fd450b4", size = 35604, upload-time = "2025-08-26T13:09:05.858Z" },
 ]
+
+[[package]]
+name = "environment"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/e7/3ea91d9ed699cbbe2155347b3bf2a515d0b79f4c7afb55c18b0488a5ed9d/environment-1.0.0.tar.gz", hash = "sha256:711bc2dc589fcc0f40d1cd916e7463e55d08ed3847fc6205549e0d3ff8084843", size = 5336, upload-time = "2014-04-02T15:26:42.095Z" }
 
 [[package]]
 name = "et-xmlfile"

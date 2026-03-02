@@ -18,6 +18,7 @@ Enforcement is two-layered:
   2. On every tool call: chat_service._check_tool_access() reads the group from the
      session cookie and checks it against GROUP_ALLOWED_TOOLS before running any tool.
 """
+import logging
 import os
 import secrets
 import time
@@ -36,6 +37,8 @@ for _path in (
     if os.path.isfile(_path):
         load_dotenv(_path)
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Auth mode (OIDC only; no local password auth)
 # ---------------------------------------------------------------------------
@@ -43,10 +46,45 @@ AUTH_MODE = os.getenv("AUTH_MODE", "oidc").strip().lower()
 
 # ---------------------------------------------------------------------------
 # Microsoft OIDC configuration
+# Read from env vars first (local dev fallback), then override from Key Vault
 # ---------------------------------------------------------------------------
 AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
 AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
 AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
+
+_vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
+_kv_tenant_id = os.getenv("AZURE_KEYVAULT_TENANT_ID", "").strip()
+_kv_client_id = os.getenv("AZURE_KEYVAULT_CLIENT_ID", "").strip()
+_kv_client_secret = os.getenv("AZURE_KEYVAULT_CLIENT_SECRET", "").strip()
+if _vault_url and _kv_tenant_id and _kv_client_id and _kv_client_secret:
+    try:
+        from azure.identity import ClientSecretCredential
+        from azure.keyvault.secrets import SecretClient
+        _cred = ClientSecretCredential(
+            tenant_id=_kv_tenant_id,
+            client_id=_kv_client_id,
+            client_secret=_kv_client_secret,
+        )
+        _client = SecretClient(vault_url=_vault_url, credential=_cred)
+
+        _s = _client.get_secret("OIDC-TENANT-ID")
+        if _s and _s.value:
+            AZURE_TENANT_ID = _s.value
+            logger.info("Loaded AZURE_TENANT_ID from Azure Key Vault")
+
+        _s = _client.get_secret("OIDC-CLIENT-ID")
+        if _s and _s.value:
+            AZURE_CLIENT_ID = _s.value
+            logger.info("Loaded AZURE_CLIENT_ID from Azure Key Vault")
+
+        _s = _client.get_secret("OIDC-CLIENT-SECRET")
+        if _s and _s.value:
+            AZURE_CLIENT_SECRET = _s.value
+            logger.info("Loaded AZURE_CLIENT_SECRET from Azure Key Vault")
+
+    except Exception as e:
+        logger.warning("Could not load OIDC credentials from Key Vault: %s", e)
+
 AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0"
 
 # Session TTL for OIDC (30 minutes)

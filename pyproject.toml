@@ -41,4 +41,5 @@ dependencies = [
     # Optional: encrypt chat history at rest
     "cryptography>=42.0.0",
     "langchain-openai>=1.1.10",
+    "environment"
 ]

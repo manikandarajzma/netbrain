@@ -24,13 +24,19 @@ The system uses a **client-server architecture** with AI-powered tool selection:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Web Browser                             │
-│              (React 18 SPA + Zustand + Vite)                    │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP (fetch)
+                             │ HTTPS
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Nginx                                    │
+│              (reverse proxy / TLS termination)                  │
+│  • Forwards requests to FastAPI on port 8000                    │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTP (localhost:8000)
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    FastAPI Web Server                           │
-│                   (app.py)                              │
+│                   (app.py)                                      │
 │  • Authentication (auth.py, OIDC or local)                      │
 │  • Chat API (/api/chat, /api/discover, /api/me)                 │
 │  • Serves React build (frontend/dist/) in production            │
@@ -180,7 +186,7 @@ atlas/
 | Requirement | Version | Purpose |
 |------------|---------|---------|
 | **Python** | 3.13+ | Runtime environment |
-| **Node.js** | 18+ | Frontend build tooling |
+| **Nginx** | Latest | Reverse proxy / TLS termination |
 | **Ollama** | Latest | LLM for tool selection (runs locally) |
 | **uv** or **pip** | Latest | Python package management |
 | **NetBrain** | N/A | Network path calculation API (optional) |
@@ -284,76 +290,64 @@ See [Documentation/auth-rbac.md](Documentation/auth-rbac.md) for setup.
 
 ## Running the Application
 
-You need **two terminal windows** running simultaneously (three for frontend development):
+Both services are managed by **systemd** and run automatically on boot. Nginx handles all incoming traffic and proxies to the web server.
 
-### Terminal 1: Start the MCP Server
-
-```bash
-cd atlas
-uv run python mcp_server.py
-```
-
-**Output:**
-```
-INFO: MCP Server starting on http://127.0.0.1:8765
-INFO: Server initialized with tools: check_path_allowed, query_network_path, query_panorama_ip_object_group, ...
-```
-
-**Important:**
-- Leave this terminal running
-- The server must be started **before** the web client
-- Listens on `http://127.0.0.1:8765`
-- Does **not** auto-reload (restart manually if you change `mcp_server.py`)
-
-### Terminal 2: Start the Web Client
-
-From the project root (`atlas/`):
+### Service Management
 
 ```bash
-cd atlas
-uv run python run_web.py
+# Start services
+sudo systemctl start atlas-mcp
+sudo systemctl start atlas-web
+
+# Stop services
+sudo systemctl stop atlas-mcp
+sudo systemctl stop atlas-web
+
+# Restart services (e.g. after a code change)
+sudo systemctl restart atlas-mcp
+sudo systemctl restart atlas-web
+
+# Check status
+sudo systemctl status atlas-mcp
+sudo systemctl status atlas-web
 ```
 
-This starts the server with **reload** and **file-only logging** (no console output). Logs: **MCP server** → `mcp_server.log`; **web app** → `atlas_web.log` (both in project root).
-
-**Why `run_web`?** The app lives in the `atlas` package (`atlas.app`, `atlas.auth`, etc.). When you run from inside the project directory, Python does not see that directory as the `atlas` package, so `uvicorn atlas.app:app` would fail with “No module named 'atlas'”. `run_web.py` is a thin launcher: it adds the parent of the project directory to `sys.path`, then imports `atlas.app`. That way uvicorn can load `run_web:app` from the project root and the `atlas` package resolves correctly.
-
-Alternatively, from the **parent** of the project directory: `uv run python -m atlas.app` (or run uvicorn manually with your own options).
-
-**Output:**
-```
-INFO: Started server process [12345]
-INFO: Waiting for application startup.
-INFO: Application startup complete.
-INFO: Uvicorn running on http://0.0.0.0:8000
-```
-
-**Features:**
-- Web UI available at **http://localhost:8000**
-- Serves the React build from `frontend/dist/` (run `npm run build` first)
-- **Auto-reload enabled**: changes to Python files are picked up automatically
-- No need to restart when editing `chat_service.py`, `app.py`, etc.
-
-### Terminal 3 (Optional): Frontend Development
-
-For frontend hot-reload during development:
+### Logs
 
 ```bash
-cd atlas/frontend
-npm run dev
+# Live log tailing
+tail -f /var/log/atlas/mcp_server.log
+tail -f /var/log/atlas/atlas_web.log
+
+# Or via journald
+journalctl -u atlas-mcp -f
+journalctl -u atlas-web -f
 ```
 
-- Use the app at **http://localhost:5173** (proxies API calls to port 8000)
-- Login at `http://localhost:8000/login` first (session cookie is shared)
-- Changes to `.jsx` and `.module.css` files are reflected instantly
-- See [frontend/frontend.md](frontend/frontend.md) for full frontend documentation
+### Nginx
 
-### Alternative: Custom Host/Port
-
-From project root:
+Nginx terminates TLS and proxies to the FastAPI web server on `localhost:8000`.
 
 ```bash
-uv run python run_web.py
+# Reload nginx config after changes
+sudo systemctl reload nginx
+
+# Check nginx status
+sudo systemctl status nginx
+```
+
+### Running Manually (Development)
+
+If you need to run the services directly outside of systemd:
+
+```bash
+# Terminal 1 — MCP server
+cd /opt/atlas
+.venv/bin/python mcp_server.py
+
+# Terminal 2 — Web server
+cd /opt/atlas
+.venv/bin/python run_web.py
 ```
 
 ---
@@ -523,11 +517,10 @@ uv sync  # or: pip install -e .
 
 ## Development Notes
 
-- **FastAPI auto-reload:** The web client (`app.py`) automatically reloads when you edit Python files. No need to restart Terminal 2.
-- **MCP server does NOT auto-reload:** If you change `mcp_server.py`, you must restart Terminal 1.
-- **Frontend development:** Run `npm run dev` in `frontend/` for hot-reload at `:5173`. For production, run `npm run build` and access via `:8000`.
-- **Frontend architecture:** React 18 + Zustand + CSS Modules. See [frontend/frontend.md](frontend/frontend.md).
-- **Logs:** Check `mcp_server.log` for detailed MCP server logs.
+- **Code changes:** After editing Python files, restart the relevant systemd service (`sudo systemctl restart atlas-web` or `atlas-mcp`).
+- **MCP server does NOT auto-reload:** Changes to `mcp_server.py` or tool files require `sudo systemctl restart atlas-mcp`.
+- **Logs:** `/var/log/atlas/atlas_web.log` (web) and `/var/log/atlas/mcp_server.log` (MCP). Falls back to the project directory if `/var/log/atlas/` is not writable.
+- **Nginx config:** Located at `/etc/nginx/sites-available/atlas`. Reload with `sudo systemctl reload nginx` after changes.
 - **LLM prompts:** Edit `mcp_client_tool_selection.py` to customize tool selection behavior.
 
 ---

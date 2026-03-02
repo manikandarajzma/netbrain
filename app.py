@@ -153,9 +153,9 @@ async def login_page(request: Request):
         return RedirectResponse(url="/", status_code=302)
     error_param = request.query_params.get("error", "")
     return templates.TemplateResponse(
+        request,
         "login.html",
         {
-            "request": request,
             "error_oidc": error_param == "oidc",
             "error_norole": error_param == "norole",
             "oidc_configured": AUTH_MODE == "oidc" and bool(AZURE_CLIENT_ID and AZURE_TENANT_ID),
@@ -293,8 +293,7 @@ async def index(request: Request):
     sid = get_session_id(request)
     group = get_group_for_session(sid)
     categories = get_allowed_categories(group)
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "index.html", {
         "username": username,
         "group": group,
         "allowed_categories": categories,
