@@ -78,28 +78,34 @@ if _vault_url and _kv_tenant_id and _kv_client_id and _kv_client_secret:
 else:
     logger.warning("AZURE_KEYVAULT_URL or KV service principal env vars not set; Panorama credentials unavailable")
 
-# Cache for API key
+# Cache for API key — (key_string, fetched_at_monotonic) | None
+# Refreshed automatically after _API_KEY_TTL seconds.
+import time as _time_module
+
+_API_KEY_TTL = 3600.0  # Re-fetch the key every hour
 _api_key: Optional[str] = None
+_api_key_fetched_at: float = 0.0
 
 
 async def get_api_key() -> Optional[str]:
     """
     Get Panorama API key using username/password authentication.
-    Returns cached key if available, otherwise requests a new one.
+    Returns cached key if available and not expired, otherwise requests a new one.
 
     This function implements key caching to minimize API calls:
-    - Checks if a cached key exists
+    - Checks if a cached key exists and is still within TTL
     - If available, returns the cached key immediately
-    - If missing, requests a new key from the keygen endpoint
+    - If missing or expired, requests a new key from the keygen endpoint
     - Caches the new key for reuse
 
     Returns:
         Optional[str]: API key string if successful, None if authentication fails
     """
-    global _api_key
+    global _api_key, _api_key_fetched_at
 
-    # Check if we have a cached key
-    if _api_key:
+    # Check if we have a cached key that hasn't expired
+    now = _time_module.monotonic()
+    if _api_key and (now - _api_key_fetched_at) < _API_KEY_TTL:
         return _api_key
 
     # Validate that USERNAME and PASSWORD are configured
@@ -136,6 +142,7 @@ async def get_api_key() -> Optional[str]:
                             key_element = root.find('.//key')
                             if key_element is not None and key_element.text:
                                 _api_key = key_element.text
+                                _api_key_fetched_at = _time_module.monotonic()
                                 logger.debug("Panorama API key retrieved successfully")
                                 return _api_key
                             else:
@@ -165,5 +172,6 @@ def clear_api_key_cache():
     This function resets the key cache, forcing the next call to get_api_key()
     to request a fresh key from the API.
     """
-    global _api_key
+    global _api_key, _api_key_fetched_at
     _api_key = None
+    _api_key_fetched_at = 0.0

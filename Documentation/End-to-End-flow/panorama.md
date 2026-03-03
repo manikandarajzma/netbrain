@@ -338,6 +338,86 @@ api_key = await panoramaauth.get_api_key()
    ```
    Extracts and caches the key in the module-level `_api_key` variable.
 
+---
+
+### Caching and parallel processing
+
+To avoid hammering the Panorama appliance on every query, the toolbox includes two layers of caching plus concurrent fetches.
+
+#### Device‑group / address‑object cache
+`panorama_tools._get_address_objects_cached()` and `_get_address_groups_for_location()` each maintain an in‑memory cache keyed by location (e.g. `"device-group:leander-dg"` or `"shared"`).
+
+```python
+now = _time.monotonic()
+cached = _addr_obj_cache.get(key)
+if cached and (now - cached[1]) < _CACHE_TTL:
+    logger.debug("Address objects: cache hit for %s (%d objects)", key, len(cached[0]))
+    return cached[0]
+# fetch from Panorama and on success store:
+_addr_obj_cache[key] = (objects, now)
+```
+
+- TTL is five minutes (`_CACHE_TTL`).
+- After a cache miss the first query pays the HTTP cost; subsequent requests serve the cached value until expiry.
+- If Panorama credentials expire the code clears both the API key cache and the location cache to force a re‑auth on the next request.
+- Cache entries do **not** auto‑refresh; they only update when a fetch is performed. Manual invalidation requires restarting the MCP server.
+
+Log messages at DEBUG level indicate hits/misses and object counts:
+```
+Device groups: cache hit (2 groups)
+Address objects: fetched 6001 from device-group:leander
+```
+
+#### API key caching
+The API key is cached indefinitely in `_api_key`. On any authentication error (HTTP 401/403 or XML reply containing "invalid key") the cache is cleared by `panoramaauth.clear_api_key_cache()` and a fresh key is obtained. There is no TTL on the key itself; it lives as long as Panorama accepts it.
+
+#### Parallel HTTP requests
+Once the list of locations (shared + device groups) is determined, requests for objects/groups are dispatched concurrently with `asyncio.gather()`: this turns an N‑round‑trip operation into a single parallel batch.
+
+```python
+addr_obj_results = await asyncio.gather(
+    *[_get_address_objects_cached(session, panorama_url, api_key, ssl_context, lt, ln)
+      for lt, ln in locations],
+    return_exceptions=True,
+)
+```
+
+The same pattern appears later when fetching address groups. `return_exceptions=True` ensures a failure on one location doesn’t abort the whole query; errors are logged and skipped.
+
+| Phase | Before | After |
+|-------|--------|-------|
+| DG list | 1 HTTP call | cached (0–1) |
+| Objects | serial N calls | N parallel + cache |
+| Groups | serial N calls | N parallel |
+
+On a warm cache with two groups, a typical IP lookup now needs **2–4 total HTTP calls** instead of 20+.  
+
+These optimizations are what keep Panorama queries snappy even when the configuration contains thousands of address objects.
+
+---
+
+### API retrieval details
+
+Every interaction with Panorama is a simple GET to the device’s `/api/` endpoint. URLs are built dynamically using the configured `PANORAMA_URL`, the current API key, and a URL‑quoted XPath expression. For example, to fetch address objects from a device group:
+
+```python
+xpath = (
+    f"/config/devices/entry[@name='localhost.localdomain']"
+    f"/device-group/entry[@name='{location_name}']/address"
+)
+url = (
+    f"{panorama_url}/api/?type=config&action=get"
+    f"&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+)
+async with session.get(url, ssl=ssl_context,
+                       timeout=aiohttp.ClientTimeout(total=45)) as resp:
+    resp_text = await resp.text()
+    # xml parsing follows here…
+```
+
+The client uses `aiohttp` with a 45‑second timeout and an SSL context constructed from `PANORAMA_VERIFY_SSL`. The raw XML response is parsed with `xml.etree.ElementTree` and inspected for `status="success"` before further processing.
+
+
 ### IP validation
 
 ```python
