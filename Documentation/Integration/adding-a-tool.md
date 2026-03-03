@@ -12,11 +12,10 @@ To add an entirely new integration (new file, new auth, new credentials), see [a
 - [ ] 2. Write the `@mcp.tool()` wrapper
 - [ ] 3. Update `TOOL_DISPLAY_NAMES` in `chat_service.py`
 - [ ] 4. Update `_TOOL_TIMEOUTS` in `chat_service.py`
-- [ ] 5. Update `_is_obviously_in_scope()` keywords in `chat_service.py`
-- [ ] 6. Update the LLM system prompt in `_build_llm_messages()` in `chat_service.py`
-- [ ] 7. Update `_normalize_result()` in `chat_service.py` (if needed)
-- [ ] 8. Update `ROLE_ALLOWED_TOOLS` in `auth.py`
-- [ ] 9. Update the frontend (if the response shape is new)
+- [ ] 5. Update the LLM system prompt in `_build_llm_messages()` in `chat_service.py`
+- [ ] 6. Update `_normalize_result()` in `chat_service.py` (if needed)
+- [ ] 7. Update `ROLE_ALLOWED_TOOLS` in `auth.py`
+- [ ] 8. Update the frontend (if the response shape is new)
 
 ---
 
@@ -171,28 +170,7 @@ _TOOL_TIMEOUTS: dict[str, float] = {
 
 ---
 
-## Step 5: `_is_obviously_in_scope()` in chat_service.py
-
-Add keywords that unambiguously identify your tool's queries. This fast-path check avoids an LLM call when the query obviously matches.
-
-```python
-def _is_obviously_in_scope(prompt: str) -> bool:
-    lower = (prompt or "").lower()
-    has_ip = bool(_IP_OR_CIDR_RE.search(prompt or ""))
-    # ... existing keyword groups ...
-    netbrain_kw = any(k in lower for k in (
-        "network path", "path from", "path to", "traffic allowed",
-        "path allowed", "can reach", "connectivity", "path",
-        "interface", "interfaces", "ports on",   # ← add for get_device_interfaces
-    ))
-    ...
-```
-
-Only add keywords that are unambiguous — a keyword appearing in a completely unrelated query would incorrectly mark it as in-scope.
-
----
-
-## Step 6: System prompt in `_build_llm_messages()`
+## Step 5: System prompt in `_build_llm_messages()`
 
 Add a routing rule so the LLM knows when to select the new tool over others.
 
@@ -218,7 +196,7 @@ SystemMessage(content=(
 
 ---
 
-## Step 7: `_normalize_result()` in chat_service.py (optional)
+## Step 6: `_normalize_result()` in chat_service.py (optional)
 
 Add normalization only if you want to inject a `direct_answer`, `yes_no_answer`, or `metric_answer` badge in the UI, or to clean up the result before rendering.
 
@@ -248,7 +226,7 @@ If your tool result renders fine as a table with no extra context needed, skip t
 
 ---
 
-## Step 8: RBAC in auth.py
+## Step 7: RBAC in auth.py
 
 **File:** [auth.py](../../auth.py)
 
@@ -282,7 +260,7 @@ ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
 
 ---
 
-## Step 9: Frontend updates (if needed)
+## Step 8: Frontend updates (if needed)
 
 Frontend changes are only needed if the response shape is new. If your tool returns a standard dict with array values, it renders as a table automatically.
 

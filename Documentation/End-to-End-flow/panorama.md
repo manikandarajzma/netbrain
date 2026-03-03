@@ -125,7 +125,7 @@ When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login pag
 3. If no role resolves → 302 redirect to `/login?error=norole`.
 4. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL).
 
-Azure PIM-activated roles appear in the **access_token**, not the id_token. `auth_callback` merges roles from both tokens.
+> **Note:** PIM (Privileged Identity Management) is no longer used. Role resolution is entirely group-based via `OIDC_GROUP_ROLE_MAP` (Azure AD security group object ID → role).
 
 ---
 
@@ -163,21 +163,6 @@ Pydantic enforces types and provides defaults. If `message` is missing or not a 
 ## Step 5: Tool Discovery in chat_service
 
 **File:** [chat_service.py](../../chat_service.py)
-
-### Scope check (fast-path, no LLM)
-
-```python
-def _is_obviously_in_scope(prompt: str) -> bool:
-    panorama_kw = any(k in lower for k in (
-        "object group", "address group", "panorama", "palo alto", ...
-    ))
-    has_ip = bool(_IP_OR_CIDR_RE.search(prompt))
-    if has_ip and panorama_kw:
-        return True
-    ...
-```
-
-The prompt `"What address group is 11.0.0.1 part of?"` matches `has_ip=True` + `panorama_kw=True` → scope check passes immediately without an LLM call.
 
 ### Fetching MCP tool schemas
 

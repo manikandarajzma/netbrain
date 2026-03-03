@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict
+from typing import Any
 
 logger = logging.getLogger("atlas.chat_service")
 
@@ -16,40 +16,6 @@ logger = logging.getLogger("atlas.chat_service")
 # ---------------------------------------------------------------------------
 
 _IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
-
-
-def _is_obviously_in_scope(prompt: str) -> bool:
-    """Fast keyword check: return True if query clearly matches known tool patterns."""
-    lower = (prompt or "").lower()
-    has_ip = bool(_IP_OR_CIDR_RE.search(prompt or ""))
-    panorama_kw = any(k in lower for k in (
-        "object group", "address group", "panorama", "palo alto",
-        "firewall rule", "security rule", "security policy",
-        "device group", "address object", "ip group",
-        "orphan", "unused", "not referenced", "cleanup panorama",
-    ))
-    path_kw = any(k in lower for k in (
-        "network path", "path from", "path to", "traffic allowed",
-        "path allowed", "can reach", "connectivity", "path",
-    ))
-    splunk_kw = any(k in lower for k in (
-        "splunk", "deny", "denied", "denies", "firewall log",
-        "recent deny", "deny event",
-    ))
-    if has_ip and (panorama_kw or path_kw or splunk_kw):
-        return True
-    if panorama_kw or path_kw or splunk_kw:
-        return True
-    if len(_IP_OR_CIDR_RE.findall(prompt or "")) >= 2:
-        return True
-    return False
-
-
-def is_query_in_scope(prompt: str) -> Dict[str, Any]:
-    """Keyword-only scope check — no LLM call."""
-    if _is_obviously_in_scope(prompt):
-        return {"in_scope": True, "reason": "Keyword match"}
-    return {"in_scope": True, "reason": "Passed through to LLM"}
 
 
 def _is_doc_query(prompt: str) -> bool:

@@ -158,19 +158,6 @@ Pydantic enforces types and provides defaults. If `message` is missing or not a 
 
 **File:** [chat_service.py](../../chat_service.py)
 
-### Scope check (fast-path, no LLM)
-
-```python
-def _is_obviously_in_scope(prompt: str) -> bool:
-    splunk_kw = any(k in lower for k in ("splunk", "deny", "denied", "denial", "block", "firewall deny", ...))
-    has_ip = bool(_IP_OR_CIDR_RE.search(prompt))
-    if has_ip and splunk_kw:
-        return True
-    ...
-```
-
-A prompt like `"Recent deny events for 10.0.0.1"` matches `has_ip=True` + `splunk_kw=True` → scope check passes immediately without an LLM call.
-
 ### Fetching MCP tool schemas
 
 ```python

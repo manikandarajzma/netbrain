@@ -166,19 +166,6 @@ Pydantic enforces types and provides defaults. If `message` is missing or not a 
 
 **File:** [chat_service.py](../../chat_service.py)
 
-### Scope check (fast-path, no LLM)
-
-```python
-def _is_obviously_in_scope(prompt: str) -> bool:
-    path_kw = any(k in lower for k in ("path", "route", "trace", "hop", "allowed", "reachable", ...))
-    has_two_ips = len(_IP_OR_CIDR_RE.findall(prompt)) >= 2
-    if has_two_ips and path_kw:
-        return True
-    ...
-```
-
-A prompt like `"Find path from 10.0.0.1 to 10.0.1.1"` matches `has_two_ips=True` + `path_kw=True` → scope check passes immediately without an LLM call.
-
 ### Fetching MCP tool schemas
 
 ```python
