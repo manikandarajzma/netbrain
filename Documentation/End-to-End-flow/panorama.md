@@ -122,14 +122,19 @@ Both Panorama tools are accessible to `admin` and `netadmin` roles. `guest` is d
 
 When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login page → `GET /auth/callback`):
 
-1. `authlib` exchanges the authorization code for tokens (id_token + access_token).
-2. `extract_role_from_token(userinfo)` in [auth.py](../../auth.py) checks, in priority order:
-   - **Azure app roles** — `roles` claim in the token (e.g. `"admin"`, `"netadmin"`).
-   - **Azure security group → role map** — `OIDC_GROUP_ROLE_MAP` env var (group object ID → role).
-3. If no role resolves → 302 redirect to `/login?error=norole`.
-4. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL).
+1. Atlas redirects the browser to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize`. Azure handles all credential verification (password, MFA) — Atlas never sees the password. Azure redirects back to `/auth/callback` with a short-lived one-time authorization code.
 
-> **Note:** PIM (Privileged Identity Management) is no longer used. Role resolution is entirely group-based via `OIDC_GROUP_ROLE_MAP` (Azure AD security group object ID → role).
+2. `authlib` makes a server-to-server POST to Azure's token endpoint, exchanging the code for tokens. Azure responds with an `id_token`, `access_token`, and `refresh_token`.
+
+   > **What is a JWT?** A JSON Web Token is a string of three base64url-encoded segments separated by dots: `header.payload.signature`. The **payload** is a plain JSON object containing claims (`"email"`, `"groups"`, etc.) — readable by anyone, but not encrypted. The **signature** is a cryptographic hash signed with Azure's private key — it proves the token came from Azure and has not been tampered with. authlib verifies the signature against Azure's public keys before Atlas reads any claims.
+
+3. Atlas manually decodes the `id_token` JWT payload to extract the `groups` claim (Entra ID group Object IDs). The `groups` claim is a Microsoft extension that only appears in the `id_token` — it is never returned by the standard `/userinfo` endpoint.
+
+4. `extract_group_from_token()` in [auth.py](../../auth.py) maps each group Object ID to an access level using env vars (`ATLAS_ADMIN_GROUP_ID` → `"admin"`, `ATLAS_NETADMIN_GROUP_ID` → `"netadmin"`). If no group matches → 302 redirect to `/login?error=norole`.
+
+5. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL) containing `{ username, group, auth_mode, created_at }`. No PIM, no app roles — auth is entirely group-based.
+
+For full detail on the login flow see [auth-rbac.md](../Security/auth-rbac.md).
 
 ---
 
