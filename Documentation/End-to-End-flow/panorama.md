@@ -72,9 +72,9 @@ Cookie: atlas_session=<signed-cookie>
 { "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
 ```
 
-- `fetch` includes `credentials: 'include'` (cookies sent automatically).
-- A 2 min client-side timeout is applied via `AbortSignal`.
-- On 401, the browser is redirected to `/login`.
+- Cookies are sent automatically because this is a same-origin request — `fetch` defaults to `credentials: 'same-origin'`, no explicit setting needed.
+- The `signal` passed to `fetch` is from an `AbortController` created per message send (`new AbortController()` in `chatStore.sendMessage`). It is a **user-abort signal** (the stop button calls `ctrl.abort()`), not a timeout. There is no client-side timeout on `/api/discover`.
+- On 401, `checkAuthRedirect` immediately sets `window.location.href = '/login'` (the page navigates away) and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore`, which falls back to `currentStatus: 'Processing'` — but the navigation has already happened so it is moot.
 
 > **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
 >
