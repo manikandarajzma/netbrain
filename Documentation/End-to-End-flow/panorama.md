@@ -60,7 +60,7 @@ The user types `"What address group is 11.0.0.1 part of?"` and presses Enter.
 
 ---
 
-## Step 2: Tool Discovery (Frontend → FastAPI)
+## Step 2: Tool Pre-selection (Frontend → FastAPI)
 
 **File:** [frontend/src/utils/api.js](../../frontend/src/utils/api.js) → `discoverTool()`
 
@@ -76,7 +76,11 @@ Cookie: atlas_session=<signed-cookie>
 - A 2 min client-side timeout is applied via `AbortSignal`.
 - On 401, the browser is redirected to `/login`.
 
-The response contains `tool_display_name: "Panorama"`. The UI updates `currentStatus` to `"Querying Panorama"`.
+> **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
+>
+> The sole purpose is **UI feedback**. The calls are sequential: `/api/discover` is awaited first → `tool_display_name: "Panorama"` is returned → `currentStatus` updates to `"Querying Panorama"` → only then does `/api/chat` fire to actually execute the query. If `/api/discover` fails, `currentStatus` falls back to `"Processing"` but `/api/chat` still runs.
+>
+> The cost of this UX feature is **one full redundant LLM call per query** — the tool selection that `/api/discover` performs is repeated from scratch by `/api/chat`.
 
 ---
 
