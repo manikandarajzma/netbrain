@@ -72,7 +72,7 @@ Cookie: atlas_session=<signed-cookie>
 { "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
 ```
 
-- Cookies are sent automatically because this is a same-origin request — `fetch` defaults to `credentials: 'same-origin'`, no explicit setting needed.
+- **Cookie — what it is and why it's sent:** After OIDC login, FastAPI sets an `atlas_session` cookie containing a signed session payload (`{ username, group, auth_mode, created_at }`) serialised with `itsdangerous.URLSafeTimedSerializer`. The cookie is `HttpOnly` (JavaScript cannot read it) and `SameSite=Lax` (sent on same-site navigations, blocks cross-site request forgery). There is no server-side session store — the payload *is* the session. FastAPI reads and verifies the signature on every request to identify the user and their group. **Same-origin** means the frontend and backend share the same scheme, host, and port (e.g. both on `https://atlas.example.com`). The browser automatically attaches cookies for same-origin requests — `fetch` does this by default with `credentials: 'same-origin'`, so no explicit setting is needed in the frontend code.
 - The `signal` passed to `fetch` is from an `AbortController` created per message send (`new AbortController()` in `chatStore.sendMessage`). It is a **user-abort signal** (the stop button calls `ctrl.abort()`), not a timeout. There is no client-side timeout on `/api/discover`.
 - On 401, `checkAuthRedirect` immediately sets `window.location.href = '/login'` (the page navigates away) and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore`, which falls back to `currentStatus: 'Processing'` — but the navigation has already happened so it is moot.
 
