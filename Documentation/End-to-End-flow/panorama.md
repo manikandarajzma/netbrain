@@ -189,6 +189,9 @@ mcp_tools = await _fetch_mcp_tools()
 
 ### Building tool descriptions for the LLM
 
+> **Why is it called `_to_openai_tool`?**
+> The name refers to the output format, not the provider. OpenAI introduced the function-calling JSON schema (`{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}`), which has since become the de facto standard adopted by LangChain's `bind_tools()`. Even though Atlas uses Ollama/Llama as the LLM, LangChain still expects tools in this OpenAI-compatible format.
+
 ```python
 def _to_openai_tool(t) -> dict:
     # Strips everything from "Args:" onward, keeps up to 600 chars
