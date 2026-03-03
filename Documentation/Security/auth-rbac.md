@@ -16,7 +16,7 @@ The sign-in flow is handled by two routes in `app.py` and helper functions in `a
 
 **Step 1 — Redirect to Microsoft**
 
-`GET /auth/microsoft` redirects the browser to Microsoft's login page via authlib:
+`GET /auth/microsoft` redirects the browser to Microsoft's authorization endpoint via authlib:
 
 ```python
 # app.py
@@ -26,24 +26,58 @@ async def auth_microsoft(request: Request):
     return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
 ```
 
+authlib builds and redirects to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize` with these query parameters:
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `client_id` | Atlas App Registration client ID | Tells Azure which application is requesting login |
+| `redirect_uri` | `https://<host>/auth/callback` | Where Azure redirects after the user authenticates — must match exactly what's registered in the Azure App Registration |
+| `response_type` | `code` | Authorization Code flow — Azure returns a short-lived code, not tokens directly. Tokens are only exchanged server-side, never exposed to the browser |
+| `scope` | `openid profile email offline_access` | `openid` triggers OIDC and makes Azure return an `id_token`; `profile` adds `name`/`preferred_username`; `email` adds email address; `offline_access` adds a `refresh_token` |
+| `state` | random value (stored in session) | CSRF protection — Azure returns it unchanged and authlib verifies it matches, so an attacker cannot forge a callback |
+| `nonce` | random value (stored in session) | Replay protection — embedded in the `id_token`, authlib verifies it to ensure the token was issued for this specific request |
+| `prompt` | `select_account` | Forces the account picker even if the user is already signed in to Microsoft |
+
+**Azure then handles all authentication itself** — the user enters their corporate credentials, MFA, etc. on Microsoft's login page. Atlas never sees the password or MFA interaction. Once authenticated, Azure redirects to `/auth/callback?code=XXXX&state=YYYY` with a short-lived (≈10 min), one-time authorization code.
+
 **Step 2 — Exchange code for tokens and decode the id_token**
 
-After login, Microsoft redirects to `GET /auth/callback` with an authorization code. `auth_callback()` in `app.py` exchanges it for tokens, then manually decodes the JWT payload to extract the `groups` claim. The `groups` claim is only in the `id_token` — Microsoft does not include group memberships in the `/userinfo` endpoint:
+Atlas calls `oauth.microsoft.authorize_access_token(request)`, which makes a **server-to-server POST** (not browser) to `https://login.microsoftonline.com/{tenant_id}/v2.0/token`:
+
+| Sent to Azure | Value |
+|---------------|-------|
+| `grant_type` | `authorization_code` |
+| `code` | the one-time code from the callback query parameter |
+| `redirect_uri` | must match Step 1 exactly |
+| `client_id` + `client_secret` | Atlas authenticates itself to Azure — the secret is server-side only, never exposed to the browser |
+
+Azure responds with:
+
+| Field | What it is |
+|-------|-----------|
+| `id_token` | JWT containing the user's identity claims: `sub`, `name`, `preferred_username`, `email`, `groups`, `iss`, `aud`, `exp`, `iat`, `nonce` |
+| `access_token` | JWT for calling Microsoft Graph API — Atlas does not use this |
+| `refresh_token` | For getting new tokens without re-login — Atlas does not use this; session TTL (30 min) handles expiry |
+| `token_type` | `Bearer` |
+| `expires_in` | Seconds until the access_token expires |
+
+> **What is a JWT?** A JSON Web Token is a string made of three base64url-encoded segments separated by dots: `header.payload.signature`. The **header** says which signing algorithm was used. The **payload** is a plain JSON object containing claims (key-value pairs like `"email": "user@corp.com"`, `"groups": [...]`). The **signature** is a cryptographic hash of the header + payload, signed with Azure's private key. Anyone can base64-decode and read the payload — it is not encrypted. But without Azure's private key, no one can forge a valid signature. This is what authlib verifies: it fetches Azure's public keys from `/.well-known/openid-configuration` and checks that the signature on the `id_token` is valid — proving the token genuinely came from Azure and has not been tampered with.
+
+authlib verifies the `id_token` signature against Azure's public keys (fetched from `/.well-known/openid-configuration`). Atlas then **manually decodes the JWT payload** (the middle segment) to read the claims:
 
 ```python
 # app.py
-@app.get("/auth/callback")
-async def auth_callback(request: Request):
-    token = await oauth.microsoft.authorize_access_token(request)  # authlib verifies signature
+token = await oauth.microsoft.authorize_access_token(request)  # authlib verifies signature
 
-    # Decode id_token JWT to get the groups claim
-    id_token = token.get("id_token")
-    payload = id_token.split(".")[1]
-    payload += "=" * (4 - len(payload) % 4)   # restore base64url padding
-    userinfo = json.loads(base64.urlsafe_b64decode(payload))
-    # userinfo["groups"] contains Entra ID group Object IDs, e.g.:
-    # ["d1cc53dd-b663-48d3-a711-214ba91188c7", "47fc0125-81f8-4244-956c-4897200598cf"]
+id_token = token.get("id_token")
+payload = id_token.split(".")[1]
+payload += "=" * (4 - len(payload) % 4)   # restore base64url padding
+userinfo = json.loads(base64.urlsafe_b64decode(payload))
+# userinfo["groups"] contains Entra ID group Object IDs, e.g.:
+# ["d1cc53dd-b663-48d3-a711-214ba91188c7", "47fc0125-81f8-4244-956c-4897200598cf"]
 ```
+
+> **Why decode the JWT manually instead of calling `/userinfo`?** Microsoft's `/userinfo` endpoint only returns standard OIDC claims. The `groups` claim — which contains the user's Entra ID group memberships — is a Microsoft extension that only appears inside the `id_token` JWT itself. It is never returned by `/userinfo`. So Atlas must decode the JWT payload directly to get it.
 
 **Step 3 — Resolve the group from token claims**
 
