@@ -52,7 +52,7 @@ The user types `"What address group is 11.0.0.1 part of?"` and presses Enter.
 
 `chatStore.sendMessage(text)` runs:
 
-1. **Disambiguation check** — inspects the last assistant message in `conversationHistory`. If it had `requires_site: true` and `rack`, it would combine the rack name + user reply into a single query. For Panorama queries this path is never triggered; `textToSend` remains the original text.
+1. **Disambiguation check** — inspects the last assistant message in `conversationHistory` for `requires_site: true` and a `rack` field. This was a NetBox rack-lookup feature that is no longer active. No active tool returns these fields, so `textToSend` is always the original text unchanged.
 
 2. **UI state** — `isLoading: true`, `currentStatus: 'Identifying query'`.
 

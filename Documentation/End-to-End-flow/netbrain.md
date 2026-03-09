@@ -56,7 +56,7 @@ The user types `"Find path from 10.0.0.1 to 10.0.1.1"` and presses Enter.
 
 `chatStore.sendMessage(text)` runs:
 
-1. **Disambiguation check** — inspects the last assistant message in `conversationHistory`. If it had `requires_site: true`, it would combine the site name + user reply. For NetBrain queries this path is never triggered.
+1. **Disambiguation check** — inspects the last assistant message in `conversationHistory` for `requires_site: true` and a `rack` field. This was a NetBox rack-lookup feature that is no longer active. No active tool returns these fields, so `textToSend` is always the original text unchanged.
 
 2. **UI state** — `isLoading: true`, `currentStatus: 'Identifying query'`.
 
