@@ -48,15 +48,33 @@ FastAPI → JSON response → React
 **File:** [frontend/src/components/chat/ChatInput.jsx](../../frontend/src/components/chat/ChatInput.jsx)
 **Store:** [frontend/src/stores/chatStore.js](../../frontend/src/stores/chatStore.js)
 
-The user types `"What address group is 11.0.0.1 part of?"` and presses Enter.
+### ChatInput.jsx — the input box
 
-`chatStore.sendMessage(text)` runs:
+`ChatInput.jsx` is the React component that renders the text box, file upload button, and send/stop button. It has no query logic of its own. When the user presses Enter:
+
+```js
+const text = inputText.trim()
+setInputText('')        // clears the input box
+await sendMessage(text) // hands off to the store
+```
+
+### chatStore.js — the frontend brain
+
+`chatStore.js` is a [Zustand](https://github.com/pmndrs/zustand) store — a global state container shared across all React components. It holds all frontend state (`messages`, `isLoading`, `currentStatus`, `abortController`, `conversationHistory`) and all actions (`sendMessage`, `stopGeneration`, etc.).
+
+Any component can subscribe to it: `useChatStore(s => s.sendMessage)`. The component re-renders only when that specific slice of state changes.
+
+### What sendMessage does
+
+The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. `chatStore.sendMessage(text)` runs:
 
 1. **Disambiguation check** — inspects the last assistant message in `conversationHistory` for `requires_site: true` and a `rack` field. This was a NetBox rack-lookup feature that is no longer active. No active tool returns these fields, so `textToSend` is always the original text unchanged.
 
-2. **UI state** — `isLoading: true`, `currentStatus: 'Identifying query'`.
+2. **UI state** — `isLoading: true`, `currentStatus: 'Identifying query'`. This renders the loading indicator and switches the send button to a stop button.
 
-3. **History is intentionally empty** — `historySlice = []`. Each query is stateless; prior context is not sent to the LLM to prevent pollution.
+3. **History is intentionally empty** — `historySlice = []`. Each query is stateless; prior conversation context is not sent to the LLM to prevent responses from previous exchanges polluting unrelated queries.
+
+`textToSend` and `historySlice` are what get sent in the request body to both `/api/discover` and `/api/chat` in Step 2 and Step 6.
 
 ---
 
