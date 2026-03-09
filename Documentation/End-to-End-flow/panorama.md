@@ -74,7 +74,13 @@ The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. `c
 
 3. **History is intentionally empty** — `historySlice = []`. Each query is stateless; prior conversation context is not sent to the LLM to prevent responses from previous exchanges polluting unrelated queries.
 
-`textToSend` and `historySlice` are what get sent in the request body to both `/api/discover` and `/api/chat` in Step 2 and Step 6.
+`textToSend` is a local variable holding the user's message string — `"What address group is 11.0.0.1 part of?"` in this case. It becomes the `"message"` field in the JSON body of every outgoing request:
+
+```json
+{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
+```
+
+This exact body is sent to both `/api/discover` (Step 2) and `/api/chat` (Step 6). `historySlice` becomes `"conversation_history"` — always `[]` since history is disabled.
 
 ---
 
