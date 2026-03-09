@@ -620,11 +620,21 @@ Hidden fields (not rendered in tables): `vsys`, `queried_ip`, `intent`, `format`
 
 HTTP is stateless — every request arrives at the server with no memory of who made previous requests. Without a cookie, FastAPI would have to demand credentials on every single request.
 
-After OIDC login, FastAPI signs a session payload (`{ username, group, auth_mode, created_at }`) using `itsdangerous.URLSafeTimedSerializer` and sets it as the `atlas_session` cookie. On every subsequent request the browser sends this cookie automatically — FastAPI verifies the signature and reads the payload to know who you are and what you're allowed to do.
+**The server sets the cookie — the browser stores and sends it.** After OIDC login, FastAPI signs a session payload (`{ username, group, auth_mode, created_at }`) using `itsdangerous.URLSafeTimedSerializer` and returns it in the HTTP response as a `Set-Cookie` header:
 
-The `group` field drives RBAC: `_check_tool_access()` in `chat_service.py` reads it to decide which tools the user can call. There is no server-side session store — the signed payload *is* the session, so sessions survive app restarts with no shared cache needed.
+```
+Set-Cookie: atlas_session=<signed-payload>; HttpOnly; SameSite=Lax
+```
 
-The cookie is `HttpOnly` (JavaScript cannot read or steal it) and `SameSite=Lax` (blocks cross-site request forgery). Because the frontend and backend share the same origin (same scheme, host, and port), the browser attaches the cookie automatically — no explicit `credentials` setting is needed in the frontend fetch calls.
+The browser saves this automatically. On every subsequent request to the same origin, the browser includes it in the request headers:
+
+```
+Cookie: atlas_session=<signed-payload>
+```
+
+FastAPI reads it back with `request.cookies.get("atlas_session")`, verifies the signature, and decodes the payload to identify the user — no database lookup, no server-side session store. The signed payload *is* the session, so sessions survive app restarts with no shared cache needed.
+
+The `group` field drives RBAC: `_check_tool_access()` in `chat_service.py` reads it to decide which tools the user can call. The cookie is `HttpOnly` (JavaScript cannot read or steal it) and `SameSite=Lax` (blocks cross-site request forgery). Because the frontend and backend share the same origin (same scheme, host, and port), the browser attaches the cookie automatically — no explicit `credentials` setting is needed in the frontend fetch calls.
 
 ---
 
