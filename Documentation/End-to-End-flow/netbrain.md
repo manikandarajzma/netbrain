@@ -101,7 +101,7 @@ def get_current_username(request: Request) -> str | None:
     return get_username_for_session(sid)
 ```
 
-`get_username_for_session` calls `get_session(sid)` which uses `itsdangerous.URLSafeTimedSerializer` to verify the cookie signature and TTL (30 minutes). The cookie contains `{username, role, auth_mode, created_at}` — no server-side session store; the cookie IS the session.
+`get_username_for_session` calls `get_session(sid)` which uses `itsdangerous.URLSafeTimedSerializer` to verify the cookie signature and TTL (30 minutes). The cookie contains `{username, group, auth_mode, created_at}` — no server-side session store; the cookie IS the session.
 
 If the cookie is missing, invalid, or expired → 401 + `{"redirect": "/login"}`.
 
