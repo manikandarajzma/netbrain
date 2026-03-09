@@ -166,30 +166,63 @@ For full detail on the login flow see [auth-rbac.md](../Security/auth-rbac.md).
 
 **File:** [app.py](../../app.py)
 
+There are two routes involved — one per request sent by the frontend.
+
+### `/api/discover` route
+
 ```python
 @app.post("/api/discover")
 async def api_discover(request: Request, body: ChatRequest):
+    username = get_current_username(request)   # reads + verifies the session cookie
+    if not username:
+        return response_401_clear_session(request)
+    result = await process_message(
+        body.message.strip(),                  # "What address group is 11.0.0.1 part of?"
+        body.conversation_history or [],       # [] — always empty from frontend
+        discover_only=True,                    # tells process_message to stop after tool selection
+        username=username,                     # for logging
+        session_id=get_session_id(request),   # raw cookie value — needed for RBAC group lookup
+    )
+    return result
+```
+
+### `/api/chat` route
+
+```python
+@app.post("/api/chat")
+async def api_chat(request: Request, body: ChatRequest):
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
     result = await process_message(
         body.message.strip(),
         body.conversation_history or [],
-        discover_only=True,
+        discover_only=False,                   # default — runs the full pipeline including tool execution
         username=username,
         session_id=get_session_id(request),
     )
     return result
 ```
 
-The `ChatRequest` Pydantic model validates the request body:
+The two routes are identical except for `discover_only`. Both call the same `process_message()` function in `chat_service.py`.
+
+### Why session_id is passed separately from username
+
+`username` is extracted from the cookie for logging. `session_id` is the raw cookie string — it's passed into `process_message()` so `chat_service.py` can call `get_group_for_session(session_id)` to look up the user's group for RBAC enforcement. The group is not stored in the username; it lives in the session payload.
+
+### Request body validation — ChatRequest
+
+FastAPI automatically deserializes and validates the JSON body using the `ChatRequest` Pydantic model before the route function runs:
 
 ```python
 class ChatRequest(BaseModel):
-    message: str
-    conversation_history: list[dict[str, Any]] = []
-    conversation_id: str | None = None
-    parent_conversation_id: str | None = None
+    message: str                                    # required — the user's query text
+    conversation_history: list[dict[str, Any]] = [] # optional — always [] from the frontend
+    conversation_id: str | None = None              # optional — used for history persistence
+    parent_conversation_id: str | None = None       # optional — links follow-up conversations
 ```
 
-Pydantic enforces types and provides defaults. If `message` is missing or not a string, FastAPI returns a 422 Unprocessable Entity automatically.
+If `message` is missing or not a string, FastAPI returns `422 Unprocessable Entity` before the route function is even called. `body.message.strip()` removes leading/trailing whitespace before passing to `process_message()`.
 
 ---
 
