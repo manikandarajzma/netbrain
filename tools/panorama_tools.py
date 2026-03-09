@@ -93,10 +93,9 @@ async def _get_device_groups_cached(session, panorama_url: str, api_key: str, ss
                 if xml_status != 'success':
                     msg_el = root.find('.//msg') or root.find('.//result/msg')
                     err_msg = (msg_el.text or '').strip() if msg_el is not None else resp_text[:200]
-                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized')
+                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized', 'credential', 'expired')
                     if any(kw in err_msg.lower() for kw in auth_keywords):
-                        logger.warning("Device groups: Panorama API key invalid/expired — clearing cache for re-auth. Error: %s", err_msg)
-                        panoramaauth.clear_api_key_cache()
+                        logger.warning("Device groups: Panorama authentication error. Error: %s", err_msg)
                     else:
                         logger.warning("Device groups: Panorama returned status='%s'. Error: %s", xml_status, err_msg)
                 else:
@@ -111,8 +110,7 @@ async def _get_device_groups_cached(session, panorama_url: str, api_key: str, ss
                             names = [e.get('name') for e in result_el if e.get('name')]
                     logger.debug("Device groups: fetched %d names from Panorama", len(names))
             elif resp.status in (401, 403):
-                logger.warning("Device groups fetch: auth error HTTP %d — clearing API key cache for re-auth", resp.status)
-                panoramaauth.clear_api_key_cache()
+                logger.warning("Device groups fetch: auth error HTTP %d", resp.status)
             else:
                 logger.warning("Device groups fetch failed: HTTP %d: %s", resp.status, resp_text[:200])
     except Exception as exc:
@@ -161,10 +159,9 @@ async def _get_address_objects_cached(
                 if xml_status != 'success':
                     msg_el = root.find('.//msg') or root.find('.//result/msg')
                     err_msg = (msg_el.text or '').strip() if msg_el is not None else resp_text[:200]
-                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized')
+                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized', 'credential', 'expired')
                     if any(kw in err_msg.lower() for kw in auth_keywords):
-                        logger.warning("Address objects: Panorama API key invalid/expired for %s — clearing cache for re-auth. Error: %s", key, err_msg)
-                        panoramaauth.clear_api_key_cache()
+                        logger.warning("Address objects: Panorama authentication error for %s. Error: %s", key, err_msg)
                     else:
                         logger.warning("Address objects: Panorama returned status='%s' for %s. Error: %s", xml_status, key, err_msg)
                 else:
@@ -172,8 +169,7 @@ async def _get_address_objects_cached(
                     logger.debug("Address objects: fetched %d from %s", len(objects), key)
                     fetch_ok = True
             elif resp.status in (401, 403):
-                logger.warning("Address objects fetch: auth error HTTP %d for %s — clearing API key cache for re-auth", resp.status, key)
-                panoramaauth.clear_api_key_cache()
+                logger.warning("Address objects fetch: auth error HTTP %d for %s", resp.status, key)
             else:
                 logger.warning("Address objects fetch failed for %s: HTTP %d", key, resp.status)
     except Exception as exc:
@@ -211,10 +207,9 @@ async def _fetch_address_groups_for_location(
                 if xml_status != 'success':
                     msg_el = root.find('.//msg') or root.find('.//result/msg')
                     err_msg = (msg_el.text or '').strip() if msg_el is not None else resp_text[:200]
-                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized')
+                    auth_keywords = ('invalid credentials', 'invalid key', 'invalid api key', 'authentication', 'unauthorized', 'credential', 'expired')
                     if any(kw in err_msg.lower() for kw in auth_keywords):
-                        logger.warning("Address groups: Panorama API key invalid/expired for %s %s — clearing cache for re-auth. Error: %s", location_type, location_name, err_msg)
-                        panoramaauth.clear_api_key_cache()
+                        logger.warning("Address groups: Panorama authentication error for %s %s. Error: %s", location_type, location_name, err_msg)
                     else:
                         logger.debug("Address groups: Panorama status='%s' for %s %s: %s", xml_status, location_type, location_name, err_msg)
                 else:

@@ -81,23 +81,14 @@ userinfo = json.loads(base64.urlsafe_b64decode(payload))
 
 **Step 3 — Resolve the group from token claims**
 
-`extract_group_from_token()` in `auth.py` maps the group Object IDs to an access level using the env vars `ATLAS_ADMIN_GROUP_ID` and `ATLAS_NETADMIN_GROUP_ID`:
+`extract_group_from_token()` in `auth.py` iterates the `groups` claim and matches each value directly against the keys of `GROUP_ALLOWED_TOOLS`. Because on-prem synced groups are configured to emit `sAMAccountName` in the token, the group name in the token (e.g. `"admin"`, `"netadmin"`) is the same string used as keys in `GROUP_ALLOWED_TOOLS` — no mapping or env vars needed:
 
 ```python
 # auth.py
-_GROUP_ID_MAP = {}
-if os.getenv("ATLAS_ADMIN_GROUP_ID"):    _GROUP_ID_MAP[os.getenv("ATLAS_ADMIN_GROUP_ID").lower()]    = "admin"
-if os.getenv("ATLAS_NETADMIN_GROUP_ID"): _GROUP_ID_MAP[os.getenv("ATLAS_NETADMIN_GROUP_ID").lower()] = "netadmin"
-
 def extract_group_from_token(token_claims: dict) -> str | None:
     for group in token_claims.get("groups", []):
         g_lower = str(group).lower().strip()
-        # Cloud-only groups: match by Object ID
-        if _GROUP_ID_MAP:
-            name = _GROUP_ID_MAP.get(g_lower)
-            if name:
-                return name
-        # On-prem synced groups: match by sAMAccountName (e.g. "admin", "netadmin")
+        # On-prem synced groups: sAMAccountName matches GROUP_ALLOWED_TOOLS key directly
         if g_lower in GROUP_ALLOWED_TOOLS:
             return g_lower
     return None  # user is not in any recognised group
@@ -229,8 +220,8 @@ The group is read from the **server-signed cookie**, not from the prompt. A user
 | `AZURE_TENANT_ID`         | Yes      | Azure tenant ID                                                      |
 | `AZURE_CLIENT_ID`         | Yes      | App Registration client ID                                           |
 | `AZURE_CLIENT_SECRET`     | Yes      | App Registration client secret                                       |
-| `ATLAS_ADMIN_GROUP_ID`    | Yes      | Object ID of the full-access Entra ID group                         |
-| `ATLAS_NETADMIN_GROUP_ID` | Yes      | Object ID of the limited-access Entra ID group                      |
+| `ATLAS_ADMIN_GROUP_ID`    | No       | Object ID of the full-access Entra ID group — only needed for cloud-only groups, not on-prem synced |
+| `ATLAS_NETADMIN_GROUP_ID` | No       | Object ID of the limited-access Entra ID group — only needed for cloud-only groups, not on-prem synced |
 | `SESSION_SECRET`          | No       | Fixed signing key for session cookies — required for multi-instance deployments |
 | `OAUTH_STATE_SECRET`      | No       | Fixed signing key for the OAuth state cookie — required for multi-instance deployments |
 
@@ -238,8 +229,8 @@ The group is read from the **server-signed cookie**, not from the prompt. A user
 
 ## On-Prem Synced vs Cloud-Only Groups
 
-**Cloud-only groups** (default): The `groups` claim contains Object IDs (GUIDs). Set the `ATLAS_*_GROUP_ID` env vars to the Object IDs from Entra ID → Groups → Overview. Each env var maps a GUID to a group name defined in `GROUP_ALLOWED_TOOLS`.
+**On-prem synced groups** (current setup): The Entra ID token is configured to emit `sAMAccountName` in the `groups` claim. The group name in the token (e.g. `"admin"`, `"netadmin"`) matches the keys in `GROUP_ALLOWED_TOOLS` directly — no env vars or Object ID mapping needed.
 
-**On-prem synced groups**: Configure the Entra ID token to emit `sAMAccountName` in the `groups` claim. The group name is matched directly against the keys in `GROUP_ALLOWED_TOOLS` — no env vars needed.
+**Cloud-only groups** (alternative): The `groups` claim contains Object IDs (GUIDs) instead of names. Set `ATLAS_ADMIN_GROUP_ID` and `ATLAS_NETADMIN_GROUP_ID` env vars to the Object IDs from Entra ID → Groups → Overview. `extract_group_from_token()` maps GUIDs to group names via `_GROUP_ID_MAP` before the `GROUP_ALLOWED_TOOLS` lookup.
 
-Both modes can coexist: Object ID lookup runs first, then falls back to sAMAccountName matching.
+Both modes can coexist in the code: Object ID lookup runs first, then falls back to sAMAccountName matching.

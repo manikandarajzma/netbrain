@@ -64,9 +64,7 @@ Panorama's XML API uses **session-based API keys** rather than per-request Basic
 GET /api/?type=keygen&user=<user>&password=<password>
 ```
 
-The returned key is stored in the module-level variable `_api_key` in `panoramaauth.py`. All subsequent calls reuse this key without re-authenticating, saving one round-trip per query.
-
-The key is **not TTL-expired** — it persists for the lifetime of the MCP server process. If Panorama invalidates the session (e.g. server restart, session timeout), the next API call will receive an `unauth` error. In that case, `clear_api_key_cache()` resets `_api_key = None` so the next call re-authenticates.
+A fresh key is fetched on every tool invocation — no caching. This means every query makes one round-trip to `/api/?type=keygen` before the main API call.
 
 ---
 
@@ -152,15 +150,11 @@ Step 2: Fetch pre-rulebase + post-rulebase security rules
 
 ## Caching Mechanisms
 
-All caches live at **module level** in `panoramaauth.py` and `panorama_tools.py`, so they are shared across all MCP tool invocations for the lifetime of the server process.
+All caches live at **module level** in `panorama_tools.py`, so they are shared across all MCP tool invocations for the lifetime of the server process.
 
-### 1. Panorama API key in-process cache (`panoramaauth._api_key`)
+> The Panorama API key is **not cached** — a fresh key is fetched on every tool invocation.
 
-- **What:** The Panorama session API key string.
-- **TTL:** No automatic expiry — persists until the server restarts or `clear_api_key_cache()` is called.
-- **Benefit:** Eliminates one HTTP round-trip (`/api/?type=keygen`) on every query.
-
-### 2. Device Group List Cache (`_dg_cache`)
+### 1. Device Group List Cache (`_dg_cache`)
 
 Defined in `panorama_tools.py`:
 
@@ -223,7 +217,6 @@ _dg_cache = (names, now)  # store with current timestamp
 **Implications:**
 - If no queries arrive for 5+ minutes, the cache entries expire but **no fetch happens** until the next query comes in. The first query after expiry pays the fetch cost; all subsequent queries within the next 5 minutes are served from cache.
 - There is no way to manually invalidate the address object or device group caches short of restarting the MCP server. If Panorama config changes (e.g. a commit adds new objects) those changes will not be visible to Atlas for up to 5 minutes.
-- The API key cache has no TTL and never auto-refreshes — it is only cleared if Panorama returns a session-expired error and `clear_api_key_cache()` is called explicitly.
 
 ### Cache hit/miss logging
 
@@ -341,7 +334,7 @@ The analysis is returned in `result["ai_analysis"]["summary"]`.
 
 ### Session timeouts during long-running scripts
 
-Panorama invalidates API keys after extended inactivity. If a bulk operation runs for 90+ minutes, individual API calls may start returning `code="22" Session timed out`. The generate script logs these as warnings and continues; the MCP server would need `clear_api_key_cache()` to recover.
+Panorama invalidates API keys after extended inactivity. If a bulk operation runs for 90+ minutes, individual API calls may start returning `code="22" Session timed out`. The generate script logs these as warnings and continues. The MCP server is not affected since it fetches a fresh API key on every invocation.
 
 ### Candidate config vs running config
 

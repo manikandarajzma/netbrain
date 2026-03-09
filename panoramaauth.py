@@ -29,7 +29,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 
 # Import Optional type hint from typing module
-from typing import Optional, Dict, Any, List
+from typing import Optional
 
 # Load .env from this dir, project root, and cwd (same as tools/shared)
 from dotenv import load_dotenv
@@ -78,36 +78,14 @@ if _vault_url and _kv_tenant_id and _kv_client_id and _kv_client_secret:
 else:
     logger.warning("AZURE_KEYVAULT_URL or KV service principal env vars not set; Panorama credentials unavailable")
 
-# Cache for API key — (key_string, fetched_at_monotonic) | None
-# Refreshed automatically after _API_KEY_TTL seconds.
-import time as _time_module
-
-_API_KEY_TTL = 3600.0  # Re-fetch the key every hour
-_api_key: Optional[str] = None
-_api_key_fetched_at: float = 0.0
-
-
 async def get_api_key() -> Optional[str]:
     """
     Get Panorama API key using username/password authentication.
-    Returns cached key if available and not expired, otherwise requests a new one.
-
-    This function implements key caching to minimize API calls:
-    - Checks if a cached key exists and is still within TTL
-    - If available, returns the cached key immediately
-    - If missing or expired, requests a new key from the keygen endpoint
-    - Caches the new key for reuse
+    Always requests a fresh key — no caching.
 
     Returns:
         Optional[str]: API key string if successful, None if authentication fails
     """
-    global _api_key, _api_key_fetched_at
-
-    # Check if we have a cached key that hasn't expired
-    now = _time_module.monotonic()
-    if _api_key and (now - _api_key_fetched_at) < _API_KEY_TTL:
-        return _api_key
-
     # Validate that USERNAME and PASSWORD are configured
     if not PANORAMA_USERNAME or not PANORAMA_PASSWORD:
         logger.warning("Panorama USERNAME or PASSWORD not configured")
@@ -141,10 +119,8 @@ async def get_api_key() -> Optional[str]:
                         if status == 'success':
                             key_element = root.find('.//key')
                             if key_element is not None and key_element.text:
-                                _api_key = key_element.text
-                                _api_key_fetched_at = _time_module.monotonic()
                                 logger.debug("Panorama API key retrieved successfully")
-                                return _api_key
+                                return key_element.text
                             else:
                                 logger.warning("API key not found in Panorama response")
                                 return None
@@ -163,15 +139,3 @@ async def get_api_key() -> Optional[str]:
     except Exception as e:
         logger.error(f"Error getting Panorama API key: {e}")
         return None
-
-
-def clear_api_key_cache():
-    """
-    Clear the cached API key (useful for testing or forced re-authentication).
-
-    This function resets the key cache, forcing the next call to get_api_key()
-    to request a fresh key from the API.
-    """
-    global _api_key, _api_key_fetched_at
-    _api_key = None
-    _api_key_fetched_at = 0.0

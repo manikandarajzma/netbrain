@@ -128,9 +128,9 @@ When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login pag
 
    > **What is a JWT?** A JSON Web Token is a string of three base64url-encoded segments separated by dots: `header.payload.signature`. The **payload** is a plain JSON object containing claims (`"email"`, `"groups"`, etc.) — readable by anyone, but not encrypted. The **signature** is a cryptographic hash signed with Azure's private key — it proves the token came from Azure and has not been tampered with. authlib verifies the signature against Azure's public keys before Atlas reads any claims.
 
-3. Atlas manually decodes the `id_token` JWT payload to extract the `groups` claim (Entra ID group Object IDs). The `groups` claim is a Microsoft extension that only appears in the `id_token` — it is never returned by the standard `/userinfo` endpoint.
+3. Atlas manually decodes the `id_token` JWT payload to extract the `groups` claim. The `groups` claim is a Microsoft extension that only appears in the `id_token` — it is never returned by the standard `/userinfo` endpoint.
 
-4. `extract_group_from_token()` in [auth.py](../../auth.py) maps each group Object ID to an access level using env vars (`ATLAS_ADMIN_GROUP_ID` → `"admin"`, `ATLAS_NETADMIN_GROUP_ID` → `"netadmin"`). If no group matches → 302 redirect to `/login?error=norole`.
+4. `extract_group_from_token()` in [auth.py](../../auth.py) iterates the `groups` claim and matches each value directly against the keys of `GROUP_ALLOWED_TOOLS` (e.g. `"admin"`, `"netadmin"`). This works because on-prem synced groups emit the `sAMAccountName` in the token — the group name is the same string Atlas uses internally, so no mapping is needed. If no group matches → 302 redirect to `/login?error=norole`.
 
 5. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL) containing `{ username, group, auth_mode, created_at }`. No PIM, no app roles — auth is entirely group-based.
 
@@ -365,8 +365,8 @@ Device groups: cache hit (2 groups)
 Address objects: fetched 6001 from device-group:leander
 ```
 
-#### API key caching
-The API key is cached indefinitely in `_api_key`. On any authentication error (HTTP 401/403 or XML reply containing "invalid key") the cache is cleared by `panoramaauth.clear_api_key_cache()` and a fresh key is obtained. There is no TTL on the key itself; it lives as long as Panorama accepts it.
+#### API key
+A fresh API key is fetched from Panorama's `keygen` endpoint on every tool invocation — no caching. This ensures a stale or expired key is never reused.
 
 #### Parallel HTTP requests
 Once the list of locations (shared + device groups) is determined, requests for objects/groups are dispatched concurrently with `asyncio.gather()`: this turns an N‑round‑trip operation into a single parallel batch.
