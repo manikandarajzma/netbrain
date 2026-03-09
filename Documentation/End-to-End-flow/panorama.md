@@ -72,9 +72,9 @@ Cookie: atlas_session=<signed-cookie>
 { "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
 ```
 
-- **Cookie — why it's needed, what it contains, and what it does:** HTTP is stateless — every request arrives at the server with no memory of who made previous requests. Without a cookie, FastAPI would have no way to know who is calling `/api/discover` and would have to demand credentials on every single request. The `atlas_session` cookie solves this: after OIDC login, FastAPI signs a session payload (`{ username, group, auth_mode, created_at }`) using `itsdangerous.URLSafeTimedSerializer` and sets it as a cookie. On every subsequent request the browser sends this cookie automatically, FastAPI verifies the signature and reads the payload — this is how it knows who you are and what you're allowed to do without making you log in again. The `group` field in the payload drives RBAC: `_check_tool_access()` in `chat_service.py` reads it to decide which tools the user is permitted to call. The cookie is `HttpOnly` (JavaScript cannot read or steal it) and `SameSite=Lax` (only sent on same-site requests, blocking cross-site request forgery). There is no server-side session store — the signed payload *is* the session, so sessions survive app restarts with no shared cache needed. **Same-origin** means the frontend and backend share the same scheme, host, and port (e.g. both on `https://atlas.example.com`). The browser attaches cookies for same-origin requests automatically — `fetch` does this by default with `credentials: 'same-origin'`, so no explicit setting is needed in the frontend code.
-- **AbortController and signal — what they are and why:** A browser `fetch()` call, once started, normally runs until the server responds or the network fails — there is no built-in way to cancel it from code. `AbortController` is the browser API that adds cancellation. When you call `new AbortController()` it gives you two things: a `controller` object and a `controller.signal` object. You pass the `signal` into `fetch({ signal })` — this links the request to the controller. If you then call `controller.abort()`, the browser immediately cancels the in-flight request and `fetch` throws an `AbortError`. In Atlas, `chatStore.sendMessage` creates one `AbortController` per message send and stores it in state (`set({ abortController: ctrl })`). The stop button calls `ctrl.abort()`, which cancels both the `/api/discover` and `/api/chat` requests simultaneously since they share the same signal. This is a **user-abort signal only** — it is not a timeout. There is no automatic cancellation on `/api/discover` if the LLM takes too long.
-- On 401, `checkAuthRedirect` immediately sets `window.location.href = '/login'` (the page navigates away) and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore`, which falls back to `currentStatus: 'Processing'` — but the navigation has already happened so it is moot.
+- The `atlas_session` cookie is sent automatically by the browser — it identifies who is making the request and drives RBAC. See [FAQ](#faq).
+- An `AbortController` is created per message send; its `signal` is shared by both `/api/discover` and `/api/chat`. The stop button calls `ctrl.abort()` to cancel both in-flight requests. See [FAQ](#faq).
+- On 401, the browser is immediately redirected to `/login`. See [FAQ](#faq).
 
 > **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
 >
@@ -611,6 +611,36 @@ Hidden fields (not rendered in tables): `vsys`, `queried_ip`, `intent`, `format`
 | `MCP_SERVER_HOST/PORT` | `.env` | MCP server address (default `127.0.0.1:8765`) |
 | `CORS_ALLOWED_ORIGINS` | `.env` | Browser origins allowed by CORS middleware |
 | `OAUTH_STATE_SECRET` | `.env` | Starlette session secret for OIDC state cookie |
+
+---
+
+## FAQ
+
+### Why does Atlas use a session cookie?
+
+HTTP is stateless — every request arrives at the server with no memory of who made previous requests. Without a cookie, FastAPI would have to demand credentials on every single request.
+
+After OIDC login, FastAPI signs a session payload (`{ username, group, auth_mode, created_at }`) using `itsdangerous.URLSafeTimedSerializer` and sets it as the `atlas_session` cookie. On every subsequent request the browser sends this cookie automatically — FastAPI verifies the signature and reads the payload to know who you are and what you're allowed to do.
+
+The `group` field drives RBAC: `_check_tool_access()` in `chat_service.py` reads it to decide which tools the user can call. There is no server-side session store — the signed payload *is* the session, so sessions survive app restarts with no shared cache needed.
+
+The cookie is `HttpOnly` (JavaScript cannot read or steal it) and `SameSite=Lax` (blocks cross-site request forgery). Because the frontend and backend share the same origin (same scheme, host, and port), the browser attaches the cookie automatically — no explicit `credentials` setting is needed in the frontend fetch calls.
+
+---
+
+### What is AbortController / signal?
+
+A browser `fetch()` call, once started, runs until the server responds or the network fails — there is no built-in way to cancel it from code. `AbortController` is the browser API that adds cancellation.
+
+`new AbortController()` gives you a `controller` object and a `controller.signal`. Passing the `signal` into `fetch({ signal })` links the request to the controller. Calling `controller.abort()` immediately cancels the in-flight request and `fetch` throws an `AbortError`.
+
+In Atlas, `chatStore.sendMessage` creates one `AbortController` per message send and stores it in state. The stop button calls `ctrl.abort()`, which cancels both the `/api/discover` and `/api/chat` requests simultaneously since they share the same signal. This is a **user-abort only** — there is no automatic timeout on `/api/discover`.
+
+---
+
+### What happens on a 401 response?
+
+`checkAuthRedirect` immediately sets `window.location.href = '/login'` — the page navigates away. It also throws `'Not authenticated'`, which is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'` — but the navigation has already happened so this is moot.
 
 ---
 
