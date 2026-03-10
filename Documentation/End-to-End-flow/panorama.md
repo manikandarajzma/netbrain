@@ -522,7 +522,7 @@ api_key = await panoramaauth.get_api_key()
    ```xml
    <response status="success"><result><key>LUFRPT14...</key></result></response>
    ```
-   Extracts and caches the key in the module-level `_api_key` variable.
+   Extracts the key from the XML and returns it directly — no caching.
 
 ---
 
