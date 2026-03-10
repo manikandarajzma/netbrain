@@ -817,6 +817,30 @@ In Atlas, `chatStore.sendMessage` creates one `AbortController` per message send
 
 ---
 
+### Why does sendMessage go through the Zustand store instead of calling the API directly from ChatInput.jsx?
+
+`ChatInput.jsx` could technically call `/api/discover` and `/api/chat` directly, but that would break several things:
+
+**1. Multiple components share the same state.**
+`ChatInput.jsx` is not the only component that needs to know what's happening. `ChatWindow.jsx` needs `messages` to render the conversation. A loading indicator needs `isLoading`. A status bar needs `currentStatus`. The stop button needs `abortController` to cancel the in-flight request. If `ChatInput.jsx` held all this as local state, sibling components would have no way to read it without passing props up through their common parent and back down — the standard React prop-drilling problem. With Zustand, any component subscribes directly: `useChatStore(s => s.isLoading)` — no prop chains.
+
+**2. `sendMessage` orchestrates far more than one fetch.**
+The function in `chatStore.js` manages:
+- Adding the user message to the displayed conversation
+- Creating an `AbortController` and storing it in state so the stop button (a completely separate component) can call `ctrl.abort()`
+- Calling `/api/discover` → updating `currentStatus` to `"Querying Panorama"`
+- Calling `/api/chat` → receiving and displaying the response
+- Error handling, cleanup, and setting `isLoading: false`
+
+If this logic lived inside `ChatInput.jsx`, the component would be doing application-level business logic, not UI rendering. It would also be impossible for the stop button to cancel a request whose `AbortController` is a local variable inside a different component.
+
+**3. State must outlive the component.**
+React component local state disappears when the component unmounts. Store state persists for the lifetime of the page. If `isLoading: true` were local to `ChatInput.jsx`, navigating away and back would reset it mid-request.
+
+The separation is intentional: `ChatInput.jsx` is a pure UI component — text box, buttons, file picker, nothing else. `chatStore.js` is where all application logic and shared state live.
+
+---
+
 ### What happens on a 401 response?
 
 The 401 is sent by **FastAPI** (the app server) — not the browser. Both `/api/discover` and `/api/chat` check the session cookie at the top of the route handler. If the `atlas_session` cookie is missing, expired, or tampered with, FastAPI returns:
