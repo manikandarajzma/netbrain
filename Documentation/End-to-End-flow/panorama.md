@@ -230,7 +230,7 @@ async def api_discover(request: Request, body: ChatRequest):
         body.message.strip(),                  # "What address group is 11.0.0.1 part of?"
         body.conversation_history or [],       # [] — always empty from frontend
         discover_only=True,                    # tells process_message to stop after tool selection
-        username=username,                     # for logging
+        username=username,                     # for conversation history persistence
         session_id=get_session_id(request),   # raw cookie value — needed for RBAC group lookup
     )
     return result
@@ -258,7 +258,7 @@ The two routes are identical except for `discover_only`. Both call the same `pro
 
 ### Why session_id is passed separately from username
 
-`username` is extracted from the cookie for logging. `session_id` is the raw cookie string — it's passed into `process_message()` so `chat_service.py` can call `get_group_for_session(session_id)` to look up the user's group for RBAC enforcement. The group is not stored in the username; it lives in the session payload.
+`username` is extracted from the cookie and passed to `process_message()` for two purposes: **conversation history persistence** (conversations are stored on disk keyed by username — `create_conversation(APP_DIR, username, ...)`, `append_to_conversation(APP_DIR, username, ...)`) and as a **fallback identifier** for `_check_tool_access()` if `session_id` is unavailable. `session_id` is the raw cookie string — it's passed separately so `chat_service.py` can call `get_group_for_session(session_id)` to look up the user's group for RBAC enforcement. The group is not stored in the username; it lives in the session payload.
 
 ### Request body validation — ChatRequest
 
