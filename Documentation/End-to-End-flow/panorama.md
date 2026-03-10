@@ -98,7 +98,7 @@ Cookie: atlas_session=<signed-cookie>
 
 - The `atlas_session` cookie is sent automatically by the browser — it identifies who is making the request and drives RBAC. See [FAQ](#faq).
 - An `AbortController` is created per message send; its `signal` is shared by both `/api/discover` and `/api/chat`. The stop button calls `ctrl.abort()` to cancel both in-flight requests. See [FAQ](#faq).
-- On 401, the browser is immediately redirected to `/login`. See [FAQ](#faq).
+- On 401, the browser is immediately redirected to `/login`. The 401 is sent by FastAPI when the `atlas_session` cookie is missing, expired, or invalid — it can come from either `/api/discover` or `/api/chat`. In practice it most commonly occurs on `/api/discover` (which fires first) when the 30-minute session has expired during idle time. See [FAQ](#faq).
 
 > **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
 >
@@ -148,7 +148,15 @@ When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login pag
 
 1. Atlas redirects the browser to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize`. Azure handles all credential verification (password, MFA) — Atlas never sees the password. Azure redirects back to `/auth/callback` with a short-lived one-time authorization code.
 
-2. `authlib` makes a server-to-server POST to Azure's token endpoint, exchanging the code for tokens. Azure responds with an `id_token`, `access_token`, and `refresh_token`.
+2. `authlib` makes a server-to-server POST to Azure's token endpoint, exchanging the code for tokens. Azure responds with three tokens:
+
+   - **`id_token`** — a JWT containing identity claims about the user (`email`, `name`, `groups`, etc.). This is what Atlas reads to identify who logged in and which group they belong to. It is consumed once at login time and not stored. **Code:** [app.py:208–214](../../app.py#L208-L214) — the JWT payload segment is base64-decoded manually to extract claims.
+
+   - **`access_token`** — a JWT that authorizes calls to Microsoft APIs (e.g. Microsoft Graph) on behalf of the user. Atlas does not call any Microsoft APIs after login, so this token is received but not used. **Code:** [app.py:237](../../app.py#L237) — passed into `create_session(tokens={...})` and silently dropped there.
+
+   - **`refresh_token`** — an opaque long-lived token that can be used to obtain new `access_token`s without re-prompting the user. Atlas does not implement token refresh — sessions expire after 30 minutes and the user must log in again. This token is also received but not used. **Code:** [app.py:238](../../app.py#L238) — same as `access_token`, passed in and dropped.
+
+   All three tokens are passed to `create_session()` in [auth.py:115–134](../../auth.py#L115-L134), but that function intentionally discards them — the docstring states: *"tokens is accepted for interface compatibility but is intentionally not stored — OAuth tokens are too large for a cookie and are not needed after the group is resolved at sign-in."* Only `{ username, group, auth_mode, created_at }` is baked into the cookie.
 
    > **What is a JWT?** A JSON Web Token is a string of three base64url-encoded segments separated by dots: `header.payload.signature`. The **payload** is a plain JSON object containing claims (`"email"`, `"groups"`, etc.) — readable by anyone, but not encrypted. The **signature** is a cryptographic hash signed with Azure's private key — it proves the token came from Azure and has not been tampered with. authlib verifies the signature against Azure's public keys before Atlas reads any claims.
 
@@ -237,6 +245,34 @@ mcp_tools = await _fetch_mcp_tools()
 ```
 
 `_fetch_mcp_tools()` connects to the MCP server at `http://127.0.0.1:8765` using the MCP streamable-http transport and calls `list_tools()`. The result is cached for the process lifetime (reset on restart). Each tool's schema includes its name, docstring-derived description, and JSON Schema for parameters.
+
+### Where tool descriptions come from
+
+The description string the LLM sees — `"Find which Panorama address groups contain a given IP address. Use for: ..."` — originates from the **docstring of the `@mcp.tool()`-decorated function** in [tools/panorama_tools.py](../../tools/panorama_tools.py):
+
+```python
+# tools/panorama_tools.py (around line 644)
+@mcp.tool()
+async def query_panorama_ip_object_group(
+    ip_address: str,
+    device_group: str = "",
+    vsys: str = "vsys1",
+) -> Dict[str, Any]:
+    """
+    Find which Panorama address groups contain a given IP address.
+
+    Use for: queries with an IP address (has dots, e.g. "10.0.0.1") asking which address group/object group it belongs to.
+    Do NOT use for: device names (have dashes, use get_device_rack_location), ...
+
+    Examples:
+    - "what address group is 10.0.0.1 in?" → ip_address='10.0.0.1'
+    ...
+    """
+```
+
+The `@mcp.tool()` decorator (from FastMCP) registers the function with the MCP server and uses the docstring as the tool's description. When `chat_service.py` calls `list_tools()` on the MCP server, the server returns each tool's name, JSON Schema for parameters, and this description string. To change what the LLM sees as the tool's purpose or usage guidance, edit the docstring directly in `panorama_tools.py`.
+
+---
 
 ### Building tool descriptions for the LLM
 
@@ -707,7 +743,16 @@ In Atlas, `chatStore.sendMessage` creates one `AbortController` per message send
 
 ### What happens on a 401 response?
 
-`checkAuthRedirect` immediately sets `window.location.href = '/login'` — the page navigates away. It also throws `'Not authenticated'`, which is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'` — but the navigation has already happened so this is moot.
+The 401 is sent by **FastAPI** (the app server) — not the browser. Both `/api/discover` and `/api/chat` check the session cookie at the top of the route handler. If the `atlas_session` cookie is missing, expired, or tampered with, FastAPI returns:
+
+```json
+HTTP 401
+{ "detail": "Not authenticated", "redirect": "/login" }
+```
+
+The most common trigger is the 30-minute session TTL expiring while the user was idle. Since `/api/discover` fires first, the 401 typically arrives before `/api/chat` is even attempted.
+
+On the frontend, `checkAuthRedirect` detects the 401, immediately sets `window.location.href = '/login'` — the page navigates away — and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'`, but the navigation has already happened so this is moot.
 
 ---
 
