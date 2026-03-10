@@ -3,7 +3,7 @@
 This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Two Panorama tools are covered:
 
 - **`query_panorama_ip_object_group`** — "What address group is 11.0.0.1 part of?"
-- **`query_panorama_address_group_members`** — "What IPs are in address group leander_web?"
+- **`query_panorama_address_group_members`** — "What IPs are in address group web-servers?"
 
 ---
 
@@ -531,7 +531,7 @@ api_key = await panoramaauth.get_api_key()
 To avoid hammering the Panorama appliance on every query, the toolbox includes two layers of caching plus concurrent fetches.
 
 #### Device‑group / address‑object cache
-`panorama_tools._get_address_objects_cached()` and `_get_address_groups_for_location()` each maintain an in‑memory cache keyed by location (e.g. `"device-group:leander-dg"` or `"shared"`).
+`panorama_tools._get_address_objects_cached()` and `_get_address_groups_for_location()` each maintain an in‑memory cache keyed by location (e.g. `"device-group:my-dg"` or `"shared"`).
 
 ```python
 now = _time.monotonic()
@@ -551,7 +551,7 @@ _addr_obj_cache[key] = (objects, now)
 Log messages at DEBUG level indicate hits/misses and object counts:
 ```
 Device groups: cache hit (2 groups)
-Address objects: fetched 6001 from device-group:leander
+Address objects: fetched 6001 from device-group:my-dg
 ```
 
 #### API key
@@ -622,7 +622,7 @@ GET /api/?type=config&action=get
     &key=<api_key>
 ```
 
-Returns XML listing all device group names (e.g., `leander-dg`, `roundrock-dg`).
+Returns XML listing all device group names configured in Panorama.
 
 ### Step 8b: Find address objects containing the IP
 
@@ -630,7 +630,7 @@ For each location (shared + each device group):
 
 ```
 GET /api/?type=config&action=get
-    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='leander-dg']/address
+    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='<dg-name>']/address
     &key=<api_key>
 ```
 
@@ -641,13 +641,13 @@ The XML response contains address object entries with `<ip-netmask>`, `<ip-range
 - `ip-range` → `start <= ip <= end`
 - FQDN → skipped (cannot match IP)
 
-Matching objects are collected: e.g., `{"name": "leander_web_server", "type": "ip-netmask", "value": "11.0.0.0/24"}`.
+Matching objects are collected: e.g., `{"name": "web-server-01", "type": "ip-netmask", "value": "11.0.0.0/24"}`.
 
 ### Step 8c: Find address groups containing those objects
 
 ```
 GET /api/?type=config&action=get
-    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='leander-dg']/address-group
+    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='<dg-name>']/address-group
     &key=<api_key>
 ```
 
@@ -659,12 +659,12 @@ Each address group entry has `<static><member>` children. The tool checks whethe
 {
     "ip_address": "11.0.0.1",
     "address_objects": [
-        {"name": "leander_web_server", "type": "ip-netmask", "value": "11.0.0.0/24",
-         "location": "device-group", "device_group": "leander-dg"}
+        {"name": "web-server-01", "type": "ip-netmask", "value": "11.0.0.0/24",
+         "location": "device-group", "device_group": "<dg-name>"}
     ],
     "address_groups": [
-        {"name": "leander_web", "location": "device-group", "device_group": "leander-dg",
-         "members": ["leander_web_server"]}
+        {"name": "web-servers", "location": "device-group", "device_group": "<dg-name>",
+         "members": ["web-server-01"]}
     ],
     "device_group": null,
     "vsys": "vsys1"
@@ -682,10 +682,10 @@ For `query_panorama_ip_object_group`, normalization generates a human-readable `
 ```python
 if tool_name == "query_panorama_ip_object_group" and result.get("address_groups"):
     group_names = [ag.get("name") for ag in address_groups]
-    # → ["leander_web"]
-    direct_answer = "11.0.0.1 is part of address group 'leander_web'"
+    # → ["web-servers"]
+    direct_answer = "11.0.0.1 is part of address group 'web-servers'"
     # If resolved via address objects:
-    direct_answer += " (via leander_web_server)"
+    direct_answer += " (via web-server-01)"
     result["direct_answer"] = direct_answer
 ```
 
@@ -694,7 +694,7 @@ For `query_panorama_address_group_members`:
 ```python
 if tool_name == "query_panorama_address_group_members":
     count = len(members)
-    direct_answer = f"Address group 'leander_web' contains {count} members"
+    direct_answer = f"Address group 'web-servers' contains {count} members"
     result["direct_answer"] = direct_answer
 ```
 
@@ -749,7 +749,7 @@ return { type: 'table', content }
 **File:** [frontend/src/components/messages/AssistantMessage.jsx](../../frontend/src/components/messages/AssistantMessage.jsx)
 
 ```jsx
-// Direct answer badge shown at top (e.g. "11.0.0.1 is part of address group 'leander_web'")
+// Direct answer badge shown at top (e.g. "11.0.0.1 is part of address group 'web-servers'")
 {hasDirectAnswer && <DirectAnswerBadge text={content.direct_answer} />}
 
 // Tables rendered in order: members → address_objects → address_groups → policies
