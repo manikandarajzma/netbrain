@@ -137,7 +137,33 @@ def get_current_username(request: Request) -> str | None:
     return get_username_for_session(sid)
 ```
 
-`get_username_for_session` calls `get_session(sid)` which uses `itsdangerous.URLSafeTimedSerializer` to verify the cookie signature and TTL (30 minutes). The cookie contains `{username, group, auth_mode, created_at}` — no server-side session store; the cookie IS the session.
+`get_username_for_session` calls `get_session(sid)` ([auth.py:137](../../auth.py#L137)) which uses `itsdangerous.URLSafeTimedSerializer` to verify the cookie and decode its payload.
+
+#### What is itsdangerous.URLSafeTimedSerializer?
+
+`itsdangerous` is a Python library for signing data so it cannot be tampered with. `URLSafeTimedSerializer` specifically:
+
+- **Signs** the session payload with an HMAC using `SESSION_SECRET` (from `.env`) and a `salt` (`"netassist-session"`) as the key. The salt scopes the serializer — a cookie signed for Atlas cannot be replayed against another app that shares the same secret.
+- **Serialises** the payload to a URL-safe base64 string (no `+`, `/`, or `=` characters).
+- **Embeds a timestamp** in the signed output, enabling time-limited verification.
+
+```python
+# auth.py:61
+_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
+
+# Signing (at login):
+session_id = _session_serializer.dumps({"username": ..., "group": ..., ...})
+
+# Verifying (on every request):
+payload = _session_serializer.loads(session_id, max_age=1800)  # max_age = 30 min TTL
+```
+
+`loads()` does three things atomically:
+1. **Verifies the HMAC signature** — if the cookie value was modified in any way, this raises `BadSignature` and the session is rejected.
+2. **Checks the embedded timestamp** — if more than `max_age=1800` seconds have elapsed since signing, it raises `SignatureExpired` and the session is rejected.
+3. **Deserialises the payload** — returns the original dict `{username, group, auth_mode, created_at}`.
+
+There is no server-side session store — the cookie payload IS the session. This means sessions survive app restarts and work across multiple app instances, as long as `SESSION_SECRET` is the same on all instances. If `SESSION_SECRET` is not set in `.env`, a random secret is generated per process ([auth.py:58](../../auth.py#L58)), invalidating all existing sessions on every restart.
 
 If the cookie is missing, invalid, or expired → 401 + `{"redirect": "/login"}`.
 
