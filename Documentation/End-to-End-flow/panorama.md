@@ -398,8 +398,12 @@ This rich context guides the LLM to select the correct tool.
 
 ### LLM tool selection (LangChain + Ollama)
 
+**File:** [chat_service.py](../../chat_service.py) → `process_message()` (lines ~345–410)
+
 ```python
+# chat_service.py
 from langchain_ollama import ChatOllama
+from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL  # read from .env
 
 # OLLAMA_MODEL and OLLAMA_BASE_URL are read from .env via tools/shared.py.
 # "llama3.1:8b" and "http://localhost:11434" are the fallback defaults only.
@@ -495,7 +499,7 @@ The MCP client sends a JSON-RPC `tools/call` message over the streamable-http tr
 api_key = await panoramaauth.get_api_key()
 ```
 
-`get_api_key()` checks for a module-level cached key first. If none:
+`get_api_key()` always requests a fresh key — no caching. On every call it:
 
 1. Loads `PANORAMA_USERNAME` and `PANORAMA_PASSWORD` exclusively from **Azure Key Vault** using `DefaultAzureCredential`:
    ```python
