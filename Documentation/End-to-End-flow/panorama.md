@@ -43,6 +43,22 @@ FastAPI → JSON response → React
 
 ---
 
+## Step 0: Authentication (One-Time Login)
+
+**File:** [app.py](../../app.py), [auth.py](../../auth.py)
+
+Before a user can type any query, they must be authenticated. This happens once per session — not on every query.
+
+1. The user visits Atlas in the browser. If no valid `atlas_session` cookie exists, they are redirected to `/login`.
+2. Clicking "Login with Microsoft" sends the browser to `GET /auth/microsoft`, which redirects to Azure's login page.
+3. After the user authenticates with Azure (password, MFA), Azure redirects back to `GET /auth/callback` with a short-lived authorization code.
+4. Atlas exchanges the code for tokens (`id_token`, `access_token`, `refresh_token`), extracts the user's AD group from the `id_token`, and creates a signed session cookie (`atlas_session`, 30-minute TTL).
+5. The browser stores the cookie and the user lands on the main chat interface.
+
+From this point on, every request to `/api/discover` and `/api/chat` includes the `atlas_session` cookie automatically — the per-request check is described in [Step 3](#step-3-session--rbac-check-fastapi). For full detail on the OIDC login flow and token handling see [auth-rbac.md](../Security/auth-rbac.md).
+
+---
+
 ## Step 1: User Types a Query (Frontend)
 
 **File:** [frontend/src/components/chat/ChatInput.jsx](../../frontend/src/components/chat/ChatInput.jsx)
