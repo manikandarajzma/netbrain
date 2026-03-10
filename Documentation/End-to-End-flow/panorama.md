@@ -160,10 +160,24 @@ session_id = _session_serializer.dumps({"username": ..., "group": ..., ...})
 payload = _session_serializer.loads(session_id, max_age=1800)  # max_age = 30 min TTL
 ```
 
-`loads()` does three things atomically:
-1. **Verifies the HMAC signature** — if the cookie value was modified in any way, this raises `BadSignature` and the session is rejected.
-2. **Checks the embedded timestamp** — if more than `max_age=1800` seconds have elapsed since signing, it raises `SignatureExpired` and the session is rejected.
-3. **Deserialises the payload** — returns the original dict `{username, group, auth_mode, created_at}`.
+`loads()` is called inside `get_session()` in [auth.py:142](../../auth.py#L142), which is called by `get_username_for_session()`, which is called by `get_current_username()` in `app.py` on every incoming request:
+
+```python
+# auth.py:137
+def get_session(session_id: Optional[str]) -> Optional[dict]:
+    try:
+        payload = _session_serializer.loads(session_id, max_age=OIDC_SESSION_TTL)
+        if isinstance(payload, dict):
+            return payload
+    except (BadSignature, Exception):
+        pass
+    return None
+```
+
+`loads()` does three things atomically in a single call:
+1. **Verifies the HMAC signature** — if the cookie value was modified in any way, this raises `BadSignature` and `get_session()` returns `None`.
+2. **Checks the embedded timestamp** — if more than `max_age=1800` seconds have elapsed since signing, it raises `SignatureExpired` and `get_session()` returns `None`.
+3. **Deserialises the payload** — if both checks pass, returns the original dict `{username, group, auth_mode, created_at}`.
 
 There is no server-side session store — the cookie payload IS the session. This means sessions survive app restarts and work across multiple app instances, as long as `SESSION_SECRET` is the same on all instances. If `SESSION_SECRET` is not set in `.env`, a random secret is generated per process ([auth.py:58](../../auth.py#L58)), invalidating all existing sessions on every restart.
 
