@@ -143,13 +143,13 @@ def get_current_username(request: Request) -> str | None:
 
 `itsdangerous` is a Python library for signing data so it cannot be tampered with. `URLSafeTimedSerializer` specifically:
 
-- **Signs** the session payload with an HMAC using `SESSION_SECRET` (from `.env`) and a `salt` (`"netassist-session"`) as the key. The salt scopes the serializer — a cookie signed for Atlas cannot be replayed against another app that shares the same secret.
+- **Signs** the session payload with an HMAC using `SESSION_SECRET` (from `.env`) and a `salt` (`"atlas-session"`) as the key. The salt scopes the serializer — a cookie signed for Atlas cannot be replayed against another app that shares the same secret.
 - **Serialises** the payload to a URL-safe base64 string (no `+`, `/`, or `=` characters).
 - **Embeds a timestamp** in the signed output, enabling time-limited verification.
 
 ```python
 # auth.py:61
-_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
+_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="atlas-session")
 
 # Signing (at login):
 session_id = _session_serializer.dumps({"username": ..., "group": ..., ...})

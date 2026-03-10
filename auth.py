@@ -58,7 +58,7 @@ OIDC_SESSION_TTL = 1800
 _SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip() or secrets.token_urlsafe(32)
 # salt scopes the serializer to this app — prevents cookies from one app being
 # replayed against another app that shares the same secret.
-_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="netassist-session")
+_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="atlas-session")
 
 # ---------------------------------------------------------------------------
 # Group-based access control
