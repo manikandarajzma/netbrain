@@ -314,6 +314,38 @@ async def query_panorama_ip_object_group(
 
 The `@mcp.tool()` decorator (from FastMCP) registers the function with the MCP server and uses the docstring as the tool's description. When `chat_service.py` calls `list_tools()` on the MCP server, the server returns each tool's name, JSON Schema for parameters, and this description string. To change what the LLM sees as the tool's purpose or usage guidance, edit the docstring directly in `panorama_tools.py`.
 
+### Where the JSON Schema for parameters comes from
+
+The parameter schema is **not written manually** — FastMCP generates it automatically from the **Python type annotations** on the function signature at registration time:
+
+```python
+# tools/panorama_tools.py:638
+async def query_panorama_ip_object_group(
+    ip_address: str,              # → required string parameter
+    device_group: Optional[str] = None,  # → optional string, defaults to None
+    vsys: str = "vsys1"           # → optional string, defaults to "vsys1"
+) -> Dict[str, Any]:
+```
+
+FastMCP introspects these annotations and produces the JSON Schema that `list_tools()` returns:
+
+```json
+{
+  "name": "query_panorama_ip_object_group",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "ip_address":   {"type": "string"},
+      "device_group": {"type": "string"},
+      "vsys":         {"type": "string", "default": "vsys1"}
+    },
+    "required": ["ip_address"]
+  }
+}
+```
+
+This schema is what the LLM uses to know which arguments to extract from the user's query and what types they must be. To add, remove, or rename a parameter — or change whether it is required — edit the **function signature type annotations** in `panorama_tools.py`. No separate schema file exists.
+
 ---
 
 ### Building tool descriptions for the LLM
