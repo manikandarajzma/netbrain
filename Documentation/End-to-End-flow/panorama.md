@@ -353,7 +353,9 @@ This rich context guides the LLM to select the correct tool.
 ```python
 from langchain_ollama import ChatOllama
 
-llm = ChatOllama(model="llama3.1:8b", base_url="http://localhost:11434", temperature=0.0)
+# OLLAMA_MODEL and OLLAMA_BASE_URL are read from .env via tools/shared.py.
+# "llama3.1:8b" and "http://localhost:11434" are the fallback defaults only.
+llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0)
 llm_with_tools = llm.bind_tools(openai_tools, tool_choice="required")
 messages = _build_llm_messages(prompt, conversation_history)
 ai_msg = await asyncio.wait_for(llm_with_tools.ainvoke(messages), timeout=90.0)
