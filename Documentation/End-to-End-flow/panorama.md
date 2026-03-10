@@ -144,6 +144,8 @@ def get_current_username(request: Request) -> str | None:
 `itsdangerous` is a Python library for signing data so it cannot be tampered with. `URLSafeTimedSerializer` specifically:
 
 - **Signs** the session payload with an HMAC using `SESSION_SECRET` (from `.env`) and a `salt` (`"atlas-session"`) as the key. The salt scopes the serializer — a cookie signed for Atlas cannot be replayed against another app that shares the same secret.
+
+  > **What is a salt?** A salt is an extra fixed string mixed into the HMAC computation to change its output — even when the secret key is the same. Its purpose here is **scoping**: it ensures a signed value created in one context cannot be replayed in another. For example, if Atlas used the same `SESSION_SECRET` for both session cookies and password-reset links, the two serializers would produce completely different signatures because they have different salts (`"atlas-session"` vs. `"password-reset"`), so a stolen session cookie could not be used as a reset token. The salt is **not secret** — it is a fixed string in the code. All security comes from `SESSION_SECRET`. The salt just ensures the same secret produces different signatures in different contexts.
 - **Serialises** the payload to a URL-safe base64 string (no `+`, `/`, or `=` characters).
 - **Embeds a timestamp** in the signed output, enabling time-limited verification.
 
