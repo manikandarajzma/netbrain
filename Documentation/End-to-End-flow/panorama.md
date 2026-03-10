@@ -51,8 +51,8 @@ Before a user can type any query, they must be authenticated. This happens once 
 
 1. The user visits Atlas in the browser. If no valid `atlas_session` cookie exists, they are redirected to `/login`.
 2. Clicking "Login with Microsoft" sends the browser to `GET /auth/microsoft`, which redirects to Azure's login page.
-3. After the user authenticates with Azure (password, MFA), Azure redirects back to `GET /auth/callback` with a short-lived authorization code.
-4. Atlas exchanges the code for tokens (`id_token`, `access_token`, `refresh_token`), extracts the user's AD group from the `id_token`, and creates a signed session cookie (`atlas_session`, 30-minute TTL).
+3. After the user authenticates with Azure (password, MFA), Azure redirects back to `GET /auth/callback` with a short-lived authorization code. The authorization code is a single-use opaque string — not a token. It proves authentication succeeded but cannot itself be used to access anything. It expires in seconds and is useless without also knowing the app's `client_secret`.
+4. Atlas's server makes a **server-to-server POST** to Azure's token endpoint, exchanging the code for the actual tokens (`id_token`, `access_token`, `refresh_token`). This exchange never goes through the browser, so the tokens never appear in the browser's URL bar, history, or logs. Azure verifies both the code and the app's `client_secret` before issuing tokens. This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**. Atlas extracts the user's AD group from the `id_token` and creates a signed session cookie (`atlas_session`, 30-minute TTL).
 5. The browser stores the cookie and the user lands on the main chat interface.
 
 From this point on, every request to `/api/discover` and `/api/chat` includes the `atlas_session` cookie automatically — the per-request check is described in [Step 3](#step-3-session--rbac-check-fastapi). For full detail on the OIDC login flow and token handling see [auth-rbac.md](../Security/auth-rbac.md).
@@ -188,9 +188,9 @@ Both Panorama tools are accessible to `admin` and `netadmin` roles. `guest` is d
 
 When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login page → `GET /auth/callback`):
 
-1. Atlas redirects the browser to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize`. Azure handles all credential verification (password, MFA) — Atlas never sees the password. Azure redirects back to `/auth/callback` with a short-lived one-time authorization code.
+1. Atlas redirects the browser to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize`. Azure handles all credential verification (password, MFA) — Atlas never sees the password. Azure redirects back to `/auth/callback` with a short-lived one-time **authorization code** — a single-use opaque string that proves authentication succeeded. It expires in seconds, is useless without the app's `client_secret`, and cannot itself be used to access any resources.
 
-2. `authlib` makes a server-to-server POST to Azure's token endpoint, exchanging the code for tokens. Azure responds with three tokens:
+2. `authlib` makes a **server-to-server POST** to Azure's token endpoint, exchanging the code (plus the app's `client_secret`) for the actual tokens. This exchange never goes through the browser — tokens never appear in the URL bar, browser history, or referrer headers. Azure responds with three tokens:
 
    - **`id_token`** — a JWT containing identity claims about the user (`email`, `name`, `groups`, etc.). This is what Atlas reads to identify who logged in and which group they belong to. It is consumed once at login time and not stored. **Code:** [app.py:208–214](../../app.py#L208-L214) — the JWT payload segment is base64-decoded manually to extract claims.
 
