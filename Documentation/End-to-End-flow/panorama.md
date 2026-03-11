@@ -49,10 +49,20 @@ FastAPI → JSON response → React
 
 Before a user can type any query, they must be authenticated. This happens once per session — not on every query.
 
-1. The user visits Atlas in the browser. If no valid `atlas_session` cookie exists, they are redirected to `/login`.
-2. Clicking "Login with Microsoft" sends the browser to `GET /auth/microsoft`, which redirects to Azure's login page.
+### 1. User visits Atlas — no session cookie
 
-### Code: `GET /auth/microsoft` ([app.py:168](../../app.py#L168))
+The user opens Atlas in the browser. FastAPI checks every incoming request for a valid `atlas_session` cookie. If none exists (first visit, or cookie expired), the request is rejected with a `302` redirect to `/login`.
+
+### 2. User clicks "Sign in with Microsoft" → `GET /auth/microsoft`
+
+The login page renders a link:
+
+```html
+<!-- templates/login.html:161 -->
+<a href="/auth/microsoft" class="ms-btn">Sign in with Microsoft</a>
+```
+
+Clicking it sends the browser to `GET /auth/microsoft` ([app.py:168](../../app.py#L168)):
 
 ```python
 @app.get("/auth/microsoft")
@@ -63,20 +73,96 @@ async def auth_microsoft(request: Request):
     return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
 ```
 
-**What each line does:**
+- `oauth` is authlib's `OAuth` client, registered at startup with Azure's OpenID Connect discovery URL. If OIDC is not configured, the guard redirects straight back to `/login`.
+- `request.url_for("auth_callback")` — FastAPI generates the absolute URL for the `/auth/callback` route. The `.replace("://127.0.0.1", "://localhost")` normalises the host so it exactly matches the URI whitelisted in the Azure portal.
+- `authorize_redirect()` builds the full Azure authorization URL and returns a `302` redirect to it. The browser follows this redirect to Azure's login page. The authorization URL looks like:
 
-- `if oauth is None` — `oauth` is the authlib `OAuth` client, initialised at startup only when `AUTH_MODE == "oidc"` and both `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` are set. If OIDC is not configured (e.g. dev mode), this guard redirects back to `/login?error=oidc` immediately. No Azure call is made.
-- `request.url_for("auth_callback")` — FastAPI generates the absolute URL for the `auth_callback` route (`/auth/callback`) based on the incoming request's host. This becomes the `redirect_uri` Azure will POST back to after login.
-- `.replace("://127.0.0.1", "://localhost")` — Azure's app registration only allows whitelisted redirect URIs. In local dev the server may bind on `127.0.0.1` but the Azure portal is registered with `localhost`. This string replace normalises the two so they match.
-- `oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")` — authlib builds the full Azure authorization URL, which includes `client_id`, `response_type=code`, `scope=openid profile email offline_access`, `redirect_uri`, and a random `state` parameter (saved in the session cookie to prevent CSRF). `prompt="select_account"` tells Azure to always show the account picker, even if the user has an active SSO session. The return value is an HTTP `302` redirect to that URL — the browser follows it immediately to Azure's login page.
+```
+https://login.microsoftonline.com/{tenant_id}/v2.0/authorize
+  ?client_id=...
+  &response_type=code
+  &scope=openid+profile+email+offline_access
+  &redirect_uri=http://localhost:8000/auth/callback
+  &state=<csrf-token>
+  &prompt=select_account
+```
 
-The route itself performs **no authentication** — it only builds and returns a redirect. All credential checking happens on Azure's side, and the result comes back to `GET /auth/callback`.
+`state` is a random value authlib generates and stores in a temporary session cookie. Azure will echo it back unchanged so Atlas can verify the response was not forged. `redirect_uri` tells Azure where to send the browser after login — Azure validates it against the registered URIs and rejects the request if it doesn't match exactly.
 
-3. After the user authenticates with Azure (password, MFA), Azure redirects back to `GET /auth/callback` with a short-lived authorization code. The authorization code is a single-use opaque string — not a token. It proves authentication succeeded but cannot itself be used to access anything. It expires in seconds and is useless without also knowing the app's `client_secret`.
-4. Atlas's server makes a **server-to-server POST** to Azure's token endpoint, exchanging the code for the actual tokens (`id_token`, `access_token`, `refresh_token`). This exchange never goes through the browser, so the tokens never appear in the browser's URL bar, history, or logs. Azure verifies both the code and the app's `client_secret` before issuing tokens. This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**. Atlas extracts the user's AD group from the `id_token` and creates a signed session cookie (`atlas_session`, 30-minute TTL).
-5. The browser stores the cookie and the user lands on the main chat interface.
+This route performs **no authentication** — it only builds and returns a redirect. All credential checking happens on Azure's side.
 
-From this point on, every request to `/api/discover` and `/api/chat` includes the `atlas_session` cookie automatically — the per-request check is described in [Step 3](#step-3-session--rbac-check-fastapi). For full detail on the OIDC login flow and token handling see [auth-rbac.md](../Security/auth-rbac.md).
+### 3. User authenticates on Azure's login page
+
+The browser is now on Azure's login page (`login.microsoftonline.com`). The user enters their credentials and completes MFA if required. Atlas is not involved at this point.
+
+### 4. Azure redirects the browser back to Atlas
+
+After successful authentication, Azure redirects the browser to the `redirect_uri` that was included in the authorization URL:
+
+```
+GET http://localhost:8000/auth/callback?code=<auth-code>&state=<csrf-token>
+```
+
+`code` is a short-lived, single-use authorization code — not a token. It proves authentication succeeded but cannot be used to access anything on its own. It expires in seconds and is useless without the app's `client_secret`.
+
+### 5. Atlas exchanges the code for tokens → `GET /auth/callback`
+
+The browser hits Atlas's callback route ([app.py:178](../../app.py#L178)):
+
+```python
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    token = await oauth.microsoft.authorize_access_token(request)
+```
+
+`authorize_access_token()` does two things: it verifies `state` matches what was stored (CSRF check), then makes a **server-to-server POST** to Azure's token endpoint, sending the `code` plus the app's `client_secret`. This exchange never goes through the browser — the tokens never appear in the URL bar, history, or logs. Azure verifies the code and secret, then returns `id_token`, `access_token`, and `refresh_token`.
+
+This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**.
+
+### 6. Atlas decodes the `id_token` JWT to extract user claims
+
+```python
+id_token = token.get("id_token")
+payload = id_token.split(".")[1]
+payload += "=" * (4 - len(payload) % 4)   # restore base64 padding
+userinfo = json.loads(base64.urlsafe_b64decode(payload))
+```
+
+A JWT has three segments separated by `.` — header, payload, signature — each base64url-encoded. Atlas splits on `.`, takes the middle segment (the payload), restores the padding that JWT omits, and decodes it to a JSON dict. The signature was already verified by `authorize_access_token()`, so Atlas only needs the claims dict.
+
+The `groups` claim is extracted from this dict — it contains the Azure AD group Object IDs the user belongs to. Microsoft does not include group memberships in the `/userinfo` endpoint, which is why Atlas decodes the `id_token` directly rather than using authlib's built-in userinfo fetch.
+
+### 7. Role resolution
+
+```python
+group = extract_group_from_token(userinfo)
+if group is None:
+    return RedirectResponse(url="/login?error=norole", status_code=302)
+```
+
+`extract_group_from_token()` in [auth.py](../../auth.py) matches the group GUIDs from the `groups` claim against `ROLE_ALLOWED_TOOLS` — a dict mapping known group IDs to roles. If the user is not in any recognised group, login is rejected with `?error=norole`.
+
+### 8. Signed session cookie is created and set
+
+```python
+session_id = create_session(username, group=group, auth_mode="oidc", tokens={...})
+
+r = RedirectResponse(url="/", status_code=302)
+r.set_cookie(key="atlas_session", value=session_id, max_age=1800, httponly=True, samesite="lax")
+return r
+```
+
+`create_session()` uses `itsdangerous.URLSafeTimedSerializer` to sign `{username, group, auth_mode, tokens}` into a tamper-proof string using `SESSION_SECRET` from `.env`. The cookie is:
+
+- `HttpOnly` — not accessible from JavaScript; protects against XSS token theft
+- `SameSite=Lax` — sent on top-level navigations but blocked on cross-site subrequests; mitigates CSRF
+- `max_age=1800` — 30-minute TTL baked into the signature; `loads()` rejects it after expiry
+
+### 9. Browser is redirected to `/` — user is now authenticated
+
+The browser follows the `302` to `/`, now carrying the `atlas_session` cookie. From this point on, every request to `/api/discover` and `/api/chat` includes the cookie automatically — the per-request validation is described in [Step 3](#step-3-session--rbac-check-fastapi).
+
+For full detail on the OIDC login flow and token handling see [auth-rbac.md](../Security/auth-rbac.md).
 
 ---
 
