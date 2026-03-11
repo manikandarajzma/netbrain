@@ -108,7 +108,27 @@ oauth.register(
 )
 ```
 
-At startup, authlib fetches the `server_metadata_url` — a standard OIDC discovery document. That JSON contains `"authorization_endpoint": "https://login.microsoftonline.com/{tenant_id}/v2.0/authorize"`. Authlib reads and caches that URL — that's where the base URL comes from. Atlas never hardcodes the Azure endpoint.
+At startup, authlib fetches the `server_metadata_url` — a standard OIDC discovery document served by Azure at:
+
+```
+https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration
+```
+
+`/.well-known/openid-configuration` is a standardized path — every OIDC provider (Azure, Google, Okta) hosts their discovery document there. It is publicly accessible with no authentication required. It returns a JSON object like:
+
+```json
+{
+  "authorization_endpoint": "https://login.microsoftonline.com/{tenant}/v2.0/authorize",
+  "token_endpoint":         "https://login.microsoftonline.com/{tenant}/v2.0/token",
+  "userinfo_endpoint":      "https://graph.microsoft.com/oidc/userinfo",
+  "jwks_uri":               "https://login.microsoftonline.com/{tenant}/v2.0/keys",
+  "issuer":                 "https://login.microsoftonline.com/{tenant}/v2.0",
+  "scopes_supported":       ["openid", "profile", "email", "offline_access", ...],
+  "response_types_supported": ["code", "token", ...]
+}
+```
+
+Authlib fetches this once at startup and uses it to know where to send the browser to log in (`authorization_endpoint`), where to POST the code exchange (`token_endpoint`), and where to fetch public keys to verify JWTs (`jwks_uri`). Atlas never hardcodes any of these Azure endpoints.
 
 **2. `authorize_redirect()` at login time ([app.py:175](../../app.py#L175))**
 
