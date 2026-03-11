@@ -110,12 +110,31 @@ GET http://localhost:8000/auth/callback?code=<auth-code>&state=<csrf-token>
 The browser hits Atlas's callback route ([app.py:178](../../app.py#L178)):
 
 ```python
-@app.get("/auth/callback")
-async def auth_callback(request: Request):
+# app.py:196-200
+try:
     token = await oauth.microsoft.authorize_access_token(request)
+except Exception as exc:
+    print(f"OIDC token error: {exc}", flush=True)
+    return RedirectResponse(url="/login?error=oidc", status_code=302)
 ```
 
-`authorize_access_token()` does two things: it verifies `state` matches what was stored (CSRF check), then makes a **server-to-server POST** to Azure's token endpoint, sending the `code` plus the app's `client_secret`. This exchange never goes through the browser — the tokens never appear in the URL bar, history, or logs. Azure verifies the code and secret, then returns `id_token`, `access_token`, and `refresh_token`.
+`authorize_access_token()` is a single authlib call that does two things internally:
+
+1. **CSRF check** — reads `state` from the callback URL query params and compares it to the value stored in the Starlette session cookie from step 2. Raises an exception if they don't match.
+2. **Token exchange** — makes a server-to-server POST to Azure's token endpoint:
+
+```
+POST https://login.microsoftonline.com/{tenant_id}/v2.0/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=<auth-code-from-url>
+&redirect_uri=http://localhost:8000/auth/callback
+&client_id=<AZURE_CLIENT_ID>
+&client_secret=<AZURE_CLIENT_SECRET>
+```
+
+This exchange never goes through the browser — the tokens never appear in the URL bar, history, or logs. Azure verifies the code and secret, then returns `id_token`, `access_token`, and `refresh_token` as a JSON response which authlib parses into `token`.
 
 This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**.
 
