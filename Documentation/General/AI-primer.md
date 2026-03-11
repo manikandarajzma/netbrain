@@ -175,7 +175,7 @@ Ollama uses GGUF quantized models. vLLM typically runs full or half precision (b
 
 The maximum amount of text (measured in tokens) a model can "see" in a single inference call — both the input prompt and the generated output count toward this limit.
 
-If a conversation grows beyond the context window, the application must truncate older messages. Atlas passes conversation history into the prompt; very long conversations could hit this limit.
+If a conversation grows beyond the context window, the application must truncate older messages. Atlas caps history at the last 10 messages (`conversation_history[-10:]` in `chat_service.py`) before building the prompt, so hitting the context limit is unlikely in practice.
 
 `llama3.1:8b` context window: 128,000 tokens (~96,000 words).
 
