@@ -135,6 +135,8 @@ A local inference server that makes running open-source LLMs simple. It handles 
 
 Atlas currently uses Ollama. The base URL and model are configured via `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in `.env`.
 
+> **Planned migration:** Atlas will be migrated from Ollama to vLLM for production use.
+
 ---
 
 ## vLLM
