@@ -51,6 +51,27 @@ Before a user can type any query, they must be authenticated. This happens once 
 
 1. The user visits Atlas in the browser. If no valid `atlas_session` cookie exists, they are redirected to `/login`.
 2. Clicking "Login with Microsoft" sends the browser to `GET /auth/microsoft`, which redirects to Azure's login page.
+
+### Code: `GET /auth/microsoft` ([app.py:168](../../app.py#L168))
+
+```python
+@app.get("/auth/microsoft")
+async def auth_microsoft(request: Request):
+    if oauth is None:
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
+    redirect_uri = str(request.url_for("auth_callback")).replace("://127.0.0.1", "://localhost")
+    return await oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")
+```
+
+**What each line does:**
+
+- `if oauth is None` — `oauth` is the authlib `OAuth` client, initialised at startup only when `AUTH_MODE == "oidc"` and both `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` are set. If OIDC is not configured (e.g. dev mode), this guard redirects back to `/login?error=oidc` immediately. No Azure call is made.
+- `request.url_for("auth_callback")` — FastAPI generates the absolute URL for the `auth_callback` route (`/auth/callback`) based on the incoming request's host. This becomes the `redirect_uri` Azure will POST back to after login.
+- `.replace("://127.0.0.1", "://localhost")` — Azure's app registration only allows whitelisted redirect URIs. In local dev the server may bind on `127.0.0.1` but the Azure portal is registered with `localhost`. This string replace normalises the two so they match.
+- `oauth.microsoft.authorize_redirect(request, redirect_uri, prompt="select_account")` — authlib builds the full Azure authorization URL, which includes `client_id`, `response_type=code`, `scope=openid profile email offline_access`, `redirect_uri`, and a random `state` parameter (saved in the session cookie to prevent CSRF). `prompt="select_account"` tells Azure to always show the account picker, even if the user has an active SSO session. The return value is an HTTP `302` redirect to that URL — the browser follows it immediately to Azure's login page.
+
+The route itself performs **no authentication** — it only builds and returns a redirect. All credential checking happens on Azure's side, and the result comes back to `GET /auth/callback`.
+
 3. After the user authenticates with Azure (password, MFA), Azure redirects back to `GET /auth/callback` with a short-lived authorization code. The authorization code is a single-use opaque string — not a token. It proves authentication succeeded but cannot itself be used to access anything. It expires in seconds and is useless without also knowing the app's `client_secret`.
 4. Atlas's server makes a **server-to-server POST** to Azure's token endpoint, exchanging the code for the actual tokens (`id_token`, `access_token`, `refresh_token`). This exchange never goes through the browser, so the tokens never appear in the browser's URL bar, history, or logs. Azure verifies both the code and the app's `client_secret` before issuing tokens. This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**. Atlas extracts the user's AD group from the `id_token` and creates a signed session cookie (`atlas_session`, 30-minute TTL).
 5. The browser stores the cookie and the user lands on the main chat interface.
