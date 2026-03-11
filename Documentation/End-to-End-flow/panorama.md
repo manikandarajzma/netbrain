@@ -309,7 +309,7 @@ Cookie: atlas_session=<signed-cookie>
 
 - The `atlas_session` cookie is sent automatically by the browser — it identifies who is making the request and drives RBAC. See [FAQ](#faq).
 - An `AbortController` is created per message send; its `signal` is shared by both `/api/discover` and `/api/chat`. The stop button calls `ctrl.abort()` to cancel both in-flight requests. See [FAQ](#faq).
-- On 401, the browser is immediately redirected to `/login`. The 401 is sent by FastAPI when the `atlas_session` cookie is missing, expired, or invalid — it can come from either `/api/discover` or `/api/chat`. In practice it most commonly occurs on `/api/discover` (which fires first) when the 30-minute session has expired during idle time. See [FAQ](#faq).
+- On 401, the browser is immediately redirected to `/login`. The 401 is sent by FastAPI when the `atlas_session` cookie is missing, expired, or invalid — it can come from either `/api/discover` or `/api/chat`. In practice it most commonly occurs on `/api/discover` (which fires first) when the 30-minute session has expired during idle time. See [FAQ: What happens on a 401 response?](#what-happens-on-a-401-response).
 
 > **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
 >
@@ -960,44 +960,6 @@ Hidden fields (not rendered in tables): `vsys`, `queried_ip`, `intent`, `format`
 
 ---
 
-## Error Paths
-
-| Scenario | Where caught | Response |
-|---|---|---|
-| Unauthenticated request | `app.py` | 401 + `{"redirect": "/login"}` |
-| Expired session cookie | `auth.py` `get_session()` | 401 (via 401 handler) |
-| No Azure role assigned | `auth.py` `auth_callback` | 302 `/login?error=norole` |
-| Role lacks Panorama access | `chat_service._check_tool_access` | `"Your role (guest) does not have access to Panorama queries."` |
-| Panorama unreachable | `panoramaauth.get_api_key()` | `{"error": "Failed to authenticate with Panorama..."}` |
-| Panorama auth failure (bad credentials) | `panoramaauth.get_api_key()` | `{"error": "Failed to authenticate..."}` |
-| IP validation failure | `query_panorama_ip_object_group` | `{"error": "Invalid IP address or CIDR format: ..."}` |
-| LLM narrates instead of calling tool | `chat_service` | `"I could not determine how to answer that."` |
-| LLM timeout (>90s) | `chat_service` | `"Tool selection timed out. Please try again."` |
-| Tool timeout (>65s) | `mcp_client.call_mcp_tool` | Error propagated → `synthesize_final_answer()` |
-| MCP server unreachable | `_fetch_mcp_tools()` | `"Could not connect to MCP server."` |
-
----
-
-## Configuration Reference
-
-| Variable | Source | Purpose |
-|---|---|---|
-| `PANORAMA_URL` | `.env` | Panorama appliance URL |
-| `PANORAMA_VERIFY_SSL` | `.env` | SSL verification (set `false` for self-signed) |
-| `PANORAMA_USERNAME` | Key Vault (`PANORAMA-USERNAME`) | API username |
-| `PANORAMA_PASSWORD` | Key Vault (`PANORAMA-PASSWORD`) | API password |
-| `AZURE_KEYVAULT_URL` | `.env` | Key Vault URL for secret retrieval |
-| `AZURE_TENANT_ID` | `.env` | Azure AD tenant for OIDC login |
-| `AZURE_CLIENT_ID` | `.env` | App registration client ID |
-| `AZURE_CLIENT_SECRET` | `.env` | App registration client secret |
-| `OLLAMA_MODEL` | `.env` | LLM for tool selection (currently `llama3.1:8b`) |
-| `OLLAMA_BASE_URL` | `.env` | Ollama server address |
-| `MCP_SERVER_HOST/PORT` | `.env` | MCP server address (default `127.0.0.1:8765`) |
-| `CORS_ALLOWED_ORIGINS` | `.env` | Browser origins allowed by CORS middleware |
-| `OAUTH_STATE_SECRET` | `.env` | Starlette session secret for OIDC state cookie |
-
----
-
 ## FAQ
 
 ### Why does Atlas use a session cookie?
@@ -1094,6 +1056,19 @@ The token endpoint exchanges the authorization code for tokens (id_token, access
 3. **The OAuth 2.0 spec mandates it.** RFC 6749 §4.1.3 explicitly requires the token request to use POST with `application/x-www-form-urlencoded`. Every provider (Azure, Google, Okta) follows this spec.
 
 4. **URLs have length limits.** GET parameters are in the URL. The `client_secret`, `code`, and `redirect_uri` together can be long — POST body has no practical size limit.
+
+### What happens on a 401 response?
+
+The 401 is sent by **FastAPI** (the app server) — not the browser. Both `/api/discover` and `/api/chat` check the session cookie at the top of the route handler. If the `atlas_session` cookie is missing, expired, or tampered with, FastAPI returns:
+
+```json
+HTTP 401
+{ "detail": "Not authenticated", "redirect": "/login" }
+```
+
+The most common trigger is the 30-minute session TTL expiring while the user was idle. Since `/api/discover` fires first, the 401 typically arrives before `/api/chat` is even attempted.
+
+On the frontend, `checkAuthRedirect` detects the 401, immediately sets `window.location.href = '/login'` — the page navigates away — and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'`, but the navigation has already happened so this is moot.
 
 ### What is XSS and why does HttpOnly protect against it?
 
