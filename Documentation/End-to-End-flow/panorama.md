@@ -1020,19 +1020,6 @@ In short: **`state` proves that the callback was triggered by the same browser s
 
 ---
 
-### What happens on a 401 response?
-
-The 401 is sent by **FastAPI** (the app server) — not the browser. Both `/api/discover` and `/api/chat` check the session cookie at the top of the route handler. If the `atlas_session` cookie is missing, expired, or tampered with, FastAPI returns:
-
-```json
-HTTP 401
-{ "detail": "Not authenticated", "redirect": "/login" }
-```
-
-The most common trigger is the 30-minute session TTL expiring while the user was idle. Since `/api/discover` fires first, the 401 typically arrives before `/api/chat` is even attempted.
-
-On the frontend, `checkAuthRedirect` detects the 401, immediately sets `window.location.href = '/login'` — the page navigates away — and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'`, but the navigation has already happened so this is moot.
-
 ### What is XSS and why does HttpOnly protect against it?
 
 **XSS (Cross-Site Scripting)** is an attack where malicious JavaScript is injected into a page and runs in the victim's browser, in the context of your origin — meaning it has the same privileges as your own code.
