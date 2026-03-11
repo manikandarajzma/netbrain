@@ -26,6 +26,39 @@ When Atlas sends a prompt to the LLM and gets a tool call back, that is inferenc
 
 ---
 
+## GPU (Graphics Processing Unit)
+
+Originally designed to render graphics, GPUs are now the standard hardware for AI inference and training. The reason: LLMs require billions of simple floating-point multiplications done in parallel — exactly what GPUs are built for. A CPU has tens of cores; a GPU has thousands of smaller ones optimized for parallel math.
+
+For inference, the GPU loads the model weights into its memory (VRAM) and performs matrix multiplications to generate each token. Without a GPU, inference falls back to CPU, which is 10-50x slower depending on model size.
+
+Common GPUs for AI:
+- **Consumer**: NVIDIA RTX 3090 (24GB VRAM), RTX 4090 (24GB VRAM)
+- **Datacenter**: NVIDIA A100 (80GB VRAM), H100 (80GB VRAM)
+
+Ollama can run on CPU if no GPU is available, at the cost of speed. vLLM requires a GPU.
+
+---
+
+## VRAM (Video RAM)
+
+VRAM is the memory on the GPU — separate from system RAM. The entire model must fit in VRAM for GPU inference to work. If the model is too large, it either falls back to system RAM (slow) or fails to load.
+
+**Rule of thumb for VRAM requirements:**
+
+| Precision | VRAM per billion parameters |
+|---|---|
+| float32 (full) | ~4 GB |
+| bfloat16 (half) | ~2 GB |
+| INT8 (quantized) | ~1 GB |
+| INT4 / Q4 (quantized) | ~0.5 GB |
+
+So `llama3.1:8b` at Q4 quantization needs ~5GB VRAM — fits on a consumer GPU. The same model at bfloat16 needs ~16GB — requires a high-end consumer or datacenter GPU.
+
+VRAM is a hard limit: unlike system RAM, you cannot swap to disk without killing performance entirely.
+
+---
+
 ## Parameters
 
 Parameters are the numerical weights inside a neural network — the values learned during training that encode the model's "knowledge". An 8B model has 8 billion individual floating-point numbers. These are stored on disk (typically in a file like `model.safetensors`) and loaded into GPU VRAM at startup.
