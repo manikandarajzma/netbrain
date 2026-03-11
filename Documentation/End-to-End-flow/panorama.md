@@ -110,12 +110,15 @@ GET http://localhost:8000/auth/callback?code=<auth-code>&state=<csrf-token>
 The browser hits Atlas's callback route ([app.py:178](../../app.py#L178)):
 
 ```python
-# app.py:196-200
-try:
-    token = await oauth.microsoft.authorize_access_token(request)
-except Exception as exc:
-    print(f"OIDC token error: {exc}", flush=True)
-    return RedirectResponse(url="/login?error=oidc", status_code=302)
+# app.py:178-200
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    ...
+    try:
+        token = await oauth.microsoft.authorize_access_token(request)
+    except Exception as exc:
+        print(f"OIDC token error: {exc}", flush=True)
+        return RedirectResponse(url="/login?error=oidc", status_code=302)
 ```
 
 `authorize_access_token()` is a single authlib call that does two things internally:
@@ -173,8 +176,11 @@ return r
 
 `create_session()` uses `itsdangerous.URLSafeTimedSerializer` to sign `{username, group, auth_mode, tokens}` into a tamper-proof string using `SESSION_SECRET` from `.env`. The cookie is:
 
-- `HttpOnly` — not accessible from JavaScript; protects against XSS token theft
-- `SameSite=Lax` — sent on top-level navigations but blocked on cross-site subrequests; mitigates CSRF
+- `HttpOnly` — the browser refuses to expose this cookie to JavaScript (`document.cookie` returns nothing for it). Even if an attacker injects a `<script>` tag via XSS, they cannot read or exfiltrate the session token. The cookie travels only in HTTP headers, which your JS code never sees.
+- `SameSite=Lax` — controls when the browser attaches the cookie to cross-site requests:
+  - **Sent** on top-level navigations initiated by the user (e.g. clicking a link to Atlas from another site) — needed so the OIDC redirect back from Azure still carries the session.
+  - **Blocked** on cross-site subrequests (e.g. an `<img>`, `<form>`, or `fetch()` embedded in a third-party page trying to silently hit `/api/chat` on your behalf). This stops CSRF: a malicious page cannot trigger authenticated Atlas API calls just because your browser holds the cookie.
+  - `SameSite=Strict` would be even tighter (block even top-level cross-site navigations) but would break the Azure OIDC redirect flow.
 - `max_age=1800` — 30-minute TTL baked into the signature; `loads()` rejects it after expiry
 
 ### 9. Browser is redirected to `/` — user is now authenticated
