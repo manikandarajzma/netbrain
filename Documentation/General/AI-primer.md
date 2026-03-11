@@ -16,6 +16,21 @@ Atlas currently uses `llama3.1:8b` served via Ollama.
 
 ---
 
+## Transformer
+
+The transformer is the neural network architecture that all modern LLMs are built on (introduced by Google in the 2017 paper "Attention Is All You Need"). Before transformers, models processed text sequentially — one word at a time — which made it hard to learn relationships between distant words. Transformers process the entire input in parallel and use a mechanism called **attention** to let every token directly relate to every other token in the sequence.
+
+**Attention** — for each token in the input, the model computes a score against every other token to determine which ones are most relevant. For the word "it" in "The server crashed because it ran out of memory", attention lets the model learn that "it" refers to "server", not "memory", regardless of how far apart they are.
+
+**Why it matters for LLMs:**
+- Parallelism → can be trained on GPUs efficiently
+- Long-range dependencies → understands context across thousands of tokens
+- Scales well → more parameters + more data = better results (the "scaling law")
+
+Every model Atlas uses — LLaMA, GPT, Mistral — is a transformer. The architecture itself is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
+
+---
+
 ## Inference
 
 Inference is the act of running a trained model to generate output — as opposed to **training**, which is the process of teaching the model from data.
