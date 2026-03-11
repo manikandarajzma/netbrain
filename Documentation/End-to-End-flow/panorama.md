@@ -1083,6 +1083,18 @@ In short: **`state` proves that the callback was triggered by the same browser s
 
 ---
 
+### Why does the token exchange use POST instead of GET?
+
+The token endpoint exchanges the authorization code for tokens (id_token, access_token, refresh_token). It uses POST for four reasons:
+
+1. **Secrets go in the body, not the URL.** The request includes `client_secret` and the authorization `code`. GET parameters appear in the URL, which gets logged in browser history, server access logs, and proxy logs. POST puts them in the request body, which is not logged by default.
+
+2. **It's a destructive operation.** The authorization code is single-use — this POST consumes and invalidates it. REST convention: reads are GET, actions with side effects are POST.
+
+3. **The OAuth 2.0 spec mandates it.** RFC 6749 §4.1.3 explicitly requires the token request to use POST with `application/x-www-form-urlencoded`. Every provider (Azure, Google, Okta) follows this spec.
+
+4. **URLs have length limits.** GET parameters are in the URL. The `client_secret`, `code`, and `redirect_uri` together can be long — POST body has no practical size limit.
+
 ### What is XSS and why does HttpOnly protect against it?
 
 **XSS (Cross-Site Scripting)** is an attack where malicious JavaScript is injected into a page and runs in the victim's browser, in the context of your origin — meaning it has the same privileges as your own code.
