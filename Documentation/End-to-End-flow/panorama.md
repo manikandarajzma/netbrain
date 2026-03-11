@@ -49,49 +49,6 @@ FastAPI → JSON response → React
 
 Before a user can type any query, they must be authenticated. This happens once per session — not on every query.
 
-```
-Browser                        Atlas (app.py)                    Azure AD
-   │                                  │                               │
-   │  GET /                           │                               │
-   │─────────────────────────────────►│                               │
-   │  302 → /login  (no valid cookie) │                               │
-   │◄─────────────────────────────────│                               │
-   │                                  │                               │
-   │  Click "Login with Microsoft"    │                               │
-   │  GET /auth/microsoft             │                               │
-   │─────────────────────────────────►│                               │
-   │                                  │  build authorization URL      │
-   │  302 → login.microsoftonline.com │  (client_id, scope, state,    │
-   │◄─────────────────────────────────│   redirect_uri)               │
-   │                                  │                               │
-   │  GET login.microsoftonline.com   │                               │
-   │─────────────────────────────────────────────────────────────────►│
-   │          user enters password / MFA                              │
-   │◄─────────────────────────────────────────────────────────────────│
-   │  302 → /auth/callback?code=<one-time-code>&state=<csrf-token>    │
-   │─────────────────────────────────►│                               │
-   │                                  │  POST /token                  │
-   │                                  │  (code + client_secret)       │
-   │                                  │──────────────────────────────►│
-   │                                  │  id_token, access_token,      │
-   │                                  │  refresh_token                │
-   │                                  │◄──────────────────────────────│
-   │                                  │                               │
-   │                                  │  decode id_token JWT          │
-   │                                  │  extract groups claim         │
-   │                                  │  resolve role (admin/netadmin)│
-   │                                  │  create signed session cookie │
-   │                                  │                               │
-   │  302 → /                         │                               │
-   │  Set-Cookie: atlas_session=...   │                               │
-   │◄─────────────────────────────────│                               │
-   │                                  │                               │
-   │  GET /  (cookie attached)        │                               │
-   │─────────────────────────────────►│                               │
-   │  200 — main chat interface       │                               │
-   │◄─────────────────────────────────│                               │
-```
-
 1. The user visits Atlas in the browser. If no valid `atlas_session` cookie exists, they are redirected to `/login`.
 2. Clicking "Login with Microsoft" sends the browser to `GET /auth/microsoft`, which redirects to Azure's login page.
 
