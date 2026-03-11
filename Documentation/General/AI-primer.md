@@ -27,7 +27,7 @@ The transformer is the neural network architecture that all modern LLMs are buil
 - Long-range dependencies → understands context across thousands of tokens
 - Scales well → more parameters + more data = better results (the "scaling law")
 
-Every model Atlas uses — LLaMA, GPT, Mistral — is a transformer. The architecture itself is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
+Atlas uses LLaMA, which is a transformer. The architecture itself is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
 
 ---
 
