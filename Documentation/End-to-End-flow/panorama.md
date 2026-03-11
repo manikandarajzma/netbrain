@@ -1046,7 +1046,7 @@ On the frontend, `checkAuthRedirect` detects the 401, immediately sets `window.l
 
 **Why HttpOnly stops this:**
 
-The browser enforces a hard rule: cookies marked `HttpOnly` are never exposed to JavaScript at all. `document.cookie` simply omits them. The injected `<script>` runs fine but gets back an empty string — there is nothing to steal. The cookie still travels in HTTP request headers (that's its entire purpose), but JS code — including attacker-injected code — can never read it.
+The browser enforces a hard rule: cookies marked `HttpOnly` are never exposed to JavaScript at all. `document.cookie` simply omits them. The injected `<script>` runs fine but gets back an empty string — there is nothing to steal. The cookie still travels in the `Cookie:` request header on every HTTPS request to the server (that's its entire purpose) — but JS code, including attacker-injected code, can never read it. "HTTP header" refers to the protocol layer, not the unencrypted scheme; HTTPS is just HTTP with TLS encryption on top, and the cookie is protected in transit by TLS regardless.
 
 **What HttpOnly does not protect against:**
 
