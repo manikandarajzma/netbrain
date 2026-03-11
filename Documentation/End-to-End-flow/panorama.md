@@ -87,7 +87,7 @@ https://login.microsoftonline.com/{tenant_id}/v2.0/authorize
   &prompt=select_account
 ```
 
-`state` is a random value authlib generates and stores in a temporary session cookie. Azure will echo it back unchanged so Atlas can verify the response was not forged. `redirect_uri` tells Azure where to send the browser after login — Azure validates it against the registered URIs and rejects the request if it doesn't match exactly.
+`state` is a random value authlib generates and stores in a temporary session cookie. Azure will echo it back unchanged so Atlas can verify the response was not forged. `redirect_uri` tells Azure where to send the browser after login — Azure validates it against the registered URIs and rejects the request if it doesn't match exactly. See [FAQ: What is the `state` parameter / CSRF token?](#what-is-the-state-parameter--csrf-token).
 
 This route performs **no authentication** — it only builds and returns a redirect. All credential checking happens on Azure's side.
 
@@ -965,6 +965,33 @@ If this logic lived inside `ChatInput.jsx`, the component would be doing applica
 React component local state disappears when the component unmounts. Store state persists for the lifetime of the page. If `isLoading: true` were local to `ChatInput.jsx`, navigating away and back would reset it mid-request.
 
 The separation is intentional: `ChatInput.jsx` is a pure UI component — text box, buttons, file picker, nothing else. `chatStore.js` is where all application logic and shared state live.
+
+---
+
+### What is the `state` parameter / CSRF token?
+
+`state` and CSRF token are the same thing — `state` is the parameter name in the OAuth spec; "CSRF token" is what it's protecting against.
+
+**The problem it solves:**
+
+Without `state`, an attacker could trick your browser into completing a login flow that the attacker initiated:
+
+1. Attacker starts an OAuth login on Atlas, gets an authorization URL with their own `code`
+2. Attacker sends you a link to `http://localhost:8000/auth/callback?code=<attackers-code>&...`
+3. Your browser hits the callback, Atlas exchanges the code — and you're now logged in as the attacker's account
+
+**How `state` prevents this:**
+
+1. When Atlas redirects to Azure, authlib generates a random `state` value (e.g. `a3f9x2`) and stores it in a temporary session cookie in your browser
+2. That same `state` is sent as a query param in the authorization URL to Azure
+3. Azure echoes it back unchanged: `GET /auth/callback?code=...&state=a3f9x2`
+4. `authorize_access_token()` reads the `state` from the callback URL and compares it to what's in the session cookie
+5. If they match → request came from your own browser's login flow → safe to proceed
+6. If they don't match → something is wrong → rejected
+
+The attack fails at step 4 because the attacker's crafted callback URL would have a `state` that doesn't match anything in your browser's session cookie — Atlas detects the mismatch and rejects it.
+
+In short: **`state` proves that the callback was triggered by the same browser session that started the login.**
 
 ---
 
