@@ -15,6 +15,7 @@ from atlas.graph_nodes import (
     tool_executor,
     normalize_result,
     synthesize_error,
+    enrich_with_insights,
 )
 from atlas.chat_service import MAX_AGENT_ITERATIONS
 
@@ -87,6 +88,7 @@ def build_graph() -> Any:
     g.add_node("tool_executor", tool_executor)
     g.add_node("normalize_result", normalize_result)
     g.add_node("synthesize_error", synthesize_error)
+    g.add_node("enrich_with_insights", enrich_with_insights)
     g.add_node("build_final_response", build_final_response)
 
     # Entry point
@@ -116,7 +118,7 @@ def build_graph() -> Any:
     # Network path
     g.add_edge("fetch_mcp_tools", "tool_selector")
     g.add_conditional_edges("tool_selector", route_after_tool_selector, {
-        "done": "build_final_response",
+        "done": "enrich_with_insights",
         "check_rbac": "check_rbac",
     })
     g.add_conditional_edges("check_rbac", route_rbac, {
@@ -124,13 +126,14 @@ def build_graph() -> Any:
         "allowed": "tool_executor",
     })
     g.add_conditional_edges("tool_executor", route_after_tool_executor, {
-        "done": "build_final_response",
+        "done": "enrich_with_insights",
         "success": "tool_selector",    # feed result back to LLM — it may chain another tool or stop
         "retry": "tool_selector",      # back-edge: retry with error context
         "error": "synthesize_error",
     })
     g.add_edge("normalize_result", "build_final_response")
     g.add_edge("synthesize_error", "build_final_response")
+    g.add_edge("enrich_with_insights", "build_final_response")
     g.add_edge("build_final_response", END)
 
     return g.compile()

@@ -23,6 +23,7 @@ export default function AssistantMessage({ content }) {
   const hasMetric = typeof content === 'object' && content?.metric_answer
   const hasDirectAnswer = typeof content === 'object' && content?.direct_answer
   const followUp = typeof content === 'object' && content?.follow_up
+  const insights = typeof content === 'object' && Array.isArray(content?.insights) && content.insights.length > 0 ? content.insights : null
 
   const structuredText = useMemo(() => {
     if (classified.type !== 'structured') return null
@@ -62,7 +63,7 @@ export default function AssistantMessage({ content }) {
       return Array.isArray(v) && v.length > 0 && v.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
     })
     const BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
-    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action'])
+    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action', 'insights'])
     const flatKeys = Object.keys(c).filter(k => {
       if (arrayKeys.includes(k) || k === 'ai_analysis' || BADGE_KEYS.has(k) || HIDDEN_KEYS.has(k)) return false
       const v = c[k]
@@ -192,6 +193,14 @@ export default function AssistantMessage({ content }) {
 
       {classified.type === 'json' && <JsonFallback content={content} />}
 
+      {insights && (
+        <div style={{ marginTop: '0.75rem', padding: '0.6rem 0.85rem', background: 'rgba(249,226,175,0.08)', borderLeft: '3px solid #f9e2af', borderRadius: '6px' }}>
+          <p style={{ fontSize: '0.8rem', fontWeight: 600, color: '#f9e2af', marginBottom: insights.length > 1 ? '0.35rem' : 0 }}>Insights</p>
+          {insights.map((insight, i) => (
+            <p key={i} style={{ fontSize: '0.85rem', color: '#cdd6f4', margin: 0, marginTop: i > 0 ? '0.25rem' : 0 }}>{insight}</p>
+          ))}
+        </div>
+      )}
       {followUp && <p style={{ marginTop: '0.75rem', fontStyle: 'italic', opacity: 0.6, fontSize: '0.875rem' }}>{followUp}</p>}
     </>
   )

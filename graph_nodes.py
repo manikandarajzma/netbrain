@@ -29,6 +29,7 @@ logger = logging.getLogger("atlas.graph_nodes")
 # ---------------------------------------------------------------------------
 
 _CONFIRMATIONS = {"yes", "yeah", "sure", "yep", "ok", "okay", "please", "go ahead", "do it", "show me", "yep please"}
+_DISMISSALS = {"no", "nope", "nah", "no thanks", "don't", "dont", "never mind", "nevermind", "skip", "not now", "no need", "i'm good", "im good", "all good", "that's fine", "thats fine"}
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
@@ -39,31 +40,43 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
         return {"intent": "prefilled", "messages": messages, "iteration": 0}
 
-    # If the last assistant message offered a follow-up, classify user's reply
+    # If recent assistant messages offered a follow-up, classify user's reply.
+    # "actually" signals the user is referring back — look further in history.
     conversation_history = state.get("conversation_history") or []
+    prompt_lower_strip = prompt.lower().strip().rstrip("!.")
+    lookback = 6 if any(prompt_lower_strip.startswith(w) for w in ("actually", "wait", "on second thought")) else 1
     follow_up_action = None
     follow_up_text = None
+    checked = 0
     for msg in reversed(conversation_history):
-        if msg.get("role") == "assistant":
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.startswith("{"):
-                try:
-                    content = json.loads(content)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            if isinstance(content, dict):
-                follow_up_action = content.get("follow_up_action")
-                follow_up_text = content.get("follow_up")
-                if not follow_up_action and content.get("multi_results"):
-                    for r in reversed(content["multi_results"]):
-                        if isinstance(r, dict) and r.get("follow_up_action"):
-                            follow_up_action = r["follow_up_action"]
-                            follow_up_text = r.get("follow_up", "")
-                            break
-            break  # only check most recent assistant message
+        if msg.get("role") != "assistant":
+            continue
+        checked += 1
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.startswith("{"):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if isinstance(content, dict):
+            follow_up_action = content.get("follow_up_action")
+            follow_up_text = content.get("follow_up")
+            if not follow_up_action and content.get("multi_results"):
+                for r in reversed(content["multi_results"]):
+                    if isinstance(r, dict) and r.get("follow_up_action"):
+                        follow_up_action = r["follow_up_action"]
+                        follow_up_text = r.get("follow_up", "")
+                        break
+            if follow_up_action:
+                break  # found one — stop looking
+        if checked >= lookback:
+            break
 
     if follow_up_action and follow_up_action.get("tool"):
         user_lower = prompt.lower().strip().rstrip("!.")
+        # Pure dismissal → acknowledge and stop
+        if user_lower in _DISMISSALS:
+            return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "Sure, let me know if you need anything else."}, "messages": [], "iteration": 0}
         # Pure confirmation → execute follow-up directly
         if user_lower in _CONFIRMATIONS:
             messages = _build_llm_messages(prompt, conversation_history)
@@ -295,20 +308,33 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
         return {"tool_error": result, "messages": updated_messages, "iteration": iteration + 1}
 
     # Success: normalize result and accumulate
-    result_summary = json.dumps(result) if isinstance(result, dict) else str(result)
-    updated_messages = messages + [ToolMessage(content=result_summary, tool_call_id=tool_call_id)]
     normalized = _normalize_result(tool_name, result, state.get("prompt", ""))
     accumulated = list(state.get("accumulated_results") or [])
     accumulated.append(normalized)
 
-    # If this result has a follow_up_action, stop here — don't let the LLM auto-chain the next step
+    result_summary = json.dumps(result) if isinstance(result, dict) else str(result)
+    # Truncate to avoid exceeding the model's context window on large Panorama results
+    if len(result_summary) > 6000:
+        result_summary = result_summary[:6000] + "... [truncated for context length]"
+    updated_messages = messages + [ToolMessage(content=result_summary, tool_call_id=tool_call_id)]
+
+    # Stop auto-chaining when the result has a follow_up_action, unless the original
+    # prompt explicitly asked for what this follow_up is offering.
+    # e.g. "find group AND show members" → allow chaining to members step
+    # but stop at members→policies unless prompt also asked for "policies".
     if isinstance(normalized, dict) and normalized.get("follow_up_action"):
-        if len(accumulated) > 1:
-            final = {"multi_results": accumulated}
-        else:
-            final = normalized
-        return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None,
-                "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
+        prompt_lower = (state.get("prompt") or "").lower()
+        fu_lower = (normalized.get("follow_up") or "").lower()
+        offered_members = "members" in fu_lower
+        offered_policies = "policies" in fu_lower or "policy" in fu_lower
+        user_asked_for_offer = (
+            (offered_members and "members" in prompt_lower) or
+            (offered_policies and any(w in prompt_lower for w in ("policies", "policy")))
+        )
+        if not user_asked_for_offer:
+            final = {"multi_results": accumulated} if len(accumulated) > 1 else normalized
+            return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None,
+                    "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
 
     return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None, "messages": updated_messages, "iteration": iteration + 1}
 
@@ -336,3 +362,87 @@ async def synthesize_error(state: AtlasState) -> dict[str, Any]:
     prompt = state.get("prompt", "")
     msg = await synthesize_final_answer(prompt, tool_name, error)
     return {"final_response": {"role": "assistant", "content": msg}}
+
+
+# ---------------------------------------------------------------------------
+# Node 10: enrich_with_insights
+# ---------------------------------------------------------------------------
+
+def _extract_member_ips(result: dict) -> list[str]:
+    """Extract host IPs from address group member objects."""
+    ips = []
+    for m in result.get("members", []):
+        if not isinstance(m, dict):
+            continue
+        if m.get("type") not in ("ip-netmask", "ip-range"):
+            continue
+        val = m.get("value", "")
+        ip = val.split("/")[0] if "/" in val else val.split("-")[0]
+        if ip and ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+async def enrich_with_insights(state: AtlasState) -> dict[str, Any]:
+    """Add proactive insights to the final response before it is returned."""
+    from atlas.mcp_client import call_mcp_tool
+
+    final = state.get("final_response")
+    if not final:
+        return {}
+    content = final.get("content") if isinstance(final, dict) else None
+    if not content or isinstance(content, str):
+        return {}
+
+    # Collect all result dicts to analyse
+    if isinstance(content, dict) and content.get("multi_results"):
+        results = [r for r in content["multi_results"] if isinstance(r, dict)]
+    elif isinstance(content, dict):
+        results = [content]
+    else:
+        return {}
+
+    insights: list[str] = []
+
+    for result in results:
+        # --- Hint-only: no extra tool calls ---
+        # Address group with members but no policies → may be unused
+        if "members" in result and "policies" in result and not result.get("policies"):
+            group = result.get("address_group_name", "This group")
+            insights.append(f"'{group}' is not referenced by any security policies — it may be unused.")
+
+        # --- Inline Splunk check for member IPs ---
+        ips = _extract_member_ips(result)
+        if not ips:
+            continue
+        # RBAC: only check Splunk if the user has access
+        rbac_err = _check_tool_access(state.get("username"), "get_splunk_recent_denies", state.get("session_id"))
+        if rbac_err:
+            continue
+        tasks = [
+            call_mcp_tool("get_splunk_recent_denies", {"ip_address": ip}, timeout=25.0)
+            for ip in ips[:3]
+        ]
+        splunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for ip, sr in zip(ips, splunk_results):
+            if isinstance(sr, dict) and sr.get("count", 0) > 0:
+                count = sr["count"]
+                insights.append(f"{ip} has {count} recent deny event{'s' if count != 1 else ''} in Splunk.")
+
+    if not insights:
+        return {}
+
+    # Attach insights to content
+    if isinstance(content, dict) and content.get("multi_results"):
+        updated = list(content["multi_results"])
+        last = dict(updated[-1]) if isinstance(updated[-1], dict) else updated[-1]
+        if isinstance(last, dict):
+            last["insights"] = insights
+            updated[-1] = last
+        new_content = dict(content)
+        new_content["multi_results"] = updated
+    else:
+        new_content = dict(content)
+        new_content["insights"] = insights
+
+    return {"final_response": {"role": "assistant", "content": new_content}}
