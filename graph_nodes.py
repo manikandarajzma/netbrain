@@ -19,6 +19,7 @@ from atlas.chat_service import (
     TOOL_DISPLAY_NAMES,
     get_tool_display_name,
     MAX_AGENT_ITERATIONS,
+    _IP_OR_CIDR_RE,
 )
 
 logger = logging.getLogger("atlas.graph_nodes")
@@ -88,20 +89,20 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
                 "iteration": 0,
             }
         # User asks for something adjacent to the offer, e.g. "no. find the policies though"
-        # when the offer was "see members?" — or "give me the members" when offer was "see policies?"
+        # Only applies to short follow-up replies — not new queries with IPs or many words.
         user_wants_policies = any(w in user_lower for w in ("policies", "policy"))
         user_wants_members = "members" in user_lower
+        is_short_followup = len(user_lower.split()) <= 10 and not _IP_OR_CIDR_RE.search(user_lower)
 
-        if user_wants_policies or user_wants_members:
+        if is_short_followup and (user_wants_policies or user_wants_members):
             fa_tool = follow_up_action.get("tool", "")
             fa_params = dict(follow_up_action.get("params", {}))
 
             # If the follow_up_action targets query_panorama_address_group_members we can
             # inject _policies_only when the user is asking for policies instead of members.
             if fa_tool == "query_panorama_address_group_members":
-                if user_wants_policies:
-                    fa_params["_policies_only"] = True
-                # user_wants_members: params already correct (no _policies_only)
+                # Always set explicitly — never inherit stale _policies_only from previous context
+                fa_params["_policies_only"] = user_wants_policies
                 messages = _build_llm_messages(prompt, conversation_history)
                 return {
                     "intent": "prefilled",
@@ -126,6 +127,11 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
                         "iteration": 0,
                     }
         # Anything else → fall through to normal routing with full history
+
+    # Short acknowledgement with no follow_up pending → dismiss rather than re-run a tool
+    _ACKNOWLEDGEMENTS = _CONFIRMATIONS | _DISMISSALS | {"ok", "okay", "great", "thanks", "thank you", "cool", "got it", "noted", "perfect", "sounds good"}
+    if prompt.lower().strip().rstrip("!.") in _ACKNOWLEDGEMENTS and not state.get("discover_only"):
+        return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "Sure, let me know if you need anything else."}, "messages": [], "iteration": 0}
 
     if not state.get("discover_only") and _is_doc_query(prompt):
         intent = "doc"
@@ -317,6 +323,20 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
     if len(result_summary) > 6000:
         result_summary = result_summary[:6000] + "... [truncated for context length]"
     updated_messages = messages + [ToolMessage(content=result_summary, tool_call_id=tool_call_id)]
+
+    # If user asked for members + policies and this result already has both inline
+    # (no follow_up_action needed), finalize immediately — don't let the LLM loop.
+    prompt_lower_te = (state.get("prompt") or "").lower()
+    if (
+        tool_name == "query_panorama_address_group_members"
+        and any(w in prompt_lower_te for w in ("policies", "policy"))
+        and isinstance(normalized, dict)
+        and not normalized.get("follow_up_action")
+        and "members" in normalized
+    ):
+        final = {"multi_results": accumulated} if len(accumulated) > 1 else normalized
+        return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None,
+                "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
 
     # Stop auto-chaining when the result has a follow_up_action, unless the original
     # prompt explicitly asked for what this follow_up is offering.

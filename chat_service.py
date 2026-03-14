@@ -226,11 +226,19 @@ def _normalize_result(
     if tool_name == "query_panorama_address_group_members" and isinstance(result, dict) and "error" not in result:
         members = result.get("members", [])
         group_name = result.get("address_group_name", "this group")
+        prompt_lower = prompt.lower()
+        wants_policies = any(w in prompt_lower for w in ("policies", "policy"))
         if members:
             count = len(members)
             direct_answer = f"Address group '{group_name}' contains {count} member{'s' if count != 1 else ''}"
             result = dict(result)
             result.pop("direct_answer", None)
+            if wants_policies:
+                # User explicitly asked for policies — include them inline, no follow_up needed
+                new_result = {"direct_answer": direct_answer}
+                for k, v in result.items():
+                    new_result[k] = v
+                return new_result
             result.pop("policies", None)
             new_result = {"direct_answer": direct_answer}
             for k, v in result.items():

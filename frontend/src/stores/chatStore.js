@@ -151,17 +151,20 @@ export const useChatStore = create((set, get) => ({
     const conversationIdToUse = null
 
     try {
+      // Start both calls simultaneously — discover only drives the status label
       let toolDisplayName = null
-      try {
-        const discoverData = await discoverTool(textToSend, historySlice, signal)
-        toolDisplayName = discoverData.tool_display_name
-        set({ currentStatus: toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing' })
-      } catch (err) {
-        if (err && err.name === 'AbortError') throw err
-        set({ currentStatus: 'Processing' })
-      }
+      const discoverPromise = discoverTool(textToSend, historySlice, signal)
+        .then(d => {
+          toolDisplayName = d.tool_display_name
+          set({ currentStatus: toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing' })
+        })
+        .catch(err => {
+          if (err && err.name === 'AbortError') throw err
+          set({ currentStatus: 'Processing' })
+        })
 
       const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew)
+      await discoverPromise
 
       if (toolDisplayName) {
         set({ currentStatus: 'Processing results from ' + toolDisplayName })
