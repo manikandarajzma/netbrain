@@ -41,5 +41,9 @@ dependencies = [
     # Optional: encrypt chat history at rest
     "cryptography>=42.0.0",
     "langchain-openai>=1.1.10",
+    "langchain-anthropic>=0.1.0",
     "environment"
 ]
+
+[tool.setuptools.packages.find]
+exclude = ["data*", "icons*", "static*", "frontend*", "templates*", "Documentation*"]

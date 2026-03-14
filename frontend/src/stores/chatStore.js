@@ -145,10 +145,7 @@ export const useChatStore = create((set, get) => ({
     const ctrl = new AbortController()
     set({ isLoading: true, currentStatus: 'Identifying query', abortController: ctrl })
     const signal = ctrl.signal
-    // Send no history to the LLM — each query is stateless to prevent context
-    // from previous exchanges (e.g. a site disambiguation reply) from polluting
-    // unrelated follow-up queries.
-    const historySlice = []
+    const historySlice = get().conversationHistory
     const parentIdForNew = nextConversationParentId || null
     // Never append to current conversation: each send creates a new conversation so sidebar entries stay one Q&A each.
     const conversationIdToUse = null

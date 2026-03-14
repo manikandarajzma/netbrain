@@ -22,6 +22,7 @@ export default function AssistantMessage({ content }) {
   const hasYesNo = typeof content === 'object' && content?.yes_no_answer
   const hasMetric = typeof content === 'object' && content?.metric_answer
   const hasDirectAnswer = typeof content === 'object' && content?.direct_answer
+  const followUp = typeof content === 'object' && content?.follow_up
 
   const structuredText = useMemo(() => {
     if (classified.type !== 'structured') return null
@@ -61,7 +62,7 @@ export default function AssistantMessage({ content }) {
       return Array.isArray(v) && v.length > 0 && v.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
     })
     const BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
-    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip'])
+    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action'])
     const flatKeys = Object.keys(c).filter(k => {
       if (arrayKeys.includes(k) || k === 'ai_analysis' || BADGE_KEYS.has(k) || HIDDEN_KEYS.has(k)) return false
       const v = c[k]
@@ -181,7 +182,17 @@ export default function AssistantMessage({ content }) {
         </>
       )}
 
+      {classified.type === 'multi' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {content.multi_results.map((result, i) => (
+            <AssistantMessage key={i} content={result} />
+          ))}
+        </div>
+      )}
+
       {classified.type === 'json' && <JsonFallback content={content} />}
+
+      {followUp && <p style={{ marginTop: '0.75rem', fontStyle: 'italic', opacity: 0.6, fontSize: '0.875rem' }}>{followUp}</p>}
     </>
   )
 }

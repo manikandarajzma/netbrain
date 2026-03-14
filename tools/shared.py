@@ -74,23 +74,24 @@ mcp.llm_error = None
 # ---------------------------------------------------------------------------
 # LLM helper (used by Panorama for AI analysis)
 # ---------------------------------------------------------------------------
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate  # re-exported for convenience
 
 # LLM configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:12434/engines/llama.cpp/v1")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "hf.co/bartowski/Phi-4-GGUF:Q4_K_M")
 
 
 def _get_llm():
     """Get or initialize the LLM instance (lazy initialization)."""
     if mcp.llm is None:
         try:
-            logger.debug("Initializing LLM (ChatOllama)...")
-            llm = ChatOllama(
+            logger.debug("Initializing LLM (ChatOpenAI)...")
+            llm = ChatOpenAI(
                 model=OLLAMA_MODEL,
                 temperature=0.0,
                 base_url=OLLAMA_BASE_URL,
+                api_key="docker",
             )
             mcp.llm = llm
             mcp.llm_error = None

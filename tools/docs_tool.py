@@ -146,14 +146,14 @@ def _split_sections(content: str) -> list[dict]:
 
 def _pick_file(query: str) -> str | None:
     """Ask the LLM to pick the best file from the registry for this query."""
-    from langchain_ollama import ChatOllama
+    from langchain_openai import ChatOpenAI
     from langchain_core.messages import SystemMessage, HumanMessage
 
     registry_lines = "\n".join(
         f"- {path}: {desc}" for path, desc in DOC_REGISTRY.items()
     )
 
-    llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0)
+    llm = ChatOpenAI(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0, api_key="docker")
     messages = [
         SystemMessage(content=(
             "You are a documentation router. "
@@ -210,7 +210,7 @@ def _pick_sections(content: str, query: str) -> str:
     selection to return only the relevant parts.
     Files with ≤ 3 sections are returned whole — not worth the extra call.
     """
-    from langchain_ollama import ChatOllama
+    from langchain_openai import ChatOpenAI
     from langchain_core.messages import SystemMessage, HumanMessage
 
     # Broad questions need the whole file
@@ -232,7 +232,7 @@ def _pick_sections(content: str, query: str) -> str:
         for i, s in enumerate(sections)
     )
 
-    llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0)
+    llm = ChatOpenAI(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0, api_key="docker")
     messages = [
         SystemMessage(content=(
             "You are a documentation section selector. "

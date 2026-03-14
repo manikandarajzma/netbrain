@@ -17,6 +17,11 @@ export function classifyResponse(content) {
     return { type: 'text', content: String(content) }
   }
 
+  // Multi-tool chain results
+  if (content.multi_results && Array.isArray(content.multi_results)) {
+    return { type: 'multi', content }
+  }
+
   // Batch results
   if (content.batch_results && Array.isArray(content.batch_results)) {
     return { type: 'batch', content }

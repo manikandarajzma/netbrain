@@ -135,11 +135,15 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
         SystemMessage(content=(
             "You are a network infrastructure assistant. "
             "Always call a tool — never answer from memory or prior context. "
-            "Tool selection rules: "
-            "IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies; "
-            "address group names → query_panorama_address_group_members; "
-            "orphaned/unused objects or address groups → find_unused_panorama_objects; "
-            "path/connectivity queries → query_network_path or check_path_allowed. "
+            "TOOL SELECTION — follow these rules exactly:\n"
+            "- User mentions an IP address AND asks which group/object it belongs to → MUST use query_panorama_ip_object_group\n"
+            "- User asks for members or contents of a named address group → MUST use query_panorama_address_group_members\n"
+            "- User asks about unused, orphaned, or stale objects → MUST use find_unused_panorama_objects\n"
+            "- User asks for path or route between two IPs → MUST use query_network_path\n"
+            "- User asks if traffic is allowed or blocked between two IPs → MUST use check_path_allowed\n"
+            "- User asks about denied or blocked traffic events for an IP → MUST use get_splunk_recent_denies\n"
+            "CHAINING: If the user asks for multiple things (e.g. which group an IP belongs to AND the members of that group), "
+            "call each required tool in sequence — do NOT stop after the first tool result.\n"
             "When the user's reply is short, check the conversation history "
             "to understand what they are clarifying and combine it with the original request."
         ))
@@ -158,10 +162,26 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
             if content.get("requires_site"):
                 rack = content.get("rack", "rack")
                 content = f"Asked user which site for rack '{rack}'."
+            elif content.get("multi_results"):
+                # Summarise each result in the chain so the LLM has context
+                summaries = []
+                for r in content["multi_results"]:
+                    if isinstance(r, dict):
+                        part = r.get("direct_answer") or r.get("message") or ""
+                        fup = r.get("follow_up") or ""
+                        summaries.append((part + " " + fup).strip())
+                content = " | ".join(s for s in summaries if s) or "[Results shown above]"
             else:
                 # Replace structured result with a short note so the model cannot
                 # answer the next query from memory instead of calling a tool.
-                content = content.get("message") or content.get("reason") or "[Result shown above]"
+                # Include direct_answer and follow_up so the LLM has context for
+                # short replies like "yes" that refer back to the previous question.
+                parts = []
+                if content.get("direct_answer"):
+                    parts.append(content["direct_answer"])
+                if content.get("follow_up"):
+                    parts.append(content["follow_up"])
+                content = " ".join(parts) if parts else (content.get("message") or content.get("reason") or "[Result shown above]")
         if role == "user":
             messages.append(HumanMessage(content=str(content)))
         elif role == "assistant":
@@ -211,9 +231,12 @@ def _normalize_result(
             direct_answer = f"Address group '{group_name}' contains {count} member{'s' if count != 1 else ''}"
             result = dict(result)
             result.pop("direct_answer", None)
+            result.pop("policies", None)
             new_result = {"direct_answer": direct_answer}
             for k, v in result.items():
                 new_result[k] = v
+            new_result["follow_up"] = f"Would you like to see the policies that reference '{group_name}'?"
+            new_result["follow_up_action"] = {"tool": "query_panorama_address_group_members", "params": {"address_group_name": group_name, "_policies_only": True}}
             return new_result
 
     if tool_name == "find_unused_panorama_objects" and isinstance(result, dict) and "error" not in result:
@@ -249,12 +272,20 @@ def _normalize_result(
                     network_names = [obj.get("name") for obj in address_objects if obj.get("name")]
                     if network_names:
                         direct_answer += f" (via {', '.join(network_names)})"
-                result = dict(result)
-                result.pop("direct_answer", None)
-                new_result = {"direct_answer": direct_answer}
-                for k, v in result.items():
-                    new_result[k] = v
-                return new_result
+                # Return only group-level info — members/policies shown separately via query_panorama_address_group_members
+                group_name_hint = group_names[0] if len(group_names) == 1 else group_names[0]
+                # Pass device_group so query_panorama_address_group_members can find it
+                first_group = next((ag for ag in address_groups if ag.get("name") == group_name_hint), address_groups[0])
+                follow_up_params = {"address_group_name": group_name_hint}
+                if first_group.get("device_group"):
+                    follow_up_params["device_group"] = first_group["device_group"]
+                return {
+                    "direct_answer": direct_answer,
+                    "address_groups": address_groups,
+                    "queried_ip": queried_ip,
+                    "follow_up": f"Would you like to see the members of '{group_name_hint}'?",
+                    "follow_up_action": {"tool": "query_panorama_address_group_members", "params": follow_up_params},
+                }
 
     return result
 
@@ -302,113 +333,32 @@ async def process_message(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Process one user message using native LLM tool calling via bind_tools().
-    The LLM receives MCP tool schemas directly and selects the appropriate tool.
+    Process one user message via the Atlas LangGraph agent.
     """
-    from atlas.mcp_client_tool_selection import synthesize_final_answer
-    from atlas.mcp_client import call_mcp_tool
+    from atlas.graph_builder import atlas_graph
 
-    if max_iterations is None:
-        max_iterations = MAX_AGENT_ITERATIONS
+    initial_state = {
+        "prompt": prompt,
+        "conversation_history": conversation_history or [],
+        "username": username,
+        "session_id": session_id,
+        "discover_only": discover_only,
+        "prefilled_tool_name": tool_name,
+        "prefilled_tool_params": parameters,
+        "max_iterations": max_iterations or MAX_AGENT_ITERATIONS,
+        "intent": None,
+        "rbac_error": None,
+        "messages": [],
+        "selected_tool_name": None,
+        "selected_tool_args": None,
+        "tool_call_id": None,
+        "iteration": 0,
+        "tool_raw_result": None,
+        "accumulated_results": [],
+        "requires_site": False,
+        "tool_error": None,
+        "final_response": None,
+    }
 
-    # Pre-filled tool: skip discovery, execute directly
-    if tool_name and parameters is not None:
-        access_err = _check_tool_access(username, tool_name)
-        if access_err:
-            return {"role": "assistant", "content": access_err}
-        result = await call_mcp_tool(tool_name, parameters, timeout=_TOOL_TIMEOUTS.get(tool_name, 65.0))
-        if isinstance(result, dict) and result.get("requires_site"):
-            return {"role": "assistant", "content": result}
-        if result is None or (isinstance(result, dict) and not result):
-            msg = await synthesize_final_answer(prompt, tool_name, "No result returned.")
-            return {"role": "assistant", "content": msg}
-        if isinstance(result, dict) and "error" in result:
-            msg = await synthesize_final_answer(prompt, tool_name, result)
-            return {"role": "assistant", "content": msg}
-        return {"role": "assistant", "content": _normalize_result(tool_name, result, prompt)}
-
-    # Short-circuit: documentation queries go directly to search_documentation.
-    # Small local LLMs (llama3.1:8b) often output tool calls as plain text when
-    # there are many tools, so we bypass LLM tool selection for doc questions.
-    if not discover_only and _is_doc_query(prompt):
-        result = await call_mcp_tool("search_documentation", {"query": prompt}, timeout=30.0)
-        if result and not (isinstance(result, dict) and "error" in result):
-            return {"role": "assistant", "content": result}
-        # Fall through to LLM if doc search fails or returns nothing
-
-    # Fetch tools from MCP server and build LLM with bind_tools()
-    mcp_tools = await _fetch_mcp_tools()
-    if not mcp_tools:
-        return {"role": "assistant", "content": "Could not connect to MCP server."}
-
-    try:
-        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
-    except ImportError:
-        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
-
-    from langchain_ollama import ChatOllama
-    openai_tools = [_to_openai_tool(t) for t in mcp_tools]
-    llm = ChatOllama(
-        model=OLLAMA_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.0,
-    )
-    llm_with_tools = llm.bind_tools(openai_tools, tool_choice="required")
-    messages = _build_llm_messages(prompt, conversation_history)
-
-    last_tool_name: str | None = None
-    last_error: str | dict | None = None
-
-    for iteration in range(max_iterations):
-        try:
-            ai_msg = await asyncio.wait_for(llm_with_tools.ainvoke(messages), timeout=90.0)
-        except asyncio.TimeoutError:
-            return {"role": "assistant", "content": "Tool selection timed out. Please try again."}
-
-        if not ai_msg.tool_calls:
-            return {"role": "assistant", "content": ai_msg.content or "I could not determine how to answer that."}
-
-        tool_call = ai_msg.tool_calls[0]
-        sel_tool_name = tool_call["name"]
-        tool_args = dict(tool_call["args"])
-        # Strip invalid optional args — llama3.1:8b sends {} or "" instead of omitting them
-        tool_args = {k: v for k, v in tool_args.items() if v not in ({}, "")}
-        tool_call_id = tool_call.get("id") or f"call_{sel_tool_name}_{iteration}"
-        last_tool_name = sel_tool_name
-
-        if discover_only:
-            return {
-                "tool_name": sel_tool_name,
-                "parameters": tool_args,
-                "tool_display_name": get_tool_display_name(sel_tool_name),
-                "intent": tool_args.get("intent"),
-                "format": "table",
-            }
-
-        access_err = _check_tool_access(username, sel_tool_name, session_id)
-        if access_err:
-            return {"role": "assistant", "content": access_err}
-
-        result = await call_mcp_tool(sel_tool_name, tool_args, timeout=_TOOL_TIMEOUTS.get(sel_tool_name, 65.0))
-
-        if isinstance(result, dict) and result.get("requires_site"):
-            return {"role": "assistant", "content": result}
-
-        if result is None or (isinstance(result, dict) and not result):
-            last_error = "No result returned. Check that the MCP server is running."
-            from langchain_core.messages import ToolMessage
-            messages = messages + [ai_msg, ToolMessage(content=last_error, tool_call_id=tool_call_id)]
-            continue
-
-        if isinstance(result, dict) and "error" in result:
-            last_error = result
-            from langchain_core.messages import ToolMessage
-            messages = messages + [ai_msg, ToolMessage(content=json.dumps(result), tool_call_id=tool_call_id)]
-            continue
-
-        return {"role": "assistant", "content": _normalize_result(sel_tool_name, result, prompt)}
-
-    if last_error is not None:
-        msg = await synthesize_final_answer(prompt, last_tool_name or "tool", last_error)
-        return {"role": "assistant", "content": msg}
-    return {"role": "assistant", "content": "Something went wrong. Please try again."}
+    result_state = await atlas_graph.ainvoke(initial_state)
+    return result_state.get("final_response") or {"role": "assistant", "content": "Something went wrong. Please try again."}

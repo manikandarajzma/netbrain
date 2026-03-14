@@ -328,15 +328,17 @@ async def health_check():
     ollama_status = "unknown"
     ollama_model_available = None
     try:
+        # Use OpenAI-compatible /models endpoint (works with Docker Model Runner and Ollama)
+        base = OLLAMA_BASE_URL.rstrip("/")
+        models_url = f"{base}/models"
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{OLLAMA_BASE_URL}/api/tags",
+                models_url,
                 timeout=aiohttp.ClientTimeout(total=3),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    models = [m.get("name", "") for m in data.get("models", [])]
-                    # Ollama model names may include a tag (e.g. "llama3.1:8b")
+                    models = [m.get("id", "") for m in data.get("data", [])]
                     ollama_model_available = any(
                         m == OLLAMA_MODEL or m.split(":")[0] == OLLAMA_MODEL.split(":")[0]
                         for m in models

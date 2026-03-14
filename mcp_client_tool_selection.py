@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any
 
 logger = logging.getLogger("atlas.tool_selection")
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 
 try:
     from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
@@ -53,7 +53,7 @@ Write a very short final answer (2-4 sentences) to show the user. Do the followi
 Reply with ONLY the final answer text, no prefix like "Answer:" or markdown."""
 
     try:
-        llm = ChatOllama(model=llm_model, base_url=llm_base_url, temperature=0.3)
+        llm = ChatOpenAI(model=llm_model, base_url=llm_base_url, temperature=0.3, api_key="docker")
         if hasattr(llm, "ainvoke"):
             response = await asyncio.wait_for(llm.ainvoke(prompt_text), timeout=timeout)
         else:
