@@ -34,5 +34,8 @@ class AtlasState(TypedDict, total=False):
     requires_site: bool
     tool_error: str | dict | None
 
+    # Most recent follow_up_action from any tool result (set at graph entry, not scanned in nodes)
+    last_follow_up_action: dict[str, Any] | None
+
     # Final answer
     final_response: dict[str, Any] | None

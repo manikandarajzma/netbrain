@@ -41,37 +41,33 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
         return {"intent": "prefilled", "messages": messages, "iteration": 0}
 
-    # If recent assistant messages offered a follow-up, classify user's reply.
-    # "actually" signals the user is referring back — look further in history.
     conversation_history = state.get("conversation_history") or []
     prompt_lower_strip = prompt.lower().strip().rstrip("!.")
-    lookback = 6 if any(prompt_lower_strip.startswith(w) for w in ("actually", "wait", "on second thought")) else 1
-    follow_up_action = None
+
+    # last_follow_up_action is extracted once from history before graph entry (chat_service.py)
+    follow_up_action = state.get("last_follow_up_action")
     follow_up_text = None
-    checked = 0
-    for msg in reversed(conversation_history):
-        if msg.get("role") != "assistant":
-            continue
-        checked += 1
-        content = msg.get("content", "")
-        if isinstance(content, str) and content.startswith("{"):
-            try:
-                content = json.loads(content)
-            except (json.JSONDecodeError, ValueError):
-                pass
-        if isinstance(content, dict):
-            follow_up_action = content.get("follow_up_action")
-            follow_up_text = content.get("follow_up")
-            if not follow_up_action and content.get("multi_results"):
-                for r in reversed(content["multi_results"]):
-                    if isinstance(r, dict) and r.get("follow_up_action"):
-                        follow_up_action = r["follow_up_action"]
-                        follow_up_text = r.get("follow_up", "")
+    if follow_up_action:
+        # Find the matching follow_up text for display context
+        for msg in reversed(conversation_history):
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.startswith("{"):
+                try:
+                    content = json.loads(content)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if isinstance(content, dict):
+                if content.get("follow_up_action") == follow_up_action:
+                    follow_up_text = content.get("follow_up")
+                    break
+                for r in (content.get("multi_results") or []):
+                    if isinstance(r, dict) and r.get("follow_up_action") == follow_up_action:
+                        follow_up_text = r.get("follow_up")
                         break
-            if follow_up_action:
-                break  # found one — stop looking
-        if checked >= lookback:
-            break
+            if follow_up_text is not None:
+                break
 
     if follow_up_action and follow_up_action.get("tool"):
         user_lower = prompt.lower().strip().rstrip("!.")

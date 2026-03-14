@@ -128,25 +128,22 @@ async def _fetch_mcp_tools() -> list:
     return []
 
 
+def _load_skill(name: str) -> str:
+    """Load a skill file from the skills/ directory relative to this file."""
+    import pathlib
+    skills_dir = pathlib.Path(__file__).parent / "skills"
+    path = skills_dir / name
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 def _build_llm_messages(prompt: str, conversation_history: list) -> list:
     """Convert prompt + conversation history to LangChain messages."""
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    system_content = _load_skill("base.md")
     messages = [
-        SystemMessage(content=(
-            "You are a network infrastructure assistant. "
-            "Always call a tool — never answer from memory or prior context. "
-            "TOOL SELECTION — follow these rules exactly:\n"
-            "- User mentions an IP address AND asks which group/object it belongs to → MUST use query_panorama_ip_object_group\n"
-            "- User asks for members or contents of a named address group → MUST use query_panorama_address_group_members\n"
-            "- User asks about unused, orphaned, or stale objects → MUST use find_unused_panorama_objects\n"
-            "- User asks for path or route between two IPs → MUST use query_network_path\n"
-            "- User asks if traffic is allowed or blocked between two IPs → MUST use check_path_allowed\n"
-            "- User asks about denied or blocked traffic events for an IP → MUST use get_splunk_recent_denies\n"
-            "CHAINING: If the user asks for multiple things (e.g. which group an IP belongs to AND the members of that group), "
-            "call each required tool in sequence — do NOT stop after the first tool result.\n"
-            "When the user's reply is short, check the conversation history "
-            "to understand what they are clarifying and combine it with the original request."
-        ))
+        SystemMessage(content=system_content)
     ]
     for msg in (conversation_history or [])[-10:]:
         role = msg.get("role", "")
@@ -244,7 +241,10 @@ def _normalize_result(
             for k, v in result.items():
                 new_result[k] = v
             new_result["follow_up"] = f"Would you like to see the policies that reference '{group_name}'?"
-            new_result["follow_up_action"] = {"tool": "query_panorama_address_group_members", "params": {"address_group_name": group_name, "_policies_only": True}}
+            fu_params: dict = {"address_group_name": group_name, "_policies_only": True}
+            if result.get("device_group"):
+                fu_params["device_group"] = result["device_group"]
+            new_result["follow_up_action"] = {"tool": "query_panorama_address_group_members", "params": fu_params}
             return new_result
 
     if tool_name == "find_unused_panorama_objects" and isinstance(result, dict) and "error" not in result:
@@ -328,6 +328,28 @@ def _check_tool_access(username: str | None, tool_name: str, session_id: str | N
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _extract_last_follow_up_action(conversation_history: list) -> dict | None:
+    """Scan conversation history (newest first) and return the most recent follow_up_action."""
+    for msg in reversed(conversation_history):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.startswith("{"):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if isinstance(content, dict):
+            fa = content.get("follow_up_action")
+            if fa:
+                return fa
+            if content.get("multi_results"):
+                for r in reversed(content["multi_results"]):
+                    if isinstance(r, dict) and r.get("follow_up_action"):
+                        return r["follow_up_action"]
+    return None
+
+
 async def process_message(
     prompt: str,
     conversation_history: list[dict[str, str]],
@@ -344,6 +366,8 @@ async def process_message(
     Process one user message via the Atlas LangGraph agent.
     """
     from atlas.graph_builder import atlas_graph
+
+    last_follow_up_action = _extract_last_follow_up_action(conversation_history or [])
 
     initial_state = {
         "prompt": prompt,
@@ -366,6 +390,7 @@ async def process_message(
         "requires_site": False,
         "tool_error": None,
         "final_response": None,
+        "last_follow_up_action": last_follow_up_action,
     }
 
     result_state = await atlas_graph.ainvoke(initial_state)
