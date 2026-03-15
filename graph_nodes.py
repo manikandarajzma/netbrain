@@ -86,8 +86,8 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             }
         # User asks for something adjacent to the offer, e.g. "no. find the policies though"
         # Only applies to short follow-up replies — not new queries with IPs or many words.
-        user_wants_policies = any(w in user_lower for w in ("policies", "policy"))
-        user_wants_members = "members" in user_lower
+        user_wants_policies = any(w in user_lower for w in ("policies", "policy", "rules", "security rules", "firewall rules"))
+        user_wants_members = any(w in user_lower for w in ("members", "contents", "what's in", "whats in"))
         is_short_followup = len(user_lower.split()) <= 10 and not _IP_OR_CIDR_RE.search(user_lower)
 
         if is_short_followup and (user_wants_policies or user_wants_members):

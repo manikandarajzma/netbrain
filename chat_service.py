@@ -142,6 +142,12 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
     """Convert prompt + conversation history to LangChain messages."""
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
     system_content = _load_skill("base.md")
+    prompt_lower = prompt.lower()
+    if any(w in prompt_lower for w in ("group", "members", "policies", "policy", "panorama", "address", "orphan", "unused", "stale")):
+        panorama_skill = _load_skill("panorama_lookup.md")
+        if panorama_skill:
+            system_content += "\n\n" + panorama_skill
+    logger.info("Loaded system prompt (%d chars): %s", len(system_content), system_content[:200])
     messages = [
         SystemMessage(content=system_content)
     ]
@@ -287,13 +293,18 @@ def _normalize_result(
                 follow_up_params = {"address_group_name": group_name_hint}
                 if first_group.get("device_group"):
                     follow_up_params["device_group"] = first_group["device_group"]
-                return {
+                prompt_lower = prompt.lower()
+                already_asked_members = "members" in prompt_lower
+                already_asked_policies = any(w in prompt_lower for w in ("policies", "policy"))
+                result_out = {
                     "direct_answer": direct_answer,
                     "address_groups": address_groups,
                     "queried_ip": queried_ip,
-                    "follow_up": f"Would you like to see the members of '{group_name_hint}'?",
-                    "follow_up_action": {"tool": "query_panorama_address_group_members", "params": follow_up_params},
                 }
+                if not already_asked_members and not already_asked_policies:
+                    result_out["follow_up"] = f"Would you like to see the members of '{group_name_hint}'?"
+                    result_out["follow_up_action"] = {"tool": "query_panorama_address_group_members", "params": follow_up_params}
+                return result_out
 
     return result
 
