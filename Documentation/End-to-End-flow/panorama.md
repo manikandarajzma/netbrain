@@ -1224,7 +1224,7 @@ User          Browser           FastAPI          chat_service       MCP Server  
 
 ---
 
-## A2A Risk Assessment (risk intent)
+## Path 2: A2A Risk Assessment (risk intent)
 
 Used for: "is 11.0.0.1 suspicious?", "are there any risks with 10.0.0.1?"
 
@@ -1320,7 +1320,7 @@ This is returned as `{"direct_answer": synthesis}` and rendered by `DirectAnswer
 
 ---
 
-## NetBrain Path Query (netbrain intent)
+## Path 3: NetBrain Path Query (netbrain intent)
 
 Used for: "find path from 10.0.0.1 to 10.0.1.1", "trace route between hosts", "what hops are between these two IPs?"
 
