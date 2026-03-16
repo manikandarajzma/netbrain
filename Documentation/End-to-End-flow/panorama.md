@@ -3,7 +3,7 @@
 This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Atlas supports two distinct query paths depending on intent:
 
 - **Direct MCP path (`network` intent)** — group lookups, member listings, unused object queries. Detailed step-by-step trace in Steps 0–11 below.
-- **A2A multi-agent path (`risk` intent)** — risk assessments ("is 11.0.0.1 suspicious?"). Covered in the [A2A Risk Assessment](#a2a-risk-assessment-risk-intent) section.
+- **A2A multi-agent path (`netbrain` intent)** — path queries with Panorama firewall enrichment ("find path from 10.0.0.1 to 10.0.1.1"). Covered in the [NetBrain Path Query](#netbrain-path-query-netbrain-intent) section.
 
 ---
 
@@ -78,6 +78,51 @@ Skills are Markdown files in [`skills/`](../../skills/) loaded as system prompts
 | `skills/risk_synthesis.md` | Risk orchestrator synthesis | Output format + risk signal guidance |
 
 **Design principle:** skills contain only domain knowledge. Tool selection logic lives in tool docstrings (`@mcp.tool()` descriptions). Sequential chaining logic lives in code (`tool_executor` deterministic chaining, `agent_loop.py`).
+
+### Skills vs MCP tool docstrings
+
+These two mechanisms are complementary and answer different questions:
+
+**MCP tool docstring** — scoped to one tool, answers: "should I call this tool, and with what arguments?"
+
+```python
+@mcp.tool()
+async def query_panorama_ip_object_group(ip_address: str) -> dict:
+    """
+    Find which Panorama address groups contain a given IP address.
+
+    Use for: queries with an IP address asking which group it belongs to.
+    Do NOT use for: device names (have dashes).
+
+    Examples:
+    - "what address group is 10.0.0.1 in?" → ip_address="10.0.0.1"
+    """
+```
+
+The LLM sees all tool docstrings side-by-side and uses them to pick the right tool and extract the right arguments. This is selection logic, not background knowledge.
+
+**Skill** — loaded as the system prompt, answers: "what domain am I working in and what do terms mean?"
+
+```markdown
+# skills/panorama_agent.md
+You are working with Palo Alto Panorama — a centralized firewall management platform.
+
+CONCEPTS:
+- Address object: a named IP, range, or CIDR
+- Address group: a named collection of address objects
+- Device group: a set of firewalls managed together
+- Security zone: trust, untrust, dmz
+```
+
+No tool selection here — just background knowledge that makes tool outputs interpretable and responses accurate.
+
+| Question | Where it lives |
+|---|---|
+| Should I call this tool? | Docstring (`Use for / Do NOT use for`) |
+| What arguments do I pass? | Docstring (`Examples`) |
+| What does "address group" mean? | Skill |
+| What's the difference between a zone and a device group? | Skill |
+| What format should my response be in? | Skill (`risk_synthesis.md`) |
 
 ---
 
