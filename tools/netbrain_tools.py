@@ -20,7 +20,6 @@ from tools.shared import mcp, setup_logging
 logger = setup_logging(__name__)
 import netbrainauth
 from netbrainauth import NETBRAIN_URL
-from tools.panorama_tools import _add_panorama_zones_to_hops, _add_panorama_device_groups_to_hops
 
 
 # ---------------------------------------------------------------------------
@@ -1211,11 +1210,6 @@ async def _query_network_path_impl(
                 # Extract simplified hop information: device name, status, and reason
                 simplified_hops, path_status_overall, path_failure_reason = await extract_path_hops(path_data, "Step 3 response")
 
-                # Query Panorama for security zones for firewall interfaces
-                if simplified_hops:
-                    await _add_panorama_zones_to_hops(simplified_hops)
-                    await _add_panorama_device_groups_to_hops(simplified_hops)
-
                 # If we found hops, use simplified format
                 if simplified_hops:
                     # Clean hops: JSON-serializable values; in_interface/out_interface as display name only (Ethernet1/1 style)
@@ -1280,11 +1274,6 @@ async def _query_network_path_impl(
                 # Sometimes live data returns path details directly in the calculation response
                 logger.debug("Step 3 returned no data, checking Step 2 response for path details")
                 simplified_hops, path_status_overall, path_failure_reason = await extract_path_hops(calc_data, "Step 2 response")
-
-                # Query Panorama for security zones and device groups for firewall hops
-                if simplified_hops:
-                    await _add_panorama_zones_to_hops(simplified_hops)
-                    await _add_panorama_device_groups_to_hops(simplified_hops)
 
                 if simplified_hops:
                     # Clean hops: in_interface/out_interface as display name only (Ethernet1/1 style)

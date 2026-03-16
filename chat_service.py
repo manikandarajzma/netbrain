@@ -144,7 +144,7 @@ def _build_llm_messages(prompt: str, conversation_history: list) -> list:
     system_content = _load_skill("base.md")
     prompt_lower = prompt.lower()
     if any(w in prompt_lower for w in ("group", "members", "policies", "policy", "panorama", "address", "orphan", "unused", "stale")):
-        panorama_skill = _load_skill("panorama_lookup.md")
+        panorama_skill = _load_skill("panorama_agent.md")
         if panorama_skill:
             system_content += "\n\n" + panorama_skill
     logger.info("Loaded system prompt (%d chars): %s", len(system_content), system_content[:200])

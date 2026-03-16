@@ -1,9 +1,28 @@
 .directAnswer {
-  font-size: 1.1rem;
-  font-weight: 600;
+  font-size: 1.0rem;
+  font-weight: 400;
   margin-bottom: 1rem;
   padding: 0.75rem 1rem;
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(249, 226, 175, 0.1) 0%, rgba(166, 227, 161, 0.1) 100%);
   border: 1px solid rgba(249, 226, 175, 0.3);
+}
+
+.directAnswer table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.directAnswer th,
+.directAnswer td {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0.4rem 0.75rem;
+  text-align: left;
+}
+
+.directAnswer th {
+  background: rgba(255, 255, 255, 0.07);
+  font-weight: 600;
 }

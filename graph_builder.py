@@ -16,6 +16,8 @@ from atlas.graph_nodes import (
     normalize_result,
     synthesize_error,
     enrich_with_insights,
+    risk_orchestrator,
+    netbrain_agent,
 )
 from atlas.chat_service import MAX_AGENT_ITERATIONS
 
@@ -89,6 +91,8 @@ def build_graph() -> Any:
     g.add_node("normalize_result", normalize_result)
     g.add_node("synthesize_error", synthesize_error)
     g.add_node("enrich_with_insights", enrich_with_insights)
+    g.add_node("risk_orchestrator", risk_orchestrator)
+    g.add_node("netbrain_agent", netbrain_agent)
     g.add_node("build_final_response", build_final_response)
 
     # Entry point
@@ -100,6 +104,8 @@ def build_graph() -> Any:
         "doc": "doc_tool_caller",
         "network": "fetch_mcp_tools",
         "dismiss": "build_final_response",
+        "risk": "risk_orchestrator",
+        "netbrain": "netbrain_agent",
     })
 
     # Prefilled path
@@ -131,6 +137,8 @@ def build_graph() -> Any:
         "retry": "tool_selector",      # back-edge: retry with error context
         "error": "synthesize_error",
     })
+    g.add_edge("risk_orchestrator", "build_final_response")
+    g.add_edge("netbrain_agent", "build_final_response")
     g.add_edge("normalize_result", "build_final_response")
     g.add_edge("synthesize_error", "build_final_response")
     g.add_edge("enrich_with_insights", "build_final_response")

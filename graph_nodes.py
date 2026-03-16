@@ -129,6 +129,25 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     if prompt.lower().strip().rstrip("!.") in _ACKNOWLEDGEMENTS and not state.get("discover_only"):
         return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "Sure, let me know if you need anything else."}, "messages": [], "iteration": 0}
 
+    # Risk assessment: requires an IP + risk-related keywords → fan out to A2A agents
+    _RISK_KEYWORDS = ("suspicious", "risk", "threat", "malicious", "deny", "blocked", "attack", "dangerous", "compromised")
+    prompt_lower = prompt.lower()
+    if (
+        not state.get("discover_only")
+        and _IP_OR_CIDR_RE.search(prompt)
+        and any(kw in prompt_lower for kw in _RISK_KEYWORDS)
+    ):
+        return {"intent": "risk", "messages": [], "iteration": 0}
+
+    # Path queries: two IPs, or path keywords + at least one IP → NetBrain agent
+    _PATH_KEYWORDS = ("path", "route", "trace", "hops", "reach")
+    if not state.get("discover_only"):
+        ip_matches = _IP_OR_CIDR_RE.findall(prompt)
+        if len(ip_matches) >= 2 or (
+            len(ip_matches) >= 1 and any(kw in prompt_lower for kw in _PATH_KEYWORDS)
+        ):
+            return {"intent": "netbrain", "messages": [], "iteration": 0}
+
     if not state.get("discover_only") and _is_doc_query(prompt):
         intent = "doc"
     else:
@@ -136,6 +155,60 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
     return {"intent": intent, "messages": messages, "iteration": 0}
+
+
+# ---------------------------------------------------------------------------
+# Node: risk_orchestrator — fans out to Panorama + Splunk A2A agents
+# ---------------------------------------------------------------------------
+
+async def risk_orchestrator(state: AtlasState) -> dict[str, Any]:
+    """Fan out to Panorama and Splunk A2A agents, synthesize with Ollama."""
+    from agents.orchestrator import orchestrate_ip_risk
+    prompt = state["prompt"]
+    username = state.get("username")
+    session_id = state.get("session_id")
+    result = await orchestrate_ip_risk(prompt, username=username, session_id=session_id)
+    return {"final_response": result}
+
+
+# ---------------------------------------------------------------------------
+# Node: netbrain_agent — delegates path queries to the NetBrain A2A agent
+# ---------------------------------------------------------------------------
+
+async def netbrain_agent(state: AtlasState) -> dict[str, Any]:
+    """Send the path query to the NetBrain A2A agent and return its response."""
+    import uuid
+    import httpx
+
+    prompt = state["prompt"]
+    netbrain_url = "http://localhost:8004"
+
+    task = {
+        "id": str(uuid.uuid4()),
+        "message": {
+            "role": "user",
+            "parts": [{"type": "text", "text": prompt}],
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(netbrain_url, json=task)
+            response.raise_for_status()
+            data = response.json()
+            artifacts = data.get("artifacts", [])
+            text = None
+            if artifacts:
+                text = next(
+                    (p.get("text") for p in artifacts[0].get("parts", []) if p.get("type") == "text"),
+                    None,
+                )
+            if text:
+                return {"final_response": {"role": "assistant", "content": {"direct_answer": text}}}
+            return {"final_response": {"role": "assistant", "content": "NetBrain agent returned no data."}}
+    except Exception as e:
+        logger.warning("NetBrain agent call failed: %s", e)
+        return {"final_response": {"role": "assistant", "content": f"NetBrain agent unavailable: {e}"}}
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +392,36 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
     if len(result_summary) > 6000:
         result_summary = result_summary[:6000] + "... [truncated for context length]"
     updated_messages = messages + [ToolMessage(content=result_summary, tool_call_id=tool_call_id)]
+
+    # Deterministic chaining: if IP lookup completed and user asked for members/policies,
+    # call query_panorama_address_group_members directly — do not rely on LLM to chain.
+    if tool_name == "query_panorama_ip_object_group" and isinstance(result, dict):
+        prompt_lower_chain = (state.get("prompt") or "").lower()
+        wants_members = any(w in prompt_lower_chain for w in ("members", "contents", "what's in", "whats in"))
+        wants_policies = any(w in prompt_lower_chain for w in ("policies", "policy", "rules", "security rules", "firewall rules"))
+        if wants_members or wants_policies:
+            address_groups = result.get("address_groups", [])
+            if address_groups:
+                first_group = address_groups[0]
+                group_name = first_group.get("name")
+                device_group = first_group.get("device_group")
+                if group_name:
+                    members_params = {"address_group_name": group_name}
+                    if device_group:
+                        members_params["device_group"] = device_group
+                    if wants_policies and not wants_members:
+                        members_params["_policies_only"] = True
+                    members_result = await call_mcp_tool(
+                        "query_panorama_address_group_members",
+                        members_params,
+                        timeout=_TOOL_TIMEOUTS.get("query_panorama_address_group_members", 65.0),
+                    )
+                    if members_result and isinstance(members_result, dict) and "error" not in members_result:
+                        members_normalized = _normalize_result("query_panorama_address_group_members", members_result, state.get("prompt", ""))
+                        accumulated.append(members_normalized)
+                        final = {"multi_results": accumulated} if len(accumulated) > 1 else members_normalized
+                        return {"tool_raw_result": members_result, "accumulated_results": accumulated, "tool_error": None,
+                                "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
 
     # If user asked for members + policies and this result already has both inline
     # (no follow_up_action needed), finalize immediately — don't let the LLM loop.

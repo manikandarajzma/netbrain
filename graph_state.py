@@ -18,7 +18,7 @@ class AtlasState(TypedDict, total=False):
     max_iterations: int
 
     # Routing signals
-    intent: Literal["doc", "network", "prefilled", "dismiss"] | None
+    intent: Literal["doc", "network", "prefilled", "dismiss", "risk", "netbrain"] | None
     rbac_error: str | None
 
     # LLM tool selection
