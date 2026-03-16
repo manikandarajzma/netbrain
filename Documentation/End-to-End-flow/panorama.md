@@ -30,10 +30,10 @@ chat_service.py → atlas_graph (LangGraph)
     ├── intent: "risk"                                        build_final_response
     │   (e.g. "is 11.0.0.1 suspicious?")                         │
     │   risk_orchestrator                                         ▼
-    │       ├── Panorama A2A agent (port 8003)              FastAPI → JSON → React
+    │       ├── Panorama agent (port 8003)                  FastAPI → JSON → React
     │       │       └── agent_loop.py (ReAct)
     │       │           └── panorama_tools via MCP
-    │       └── Splunk A2A agent (port 8002)
+    │       └── Splunk agent (port 8002)
     │               └── agent_loop.py (ReAct)
     │                   └── splunk_tools via MCP
     │       └── Ollama synthesis (risk_synthesis.md skill)
@@ -72,9 +72,9 @@ Skills are Markdown files in [`skills/`](../../skills/) loaded as system prompts
 | File | Loaded by | Purpose |
 |---|---|---|
 | `skills/base.md` | Main LangGraph (all queries) | Role statement + short-reply context hint |
-| `skills/panorama_agent.md` | Panorama A2A agent | Panorama domain knowledge (concepts, terminology, zones) |
-| `skills/splunk_agent.md` | Splunk A2A agent | Splunk domain knowledge (deny events, risk signals) |
-| `skills/netbrain_agent.md` | NetBrain A2A agent | Path query concepts, Panorama enrichment instructions |
+| `skills/panorama_agent.md` | Panorama agent | Panorama domain knowledge (concepts, terminology, zones) |
+| `skills/splunk_agent.md` | Splunk agent | Splunk domain knowledge (deny events, risk signals) |
+| `skills/netbrain_agent.md` | NetBrain agent | Path query concepts, Panorama enrichment instructions |
 | `skills/risk_synthesis.md` | Risk orchestrator synthesis | Output format + risk signal guidance |
 
 **Design principle:** skills contain only domain knowledge. Tool selection logic lives in tool docstrings (`@mcp.tool()` descriptions). Sequential chaining logic lives in code (`tool_executor` deterministic chaining, `agent_loop.py`).
@@ -1232,7 +1232,7 @@ Used for: "is 11.0.0.1 suspicious?", "are there any risks with 10.0.0.1?"
 
 **File:** [`graph_nodes.py`](../../graph_nodes.py) — `risk_orchestrator()`, [`agents/orchestrator.py`](../../agents/orchestrator.py)
 
-The orchestrator extracts the IP from the prompt and fans out to two A2A agents **in parallel**:
+The orchestrator extracts the IP from the prompt and fans out to two agents **in parallel** via A2A:
 
 ```python
 panorama_task = "Assess the Panorama security posture for IP 11.0.0.1. Find which address group it belongs to, list the group members, and show all referencing security policies."
@@ -1245,7 +1245,7 @@ panorama_result, splunk_result = await asyncio.gather(
 )
 ```
 
-### 2. Panorama A2A agent
+### 2. Panorama agent
 
 **File:** [`agents/panorama_agent.py`](../../agents/panorama_agent.py) — port 8003
 
@@ -1281,7 +1281,7 @@ AIMessage: "11.0.0.1 belongs to address group leander_web in device group leande
 
 The LLM decides which tools to call and in what order based on the task. The agent returns a **natural language summary**.
 
-### 3. Splunk A2A agent
+### 3. Splunk agent
 
 **File:** [`agents/splunk_agent.py`](../../agents/splunk_agent.py) — port 8002
 
@@ -1358,7 +1358,7 @@ AIMessage: "Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops..."
 
 ## Direct MCP vs A2A Agent: When Each Is Used
 
-| | Direct MCP (network intent) | A2A agent (risk intent) |
+| | Direct MCP (network intent) | Agent via A2A (risk intent) |
 |---|---|---|
 | Trigger | Group/member lookups, unused objects | Risk assessment queries |
 | Tool selection | Ollama LLM picks from all MCP tools | Ollama LLM within agent picks from Panorama-only tools |
@@ -1375,9 +1375,9 @@ AIMessage: "Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops..."
 | [`graph_nodes.py`](../../graph_nodes.py) | LangGraph nodes: intent classification, tool selection, execution, risk orchestration |
 | [`graph_builder.py`](../../graph_builder.py) | LangGraph graph construction and routing |
 | [`graph_state.py`](../../graph_state.py) | State schema shared across all graph nodes |
-| [`agents/panorama_agent.py`](../../agents/panorama_agent.py) | Panorama A2A agent (FastAPI, port 8003) |
-| [`agents/splunk_agent.py`](../../agents/splunk_agent.py) | Splunk A2A agent (FastAPI, port 8002) |
-| [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) | NetBrain A2A agent (FastAPI, port 8004) |
+| [`agents/panorama_agent.py`](../../agents/panorama_agent.py) | Panorama agent — AI agent exposing A2A interface (FastAPI, port 8003) |
+| [`agents/splunk_agent.py`](../../agents/splunk_agent.py) | Splunk agent — AI agent exposing A2A interface (FastAPI, port 8002) |
+| [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) | NetBrain agent — AI agent exposing A2A interface (FastAPI, port 8004) |
 | [`agents/agent_loop.py`](../../agents/agent_loop.py) | Shared ReAct tool-calling loop used by all agents |
 | [`agents/orchestrator.py`](../../agents/orchestrator.py) | Risk fan-out: parallel A2A calls + Ollama synthesis |
 | [`tools/panorama_tools.py`](../../tools/panorama_tools.py) | Panorama MCP tool implementations + Panorama API calls |
