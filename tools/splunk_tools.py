@@ -253,7 +253,16 @@ async def get_splunk_recent_denies(
     Returns:
         dict: ip_address, events (list), count, and optional error
     """
-    logger.debug(f"get_splunk_recent_denies: ip={ip_address}")
+    # Normalise earliest_time — LLM may pass "24h", "last 24 hours", "24 hours", etc.
+    if not earliest_time.startswith("-"):
+        import re as _re
+        m = _re.search(r"(\d+)\s*(h|hour|hours|d|day|days|w|week|weeks|m|mon|month|months)", earliest_time, _re.IGNORECASE)
+        if m:
+            n, unit = m.group(1), m.group(2).lower()[0]
+            earliest_time = f"-{n}{unit}"
+        else:
+            earliest_time = "-24h"
+    logger.debug(f"get_splunk_recent_denies: ip={ip_address} earliest={earliest_time}")
     spl = (
         f'search index=* (deny OR denied) '
         f'(src_ip="{ip_address}" OR dest_ip="{ip_address}" OR src="{ip_address}" OR dst="{ip_address}" '
@@ -295,7 +304,11 @@ async def get_splunk_traffic_summary(
     Returns:
         dict: ip_address, by_action (list of {action, count}), total_events, and optional error
     """
-    logger.debug(f"get_splunk_traffic_summary: ip={ip_address}")
+    if not earliest_time.startswith("-"):
+        import re as _re
+        m = _re.search(r"(\d+)\s*(h|hour|hours|d|day|days|w|week|weeks|m|mon|month|months)", earliest_time, _re.IGNORECASE)
+        earliest_time = f"-{m.group(1)}{m.group(2).lower()[0]}" if m else "-24h"
+    logger.debug(f"get_splunk_traffic_summary: ip={ip_address} earliest={earliest_time}")
     spl = (
         f'search index=* '
         f'(src_ip="{ip_address}" OR dest_ip="{ip_address}" OR src="{ip_address}" OR dst="{ip_address}") '

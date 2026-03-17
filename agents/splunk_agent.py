@@ -30,12 +30,12 @@ app = FastAPI(title="Atlas Splunk Agent")
 # ---------------------------------------------------------------------------
 
 @tool
-async def splunk_recent_denies(ip_address: str, limit: int = 100, earliest_time: str = "-24h") -> dict:
-    """Get recent firewall deny events for an IP address from Splunk."""
+async def splunk_recent_denies(ip_address: str) -> dict:
+    """Get recent firewall deny events for an IP address from Splunk (last 24 hours)."""
     from atlas.mcp_client import call_mcp_tool
     return await call_mcp_tool(
         "get_splunk_recent_denies",
-        {"ip_address": ip_address, "limit": limit, "earliest_time": earliest_time},
+        {"ip_address": ip_address, "limit": 100, "earliest_time": "-24h"},
         timeout=95.0,
     )
 

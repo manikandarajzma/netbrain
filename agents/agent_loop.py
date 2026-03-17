@@ -1,5 +1,5 @@
 """
-Shared ReAct-style tool-calling loop for A2A agents.
+Shared tool-calling loop for agents.
 """
 import json
 import logging
@@ -14,7 +14,7 @@ async def run_agent_loop(
     max_iterations: int = 5,
 ) -> str:
     """
-    Run a ReAct-style tool-calling loop.
+    Run a tool-calling loop.
 
     The LLM decides which tools to call and in what order.
     Iterates until the LLM stops issuing tool calls or max_iterations is reached.
@@ -67,4 +67,14 @@ async def run_agent_loop(
                 tool_call_id=tc["id"],
             ))
 
-    return last_response.content if last_response else "No response generated."
+    if not last_response:
+        return "No response generated."
+    content = last_response.content
+    # If the loop hit max_iterations while the LLM was still issuing tool calls,
+    # last_response is a tool-call message with no text.  Make one final call
+    # without tools bound so the LLM synthesises from the accumulated context.
+    if not content and last_response.tool_calls:
+        logger.warning("Agent loop hit max_iterations with pending tool calls — forcing synthesis")
+        synthesis_response = await llm.ainvoke(messages)
+        content = synthesis_response.content or "Investigation complete — no summary generated."
+    return content or "Investigation complete — no summary generated."

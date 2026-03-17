@@ -31,17 +31,17 @@ chat_service.py → atlas_graph (LangGraph)
     │   (e.g. "is 11.0.0.1 suspicious?")                         │
     │   risk_orchestrator                                         ▼
     │       ├── Panorama agent (port 8003)                  FastAPI → JSON → React
-    │       │       └── agent_loop.py (ReAct)
+    │       │       └── agent_loop.py (tool-calling loop)
     │       │           └── panorama_tools via MCP
     │       └── Splunk agent (port 8002)
-    │               └── agent_loop.py (ReAct)
+    │               └── agent_loop.py (tool-calling loop)
     │                   └── splunk_tools via MCP
     │       └── Ollama synthesis (risk_synthesis.md skill)
     │
     └── intent: "netbrain"
         (e.g. "find path from 10.0.0.1 to 10.0.1.1")
         netbrain_agent (port 8004)
-            └── agent_loop.py (ReAct)
+            └── agent_loop.py (tool-calling loop)
                 ├── netbrain_query_path (MCP)
                 └── ask_panorama_agent (A2A → port 8003)
 ```
@@ -1123,7 +1123,7 @@ Each `_call_agent` call sends an A2A-format JSON body and returns the text from 
 
 **File:** [`agents/panorama_agent.py`](../../agents/panorama_agent.py) — FastAPI, port 8003
 
-The Panorama agent is a standalone FastAPI service. It receives the A2A task at `POST /` and runs the shared ReAct loop.
+The Panorama agent is a standalone FastAPI service. It receives the A2A task at `POST /` and runs the shared tool-calling loop.
 
 **Skill:** `skills/panorama_agent.md` is loaded at request time via `_load_skill()` and passed as the system prompt to `run_agent_loop`. It provides Panorama domain knowledge — address objects, device groups, zones, policy concepts — so the LLM can interpret tool results accurately.
 
@@ -1166,7 +1166,7 @@ Returns a **natural language summary** in the A2A artifact format.
 
 Identical pattern. **Skill:** `skills/splunk_agent.md` is loaded as the system prompt — Splunk domain knowledge (deny events, risk signals, traffic fields).
 
-The LLM runs the same ReAct loop with three Splunk tools:
+The LLM runs the same tool-calling loop with three Splunk tools:
 
 | Tool | Purpose |
 |---|---|
@@ -1239,7 +1239,7 @@ netbrain_agent node   ←── graph_nodes.py: A2A POST to localhost:8004
     │
     ▼
 NetBrain agent (port 8004)
-    │   agent_loop.py (ReAct, up to 5 iterations)
+    │   agent_loop.py (tool-calling loop, up to 5 iterations)
     │   SystemMessage: skills/netbrain_agent.md
     │
     ├── tool_call: netbrain_query_path  ──► MCP Server → NetBrain API
@@ -1248,7 +1248,7 @@ NetBrain agent (port 8004)
                                             │
                                             ▼
                                         Panorama agent (port 8003)
-                                            agent_loop.py (ReAct)
+                                            agent_loop.py (tool-calling loop)
                                             SystemMessage: skills/panorama_agent.md
                                             → zones + device group
     ↓
@@ -1274,7 +1274,7 @@ async def netbrain_agent(state: AtlasState) -> dict:
 
 **File:** [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) — FastAPI, port 8004
 
-The NetBrain agent receives the task and runs the shared ReAct loop.
+The NetBrain agent receives the task and runs the shared tool-calling loop.
 
 **Skill:** `skills/netbrain_agent.md` is loaded as the system prompt via `_load_skill()`. It covers path query concepts and — critically — instructs the LLM *when* to call `ask_panorama_agent`: whenever a hop in the path is identified as a Palo Alto firewall, the LLM should ask the Panorama agent for its zones and device group. This cross-agent delegation logic lives in the skill, not in code.
 
@@ -1286,7 +1286,7 @@ The NetBrain agent receives the task and runs the shared ReAct loop.
 | `netbrain_check_allowed` | MCP | Check if traffic is allowed/denied on the path |
 | `ask_panorama_agent` | A2A (HTTP POST to port 8003) | Enrich a firewall hop with zones and device group |
 
-**Full ReAct loop example:**
+**Full tool-calling loop example:**
 
 ```
 SystemMessage: skills/netbrain_agent.md   ← path concepts + when to call Panorama
@@ -1314,7 +1314,7 @@ LLM → AIMessage: "Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops:
     (no more tool_calls → loop ends)
 ```
 
-**`ask_panorama_agent` in detail:** This tool is implemented directly in `netbrain_agent.py`. It sends an A2A HTTP POST to port 8003, waits for the Panorama agent's `agent_loop` to complete, and returns the natural language answer as a `ToolMessage`. The Panorama agent runs its full ReAct loop (`skills/panorama_agent.md` + Panorama tools) independently — the NetBrain agent has no visibility into that inner loop, it only receives the final text.
+**`ask_panorama_agent` in detail:** This tool is implemented directly in `netbrain_agent.py`. It sends an A2A HTTP POST to port 8003, waits for the Panorama agent's `agent_loop` to complete, and returns the natural language answer as a `ToolMessage`. The Panorama agent runs its full tool-calling loop (`skills/panorama_agent.md` + Panorama tools) independently — the NetBrain agent has no visibility into that inner loop, it only receives the final text.
 
 This is **nested agent-to-agent reasoning**: the NetBrain LLM decides when enrichment is needed, constructs the task text, and integrates the result into its own reasoning chain.
 
@@ -1505,7 +1505,7 @@ User          Browser           FastAPI          chat_service       MCP Server  
 |---|---|---|
 | Trigger | Group/member lookups, unused objects | Risk assessment queries |
 | Tool selection | Ollama LLM picks from all MCP tools | Ollama LLM within agent picks from Panorama-only tools |
-| Chaining | Deterministic code in `tool_executor` | LLM-driven ReAct loop |
+| Chaining | Deterministic code in `tool_executor` | LLM-driven tool-calling loop |
 | Output | Structured JSON → table/visualization | Natural language summary |
 | Port | Via MCP server (internal) | HTTP 8003 |
 
@@ -1521,7 +1521,7 @@ User          Browser           FastAPI          chat_service       MCP Server  
 | [`agents/panorama_agent.py`](../../agents/panorama_agent.py) | Panorama agent — AI agent exposing A2A interface (FastAPI, port 8003) |
 | [`agents/splunk_agent.py`](../../agents/splunk_agent.py) | Splunk agent — AI agent exposing A2A interface (FastAPI, port 8002) |
 | [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) | NetBrain agent — AI agent exposing A2A interface (FastAPI, port 8004) |
-| [`agents/agent_loop.py`](../../agents/agent_loop.py) | Shared ReAct tool-calling loop used by all agents |
+| [`agents/agent_loop.py`](../../agents/agent_loop.py) | Shared tool-calling loop used by all agents |
 | [`agents/orchestrator.py`](../../agents/orchestrator.py) | Risk fan-out: parallel A2A calls + Ollama synthesis |
 | [`tools/panorama_tools.py`](../../tools/panorama_tools.py) | Panorama MCP tool implementations + Panorama API calls |
 | [`skills/panorama_agent.md`](../../skills/panorama_agent.md) | Panorama agent system prompt |

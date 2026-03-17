@@ -65,9 +65,16 @@ async def panorama_firewall_zones(firewall_name: str, interfaces: list) -> dict:
     Returns a mapping of interface name to zone name (e.g. {"Ethernet1/1": "trust", "Ethernet1/2": "untrust"}).
     """
     from atlas.tools.panorama_tools import get_zones_for_firewall_interfaces
+    # Normalise: LLM may pass [{"name": "Ethernet1/1"}] instead of ["Ethernet1/1"]
+    normalised = []
+    for iface in interfaces:
+        if isinstance(iface, dict):
+            normalised.append(iface.get("name") or iface.get("interface") or str(iface))
+        else:
+            normalised.append(str(iface))
     return await get_zones_for_firewall_interfaces(
         firewall_name=firewall_name,
-        interfaces=interfaces,
+        interfaces=normalised,
         template="Global",
     )
 
@@ -83,12 +90,25 @@ async def panorama_firewall_device_group(firewall_names: list) -> dict:
     return await get_device_groups_for_firewalls(firewall_names=firewall_names)
 
 
+@tool
+async def panorama_check_policy(source_ip: str, dest_ip: str) -> dict:
+    """
+    Check Panorama security policies to determine if traffic from source_ip to dest_ip
+    is permitted or denied. Use for troubleshooting connectivity problems.
+    Returns matching policies with their action (allow/deny) and a verdict.
+    Example: source_ip="10.0.0.1", dest_ip="11.0.0.1"
+    """
+    from atlas.mcp_client import call_mcp_tool
+    return await call_mcp_tool("check_panorama_policy", {"source_ip": source_ip, "dest_ip": dest_ip}, timeout=90.0)
+
+
 PANORAMA_TOOLS = [
     panorama_ip_object_group,
     panorama_address_group_members,
     panorama_unused_objects,
     panorama_firewall_zones,
     panorama_firewall_device_group,
+    panorama_check_policy,
 ]
 
 _SKILL_PATH = pathlib.Path(__file__).parent.parent / "skills" / "panorama_agent.md"
@@ -159,6 +179,7 @@ async def handle_task(request: Request) -> JSONResponse:
             task=text,
             system_prompt=_load_skill(),
             tools=PANORAMA_TOOLS,
+            max_iterations=10,
         )
     except Exception as e:
         logger.exception("Panorama agent loop error")

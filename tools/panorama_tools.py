@@ -108,7 +108,7 @@ async def _get_device_groups_cached(session, panorama_url: str, api_key: str, ss
                         result_el = root.find('./result')
                         if result_el is not None:
                             names = [e.get('name') for e in result_el if e.get('name')]
-                    logger.debug("Device groups: fetched %d names from Panorama", len(names))
+                    logger.info("Device groups: fetched %d names from Panorama: %s", len(names), names)
             elif resp.status in (401, 403):
                 logger.warning("Device groups fetch: auth error HTTP %d", resp.status)
             else:
@@ -683,6 +683,10 @@ async def query_panorama_ip_object_group(
     import urllib.parse
     import ipaddress
 
+    # Sanitize device_group: the LLM sometimes passes the string "null" or "None"
+    if device_group and device_group.lower() in ("null", "none", ""):
+        device_group = None
+
     logger.debug(f"query_panorama_ip_object_group called with ip_address={ip_address}, device_group={device_group}, vsys={vsys}")
 
     # Validate IP address or CIDR notation
@@ -724,9 +728,10 @@ async def query_panorama_ip_object_group(
         "ip_address": ip_address,
         "address_objects": [],
         "address_groups": [],
-        "device_group": device_group,
         "vsys": vsys
     }
+    if device_group:
+        result["device_group"] = device_group
 
     # Get Panorama URL from panoramaauth
     panorama_url = panoramaauth.PANORAMA_URL
@@ -742,7 +747,7 @@ async def query_panorama_ip_object_group(
                 dg_names = await _get_device_groups_cached(session, panorama_url, api_key, ssl_context)
                 for dg_name in dg_names:
                     locations.append(("device-group", dg_name))
-                logger.debug("Searching %d location(s): shared + %d device group(s)", len(locations), len(dg_names))
+                logger.info("query_panorama_ip_object_group: searching %d location(s): shared + %d device group(s): %s", len(locations), len(dg_names), dg_names)
 
             # Parallel fetch of address objects for all locations
             addr_obj_results = await asyncio.gather(
@@ -1168,13 +1173,16 @@ async def query_panorama_ip_object_group(
 
             # If no matches found, provide detailed debug info
             if not matching_address_objects and not result["address_groups"]:
-                result["message"] = f"IP address {ip_address} not found in any address objects or address groups"
+                locations_str = [loc_name or "shared" for loc_type, loc_name in locations]
+                result["message"] = (
+                    f"IP address {ip_address} not found in any address objects or address groups. "
+                    f"Searched {len(locations)} location(s): {', '.join(locations_str)}"
+                )
                 result["debug_info"] = {
                     "locations_searched": len(locations),
                     "location_details": [f"{loc_type}: {loc_name or 'shared'}" for loc_type, loc_name in locations]
                 }
-                locations_str = [f"{loc_type}: {loc_name or 'shared'}" for loc_type, loc_name in locations]
-                logger.debug(f"No matches found. Searched {len(locations)} locations: {locations_str}")
+                logger.info("query_panorama_ip_object_group: no matches for %s. Searched %d locations: %s", ip_address, len(locations), locations_str)
             else:
                 result["message"] = f"Found {len(matching_address_objects)} address object(s) and {len(result['address_groups'])} address group(s)"
                 if result["policies"]:
@@ -1289,6 +1297,10 @@ async def query_panorama_address_group_members(
     """
     import xml.etree.ElementTree as ET
     import urllib.parse
+
+    # Sanitize device_group: the LLM sometimes passes the string "null" or "None"
+    if device_group and device_group.lower() in ("null", "none", ""):
+        device_group = None
 
     logger.debug(f"query_panorama_address_group_members called with address_group_name={address_group_name}, device_group={device_group}, vsys={vsys}")
 
@@ -1871,3 +1883,190 @@ async def find_unused_panorama_objects(
         device_group, include_shared,
     )
     return await _find_unused_panorama_objects_impl(device_group, include_shared)
+
+
+@mcp.tool()
+async def check_panorama_policy(
+    source_ip: str,
+    dest_ip: str,
+) -> Dict[str, Any]:
+    """
+    Check Panorama security policies to determine if traffic from source_ip to dest_ip
+    is permitted or denied.
+
+    Use for: troubleshooting connectivity — "why can't X reach Y", "is traffic from A to B blocked".
+    Returns matching security policies with their action (allow/deny), policy name, and device group.
+
+    Args:
+        source_ip: Source IP address (e.g. "10.0.0.1")
+        dest_ip: Destination IP address (e.g. "11.0.0.1")
+
+    Returns:
+        dict: matching_policies (list of {name, action, device_group, source, destination, services}),
+              source_groups, dest_groups, verdict ("allowed"/"denied"/"unknown")
+    """
+    import ipaddress
+
+    logger.info("check_panorama_policy: %s -> %s", source_ip, dest_ip)
+
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        return {"error": "Failed to authenticate with Panorama."}
+
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    panorama_url = panoramaauth.PANORAMA_URL
+
+    try:
+        src_ip_obj = ipaddress.ip_address(source_ip)
+        dst_ip_obj = ipaddress.ip_address(dest_ip)
+    except ValueError as e:
+        return {"error": f"Invalid IP address: {e}"}
+
+    async with aiohttp.ClientSession() as session:
+        # Get all device groups
+        dg_names = await _get_device_groups_cached(session, panorama_url, api_key, ssl_context)
+        locations = [("shared", None)] + [("device-group", dg) for dg in dg_names]
+
+        # Fetch address objects for all locations in parallel
+        addr_obj_results = await asyncio.gather(
+            *[_get_address_objects_cached(session, panorama_url, api_key, ssl_context, lt, ln)
+              for lt, ln in locations],
+            return_exceptions=True,
+        )
+
+        # Build IP -> address object names map
+        def ip_matches_obj(ip_obj, obj_value, obj_type):
+            try:
+                if obj_type == "ip-netmask":
+                    if '/' in obj_value:
+                        return ip_obj in ipaddress.ip_network(obj_value, strict=False)
+                    else:
+                        return ip_obj == ipaddress.ip_address(obj_value)
+                elif obj_type == "ip-range":
+                    parts = obj_value.split('-')
+                    if len(parts) == 2:
+                        return ipaddress.ip_address(parts[0].strip()) <= ip_obj <= ipaddress.ip_address(parts[1].strip())
+            except Exception:
+                pass
+            return False
+
+        src_obj_names: set = set()
+        dst_obj_names: set = set()
+        for (lt, ln), obj_result in zip(locations, addr_obj_results):
+            if isinstance(obj_result, Exception):
+                continue
+            for obj_name, details in obj_result.items():
+                if ip_matches_obj(src_ip_obj, details.get("value", ""), details.get("type", "")):
+                    src_obj_names.add(obj_name)
+                if ip_matches_obj(dst_ip_obj, details.get("value", ""), details.get("type", "")):
+                    dst_obj_names.add(obj_name)
+
+        # For each location, fetch address groups and find which groups contain our objects
+        src_groups: set = set()
+        dst_groups: set = set()
+
+        async def find_groups_for_location(lt, ln):
+            xpath_base = (
+                f"/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='{ln}']/address-group/entry"
+                if lt == "device-group"
+                else "/config/shared/address-group/entry"
+            )
+            url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath_base)}&key={api_key}"
+            try:
+                async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status != 200:
+                        logger.warning("check_panorama_policy: group fetch HTTP %s for %s/%s", resp.status, lt, ln)
+                        return
+                    root = ET.fromstring(await resp.text())
+                    for entry in root.findall('.//entry'):
+                        gname = entry.get('name')
+                        if not gname:
+                            continue
+                        members = {m.text for m in entry.findall('.//member') if m.text}
+                        if members & src_obj_names:
+                            src_groups.add(gname)
+                        if members & dst_obj_names:
+                            dst_groups.add(gname)
+            except Exception as exc:
+                logger.warning("check_panorama_policy: group fetch failed for %s/%s: %s", lt, ln, exc)
+
+        await asyncio.gather(*[find_groups_for_location(lt, ln) for lt, ln in locations])
+
+        # Now fetch security policies and find ones that match src->dst
+        matching_policies = []
+
+        logger.info("check_panorama_policy: src_obj_names=%s dst_obj_names=%s src_groups=%s dst_groups=%s",
+                    src_obj_names, dst_obj_names, src_groups, dst_groups)
+
+        async def check_policies_for_location(lt, ln):
+            for rulebase in ("pre-rulebase", "post-rulebase"):
+                if lt == "device-group":
+                    xpath = (f"/config/devices/entry[@name='localhost.localdomain']"
+                             f"/device-group/entry[@name='{ln}']/{rulebase}/security/rules/entry")
+                else:
+                    xpath = f"/config/shared/{rulebase}/security/rules/entry"
+                url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+                try:
+                    async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status != 200:
+                            logger.warning("check_panorama_policy: policy fetch HTTP %s for %s/%s/%s", resp.status, lt, ln, rulebase)
+                            return
+                        root = ET.fromstring(await resp.text())
+                        for entry in root.findall('.//entry'):
+                            rule_name = entry.get('name', 'unknown')
+                            src_el = entry.find('source')
+                            dst_el = entry.find('destination')
+                            action_el = entry.find('action')
+                            svc_el = entry.find('service')
+
+                            src_members = {m.text for m in src_el.findall('member')} if src_el is not None else set()
+                            dst_members = {m.text for m in dst_el.findall('member')} if dst_el is not None else set()
+                            action = action_el.text if action_el is not None else "unknown"
+                            services = [m.text for m in svc_el.findall('member')] if svc_el is not None else []
+
+                            src_any = 'any' in src_members
+                            dst_any = 'any' in dst_members
+                            src_match = src_any or bool(src_members & (src_obj_names | src_groups))
+                            dst_match = dst_any or bool(dst_members & (dst_obj_names | dst_groups))
+
+                            if src_match and dst_match:
+                                matching_policies.append({
+                                    "name": rule_name,
+                                    "action": action,
+                                    "device_group": ln,
+                                    "rulebase": rulebase,
+                                    "source": list(src_members),
+                                    "destination": list(dst_members),
+                                    "services": services,
+                                })
+                except Exception as exc:
+                    logger.warning("check_panorama_policy: policy fetch failed for %s/%s/%s: %s", lt, ln, rulebase, exc)
+
+        await asyncio.gather(*[check_policies_for_location(lt, ln) for lt, ln in locations])
+        logger.info("check_panorama_policy: found %d matching policies", len(matching_policies))
+
+        # Determine verdict from first matching policy (policies are ordered)
+        verdict = "unknown"
+        if matching_policies:
+            first_action = matching_policies[0].get("action", "unknown")
+            if first_action == "allow":
+                verdict = "allowed"
+            elif first_action in ("deny", "drop", "reset-client", "reset-server", "reset-both"):
+                verdict = "denied"
+
+        return {
+            "source_ip": source_ip,
+            "dest_ip": dest_ip,
+            "source_groups": list(src_groups),
+            "dest_groups": list(dst_groups),
+            "matching_policies": matching_policies,
+            "verdict": verdict,
+            "message": (
+                f"Found {len(matching_policies)} matching polic{'ies' if len(matching_policies) != 1 else 'y'}. "
+                f"Verdict: {verdict}."
+                if matching_policies else
+                f"No security policies found matching {source_ip} -> {dest_ip}."
+            ),
+        }

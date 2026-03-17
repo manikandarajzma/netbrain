@@ -5,6 +5,7 @@ All logic is extracted from chat_service.py — no new behaviour introduced.
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from atlas.graph_state import AtlasState
@@ -31,6 +32,56 @@ logger = logging.getLogger("atlas.graph_nodes")
 
 _CONFIRMATIONS = {"yes", "yeah", "sure", "yep", "ok", "okay", "please", "go ahead", "do it", "show me", "yep please"}
 _DISMISSALS = {"no", "nope", "nah", "no thanks", "don't", "dont", "never mind", "nevermind", "skip", "not now", "no need", "i'm good", "im good", "all good", "that's fine", "thats fine"}
+
+
+_INTENT_SYSTEM_PROMPT = """\
+You are an intent classifier for a network security tool. This tool ONLY handles firewall, network, and security topics.
+Classify the user message into exactly one of these categories:
+
+- troubleshoot: The user is reporting a connectivity problem, asking why something is blocked/not working, or wants to diagnose network traffic between two endpoints. Examples: "why can't 10.0.0.1 reach 10.0.1.1", "is traffic allowed from X to Y", "cannot connect", "traffic is blocked".
+- risk: The user wants a risk assessment, threat analysis, or security posture evaluation for an IP or host. Examples: "what's the risk of 10.0.0.5", "is this IP risky", "security assessment".
+- netbrain: The user wants to trace or visualise a network path, or asks about routing between two endpoints without a connectivity problem framing. Examples: "trace path from A to B", "show me the route", "what's the path".
+- doc: The user is asking a how-to or policy/process question SPECIFICALLY about firewalls, network access, or security tools. Examples: "how do I request firewall access", "what is a DMZ", "explain VLANs".
+- network: The user is asking about a specific IP, address group, device group, or firewall object. Examples: "what group is 10.0.0.5 in", "show members of leander_web", "what policies reference this group".
+- dismiss: Anything else. This includes: off-topic questions (weather, sports, food, news), meaningless fragments ("what?", "huh"), greetings ("hello"), or any question unrelated to firewalls or network security.
+
+When in doubt between doc and dismiss, choose dismiss. Only use doc for firewall/network/security questions.
+
+Reply with ONLY the category name. No explanation. No punctuation.\
+"""
+
+
+async def _llm_classify_intent(prompt: str) -> str:
+    """Call the local LLM to classify the intent of a user prompt."""
+    try:
+        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+    except ImportError:
+        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = ChatOpenAI(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.0,
+        api_key="docker",
+        max_tokens=10,
+    )
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=_INTENT_SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ])
+        raw = (response.content or "").strip().lower().split()[0].rstrip(".,;:")
+        valid = {"troubleshoot", "risk", "netbrain", "doc", "network", "dismiss"}
+        if raw in valid:
+            return raw
+        logger.warning("_llm_classify_intent: unexpected label %r for %r — falling back to doc", raw, prompt[:80])
+        return "doc"
+    except Exception as exc:
+        logger.warning("_llm_classify_intent failed: %s — falling back to doc", exc)
+        return "doc"
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
@@ -71,12 +122,14 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     if follow_up_action and follow_up_action.get("tool"):
         user_lower = prompt.lower().strip().rstrip("!.")
+        logger.info("classify_intent: follow_up_action present tool=%s, user_lower=%r", follow_up_action.get("tool"), user_lower)
         # Pure dismissal → acknowledge and stop
         if user_lower in _DISMISSALS:
             return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "Sure, let me know if you need anything else."}, "messages": [], "iteration": 0}
         # Pure confirmation → execute follow-up directly
         if user_lower in _CONFIRMATIONS:
             messages = _build_llm_messages(prompt, conversation_history)
+            logger.info("classify_intent: routing confirmation to prefilled tool=%s", follow_up_action["tool"])
             return {
                 "intent": "prefilled",
                 "prefilled_tool_name": follow_up_action["tool"],
@@ -129,29 +182,30 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     if prompt.lower().strip().rstrip("!.") in _ACKNOWLEDGEMENTS and not state.get("discover_only"):
         return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "Sure, let me know if you need anything else."}, "messages": [], "iteration": 0}
 
-    # Risk assessment: requires an IP + risk-related keywords → fan out to A2A agents
-    _RISK_KEYWORDS = ("suspicious", "risk", "threat", "malicious", "deny", "blocked", "attack", "dangerous", "compromised")
-    prompt_lower = prompt.lower()
-    if (
-        not state.get("discover_only")
-        and _IP_OR_CIDR_RE.search(prompt)
-        and any(kw in prompt_lower for kw in _RISK_KEYWORDS)
-    ):
-        return {"intent": "risk", "messages": [], "iteration": 0}
-
-    # Path queries: two IPs, or path keywords + at least one IP → NetBrain agent
-    _PATH_KEYWORDS = ("path", "route", "trace", "hops", "reach")
+    # Pending troubleshoot clarification — route back if this looks like an answer (short, no IPs).
+    # If the new message has IPs it's a fresh query — discard the stale pending so clarification
+    # is re-evaluated cleanly instead of consuming the old pending as if it were an answer.
     if not state.get("discover_only"):
-        ip_matches = _IP_OR_CIDR_RE.findall(prompt)
-        if len(ip_matches) >= 2 or (
-            len(ip_matches) >= 1 and any(kw in prompt_lower for kw in _PATH_KEYWORDS)
-        ):
-            return {"intent": "netbrain", "messages": [], "iteration": 0}
+        session_id = state.get("session_id") or "default"
+        has_pending_ts = session_id in _pending_ts_prompts
+        if has_pending_ts:
+            if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
+                # Short, no-IP reply → treat as clarification answer
+                return {"intent": "troubleshoot", "messages": [], "iteration": 0}
+            else:
+                # New query with IPs → discard stale pending, evaluate fresh
+                _pending_ts_prompts.pop(session_id, None)
+                logger.info("classify_intent: discarding stale pending_ts for session %s (new IP query)", session_id)
 
-    if not state.get("discover_only") and _is_doc_query(prompt):
-        intent = "doc"
-    else:
-        intent = "network"
+    # LLM-based intent classification
+    intent = await _llm_classify_intent(prompt)
+    logger.info("classify_intent: LLM classified %r as %r", prompt[:80], intent)
+
+    if intent == "dismiss":
+        return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "I am not equipped to answer this question. If you feel its a mistake, reach out to the atlas team."}, "messages": [], "iteration": 0}
+
+    if intent in ("troubleshoot", "netbrain", "risk"):
+        return {"intent": intent, "messages": [], "iteration": 0}
 
     messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
     return {"intent": intent, "messages": messages, "iteration": 0}
@@ -209,6 +263,133 @@ async def netbrain_agent(state: AtlasState) -> dict[str, Any]:
     except Exception as e:
         logger.warning("NetBrain agent call failed: %s", e)
         return {"final_response": {"role": "assistant", "content": f"NetBrain agent unavailable: {e}"}}
+
+
+# ---------------------------------------------------------------------------
+# Node: troubleshoot_orchestrator — multi-agent troubleshooting coordinator
+# ---------------------------------------------------------------------------
+
+_TS_CONTEXT_PROMPT = """\
+You are analysing a network troubleshooting query. Determine what context is missing.
+
+Reply with ONLY a JSON object on one line, no explanation:
+{"has_issue_type": <true|false>, "has_port": <true|false>}
+
+- has_issue_type: true if the query describes the nature of the problem (blocked, denied, slow, latency, intermittent, unreachable, path changed, dropping, etc.)
+- has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.)
+
+Examples:
+"why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": false, "has_port": false}
+"traffic is blocked from 10.0.0.1 to 11.0.0.1 on TCP 443" → {"has_issue_type": true, "has_port": true}
+"why is 10.0.0.1 slow reaching 11.0.0.1" → {"has_issue_type": true, "has_port": false}
+"can 10.0.0.1 reach 11.0.0.1 over HTTPS" → {"has_issue_type": false, "has_port": true}\
+"""
+
+
+async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool]:
+    """Return (has_issue_type, has_port) for a troubleshoot prompt."""
+    try:
+        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+    except ImportError:
+        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = ChatOpenAI(
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.0,
+        api_key="docker",
+        max_tokens=30,
+    )
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=_TS_CONTEXT_PROMPT),
+            HumanMessage(content=prompt),
+        ])
+        import json as _json
+        data = _json.loads(response.content.strip())
+        return bool(data.get("has_issue_type")), bool(data.get("has_port"))
+    except Exception as exc:
+        logger.warning("_llm_check_ts_context failed: %s — assuming context missing", exc)
+        return False, False
+
+
+# Pending clarification prompts keyed by session_id.
+# When a troubleshoot query lacks port/issue context we return a clarifying
+# question and store the original prompt here.  The next message from the same
+# session is combined with it before running the orchestrator.
+_pending_ts_prompts: dict[str, str] = {}
+
+
+async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
+    """
+    Multi-agent troubleshooting coordinator.
+
+    If the prompt is missing port or issue-type context, returns a clarifying
+    question and saves the original prompt so the next reply can continue.
+    Uses application-layer state (not LangGraph interrupt) to stay simple.
+    """
+    try:
+        from atlas.agents.troubleshoot_orchestrator import orchestrate_troubleshoot
+    except ImportError:
+        from agents.troubleshoot_orchestrator import orchestrate_troubleshoot
+
+    session_id = state.get("session_id") or "default"
+    prompt = state["prompt"]
+
+    # If a previous turn asked for clarification, combine with the original prompt.
+    # Do this before the IP check — the clarification answer won't contain IPs.
+    pending = _pending_ts_prompts.pop(session_id, None)
+    if pending:
+        full_prompt = f"{pending}\n\nUser clarification: {prompt}"
+    else:
+        # Require at least two IPs to proceed — without them we can't troubleshoot anything.
+        ip_matches_in_prompt = _IP_OR_CIDR_RE.findall(prompt)
+        if len(ip_matches_in_prompt) < 2:
+            return {"final_response": {"role": "assistant", "content": (
+                "Please provide both a **source IP** and a **destination IP** to troubleshoot.\n"
+                "Example: \"Why can't 10.0.0.1 connect to 11.0.0.1?\""
+            )}}
+        issue_clear, port_clear = await _llm_check_ts_context(prompt)
+        logger.info("Troubleshoot context check: has_issue_type=%s has_port=%s", issue_clear, port_clear)
+
+        if not issue_clear or not port_clear:
+            parts = []
+            if not issue_clear:
+                parts.append(
+                    "**What type of issue are you seeing?**\n"
+                    "- Blocked / denied — traffic is being dropped or a policy is denying it\n"
+                    "- Slow / high latency — connectivity works but performance is degraded\n"
+                    "- Intermittent — connectivity drops in and out unpredictably\n"
+                    "- Path changed — routing appears different from what is expected"
+                )
+            if not port_clear:
+                parts.append(
+                    "**Which port or protocol is affected?**\n"
+                    "e.g. TCP 443, UDP 53, TCP 22 — or 'any' if protocol-agnostic"
+                )
+            question = "\n\n".join(parts)
+            _pending_ts_prompts[session_id] = prompt
+            logger.info("Troubleshoot clarification requested for session %s", session_id)
+            return {"final_response": {"role": "assistant", "content": question}}
+
+        full_prompt = prompt
+
+    try:
+        result = await orchestrate_troubleshoot(
+            full_prompt,
+            username=state.get("username"),
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.exception("Troubleshoot orchestrator failed: %s", exc)
+        result = {
+            "role": "assistant",
+            "content": f"Troubleshooting failed: {exc}",
+        }
+    return {"final_response": result}
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +503,18 @@ async def prefilled_tool_executor(state: AtlasState) -> dict[str, Any]:
     tool_name = state["prefilled_tool_name"]
     tool_params = dict(state["prefilled_tool_params"] or {})
     prompt = state["prompt"]
+
+    # discover_only: return tool metadata without executing the real tool.
+    # Without this guard, a parallel /api/discover call for a follow-up confirmation
+    # ("yes") would race with the main /api/chat call and hit the MCP tool twice.
+    if state.get("discover_only"):
+        return {
+            "final_response": {
+                "tool_name": tool_name,
+                "tool_display_name": get_tool_display_name(tool_name),
+                "parameters": {k: v for k, v in tool_params.items() if not k.startswith("_")},
+            }
+        }
 
     # Internal flag: caller wants policies from this group, not members
     policies_only = tool_params.pop("_policies_only", False)

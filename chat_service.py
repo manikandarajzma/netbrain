@@ -27,6 +27,9 @@ def _is_doc_query(prompt: str) -> bool:
     """
     if not prompt:
         return False
+    # Too short to be a meaningful doc question
+    if len(prompt.split()) < 3:
+        return False
     # Queries with IPs are always network queries, never docs
     if _IP_OR_CIDR_RE.search(prompt):
         return False
@@ -349,15 +352,57 @@ def _extract_last_follow_up_action(conversation_history: list) -> dict | None:
             try:
                 content = json.loads(content)
             except (json.JSONDecodeError, ValueError):
+                logger.warning("_extract_last_follow_up_action: failed to parse assistant content JSON")
                 continue
         if isinstance(content, dict):
             fa = content.get("follow_up_action")
             if fa:
+                logger.info("_extract_last_follow_up_action: found follow_up_action tool=%s", fa.get("tool"))
                 return fa
             if content.get("multi_results"):
                 for r in reversed(content["multi_results"]):
                     if isinstance(r, dict) and r.get("follow_up_action"):
-                        return r["follow_up_action"]
+                        fa = r["follow_up_action"]
+                        logger.info("_extract_last_follow_up_action: found follow_up_action in multi_results tool=%s", fa.get("tool"))
+                        return fa
+    logger.info("_extract_last_follow_up_action: no follow_up_action in %d history messages", len(conversation_history))
+    return None
+
+
+def _is_fresh_query(prompt: str) -> bool:
+    """Return True if the prompt is a new query rather than a reply to an interrupt.
+
+    When a troubleshoot interrupt fires asking for port/issue type, the user might
+    ignore it and type a completely new question.  We detect this by looking for IPs
+    (new queries almost always have IPs) or a long prompt (clarifications are short).
+    """
+    if _IP_OR_CIDR_RE.search(prompt):
+        return True
+    if len(prompt.split()) > 12:
+        return True
+    return False
+
+
+def _has_interrupts(state_snapshot) -> bool:
+    """Return True if the state snapshot has a pending user-facing interrupt."""
+    top_level = getattr(state_snapshot, "interrupts", None)
+    if top_level:
+        return True
+    for task in getattr(state_snapshot, "tasks", ()):
+        if getattr(task, "interrupts", None):
+            return True
+    return False
+
+
+def _get_interrupt_question(state_snapshot) -> str | None:
+    """Extract the interrupt question value from a state snapshot, or None."""
+    top_level = getattr(state_snapshot, "interrupts", None)
+    if top_level:
+        return top_level[0].value
+    for task in getattr(state_snapshot, "tasks", ()):
+        task_interrupts = getattr(task, "interrupts", None)
+        if task_interrupts:
+            return task_interrupts[0].value
     return None
 
 
