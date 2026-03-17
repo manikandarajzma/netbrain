@@ -35,17 +35,38 @@ _DISMISSALS = {"no", "nope", "nah", "no thanks", "don't", "dont", "never mind", 
 
 
 _INTENT_SYSTEM_PROMPT = """\
-You are an intent classifier for a network security tool. This tool ONLY handles firewall, network, and security topics.
-Classify the user message into exactly one of these categories:
+You are an intent classifier for a network security tool. Classify the message into exactly one category.
 
-- troubleshoot: The user is reporting a connectivity problem, asking why something is blocked/not working, or wants to diagnose network traffic between two endpoints. Examples: "why can't 10.0.0.1 reach 10.0.1.1", "is traffic allowed from X to Y", "cannot connect", "traffic is blocked".
-- risk: The user wants a risk assessment, threat analysis, or security posture evaluation for an IP or host. Examples: "what's the risk of 10.0.0.5", "is this IP risky", "security assessment".
-- netbrain: The user wants to trace or visualise a network path, or asks about routing between two endpoints without a connectivity problem framing. Examples: "trace path from A to B", "show me the route", "what's the path".
-- doc: The user is asking a how-to or policy/process question SPECIFICALLY about firewalls, network access, or security tools. Examples: "how do I request firewall access", "what is a DMZ", "explain VLANs".
-- network: The user is asking about a specific IP, address group, device group, or firewall object. Examples: "what group is 10.0.0.5 in", "show members of leander_web", "what policies reference this group".
-- dismiss: Anything else. This includes: off-topic questions (weather, sports, food, news), meaningless fragments ("what?", "huh"), greetings ("hello"), or any question unrelated to firewalls or network security.
+CATEGORIES:
 
-When in doubt between doc and dismiss, choose dismiss. Only use doc for firewall/network/security questions.
+network — Looking up firewall objects: what address group an IP belongs to, group members, or which policies reference a group. The user wants to know WHAT something IS, not fix a problem.
+  "what group is 10.0.0.5 in?"  →  network
+  "what address group is 11.0.0.1 part of?"  →  network
+  "show me the members of leander_web"  →  network
+  "what policies reference this group? also give me the members"  →  network
+  "give me the group members and the policies that reference it"  →  network
+
+troubleshoot — A connectivity PROBLEM between two specific endpoints. The user cannot reach something and wants to know why.
+  "why can't 10.0.0.1 connect to 11.0.0.1?"  →  troubleshoot
+  "traffic from 10.0.0.1 to 11.0.0.1 is being blocked"  →  troubleshoot
+  "is traffic from A to B allowed on port 443?"  →  troubleshoot
+
+risk — Security posture or risk assessment for a single IP or host.
+  "what is the risk of 10.0.0.5?"  →  risk
+  "is this IP risky?"  →  risk
+
+netbrain — Tracing or visualising the network path between two IPs.
+  "trace path from A to B"  →  netbrain
+  "show me the route from X to Y"  →  netbrain
+
+doc — A how-to or conceptual question about firewall/network/security tools or processes.
+  "how do I request firewall access?"  →  doc
+  "what is a DMZ?"  →  doc
+
+dismiss — Off-topic, greeting, or unrelated to firewalls and network security.
+  "what's the weather?"  →  dismiss
+  "hello"  →  dismiss
+  "what?"  →  dismiss
 
 Reply with ONLY the category name. No explanation. No punctuation.\
 """
@@ -275,14 +296,16 @@ You are analysing a network troubleshooting query. Determine what context is mis
 Reply with ONLY a JSON object on one line, no explanation:
 {"has_issue_type": <true|false>, "has_port": <true|false>}
 
-- has_issue_type: true if the query describes the nature of the problem (blocked, denied, slow, latency, intermittent, unreachable, path changed, dropping, etc.)
+- has_issue_type: true if the query implies a connectivity failure or performance problem. "Cannot connect", "not connecting", "unable to connect", "can't reach", "not working" all count as has_issue_type=true (they imply blocked/unreachable). Only false if the query is completely neutral with no problem framing.
 - has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.)
 
 Examples:
-"why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": false, "has_port": false}
+"why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false}
+"why can't 10.0.0.1 reach 11.0.0.1" → {"has_issue_type": true, "has_port": false}
 "traffic is blocked from 10.0.0.1 to 11.0.0.1 on TCP 443" → {"has_issue_type": true, "has_port": true}
 "why is 10.0.0.1 slow reaching 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"can 10.0.0.1 reach 11.0.0.1 over HTTPS" → {"has_issue_type": false, "has_port": true}\
+"can 10.0.0.1 reach 11.0.0.1 over HTTPS" → {"has_issue_type": true, "has_port": true}
+"check connectivity from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": false, "has_port": false}\
 """
 
 
