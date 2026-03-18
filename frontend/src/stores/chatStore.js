@@ -163,7 +163,9 @@ export const useChatStore = create((set, get) => ({
           set({ currentStatus: 'Processing' })
         })
 
-      const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew)
+      const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew, (msg) => {
+        set({ currentStatus: msg })
+      })
       await discoverPromise
 
       if (toolDisplayName) {

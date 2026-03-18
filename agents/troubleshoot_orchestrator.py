@@ -59,6 +59,9 @@ async def _call_agent(url: str, task: str, timeout: float = 180.0) -> str:
 # Tools — each specialist agent exposed as a tool to the ReAct orchestrator
 # ---------------------------------------------------------------------------
 
+_session_id: str | None = None
+
+
 @tool
 async def call_netbrain_agent(task: str) -> str:
     """
@@ -67,6 +70,11 @@ async def call_netbrain_agent(task: str) -> str:
     Pass a natural language task describing the source and destination IPs.
     Example: "Trace the path from 10.0.0.1 to 10.0.1.1 and check if traffic is allowed."
     """
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(_session_id or "default", "Tracing network path with NetBrain...")
+    except Exception:
+        pass
     return await _call_agent(NETBRAIN_AGENT_URL, task)
 
 
@@ -77,6 +85,11 @@ async def call_panorama_agent(task: str) -> str:
     Pass the source and destination IPs. The agent will return the verdict (allowed/denied/unknown) and the exact policy name that matched.
     Example: "Check if traffic from 10.0.0.1 to 11.0.0.1 is allowed or denied in Panorama security policies."
     """
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(_session_id or "default", "Checking Panorama security policies...")
+    except Exception:
+        pass
     return await _call_agent(PANORAMA_AGENT_URL, task)
 
 
@@ -88,6 +101,11 @@ async def call_splunk_agent(task: str) -> str:
     Pass a natural language task describing the IP and what to look for.
     Example: "Check Splunk for recent deny events and traffic summary for 10.0.0.1 in the last 24 hours."
     """
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(_session_id or "default", "Querying Splunk for deny events...")
+    except Exception:
+        pass
     return await _call_agent(SPLUNK_AGENT_URL, task)
 
 
@@ -121,6 +139,8 @@ async def orchestrate_troubleshoot(
     username: str | None = None,
     session_id: str | None = None,
 ) -> dict:
+    global _session_id
+    _session_id = session_id
     """
     Run the troubleshoot ReAct agent.
     The LLM reasons at each step before deciding which specialist agent to call next.

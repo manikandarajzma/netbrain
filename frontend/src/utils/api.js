@@ -76,7 +76,7 @@ export async function clearChatHistory() {
 // Chat can take a long time (NetBrain path calculation can take up to ~6 minutes).
 const CHAT_FETCH_TIMEOUT_MS = 420000
 
-export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null) {
+export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null, onStatus = null) {
   const body = { message, conversation_history: conversationHistory }
   if (conversationId) body.conversation_id = conversationId
   if (parentConversationId) body.parent_conversation_id = parentConversationId
@@ -94,14 +94,36 @@ export async function sendChat(message, conversationHistory, signal, conversatio
     try {
       const err = await res.json()
       const raw = (err?.detail && typeof err.detail === 'string' ? err.detail : null) || err?.error
-      // Never show server internals (e.g. Key Vault URLs, stack traces)
       if (raw && typeof raw === 'string' && !/keyvault|api-version|REDACTED|\.py\s|traceback/i.test(raw)) {
         msg = raw.length > 200 ? raw.slice(0, 200) + '…' : raw
       }
     } catch (_) {}
     throw new Error(msg)
   }
-  return res.json()
+
+  // Response is SSE — read the stream until we get a "done" event
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() // keep incomplete last line
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      try {
+        const event = JSON.parse(line.slice(6))
+        if (event.type === 'status' && onStatus) {
+          onStatus(event.message)
+        } else if (event.type === 'done') {
+          return event.result
+        }
+      } catch (_) {}
+    }
+  }
+  throw new Error('Chat stream ended without a response')
 }
 
 export async function uploadBatch(file, message, signal) {

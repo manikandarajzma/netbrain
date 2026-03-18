@@ -5,9 +5,12 @@ All credentials are in Azure Key Vault; no local passwords.
 import os
 from pathlib import Path
 
+import asyncio
+import json as _json
+
 from fastapi import Depends, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Any
@@ -457,49 +460,86 @@ async def api_chat_conversation_delete(request: Request, conversation_id: str):
 
 @app.post("/api/chat")
 async def api_chat(request: Request, body: ChatRequest):
-    """Process a chat message and return assistant response. Uses conversation_id when provided."""
+    """Process a chat message and stream SSE progress events followed by the final result."""
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
+
+    import atlas.status_bus as status_bus
     from atlas.chat_service import process_message
     from atlas.chat_history import create_conversation, append_to_conversation
+
+    sid = get_session_id(request)
     conversation_id = (body.conversation_id or "").strip() or None
-    history = body.conversation_history or []
-    result = await process_message(
-        body.message.strip(),
-        history,
-        default_live=True,
-        username=username,
-        session_id=get_session_id(request),
-    )
-    # Strip noisy L2 messages before sending to frontend
-    if isinstance(result, dict):
-        content = result.get("content")
-        if isinstance(content, dict) and content.get("path_hops"):
-            _strip_l2_noise(content)
-    assistant_content = result.get("content") if isinstance(result, dict) else None
-    if assistant_content is None and isinstance(result, dict):
-        assistant_content = result.get("message") or "No response"
-    elif assistant_content is None:
-        assistant_content = "No response"
     user_msg = body.message.strip()
-    if conversation_id:
-        # Append to existing conversation
-        append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
-        if isinstance(result, dict):
-            result["conversation_id"] = conversation_id
-    else:
-        # New conversation: create and append (optionally as follow-up under parent)
-        parent_id = (body.parent_conversation_id or "").strip() or None
-        title = (user_msg[:60] + "…") if len(user_msg) > 60 else user_msg or "New chat"
-        conv_id = create_conversation(APP_DIR, username, title, parent_id=parent_id)
-        append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
-        if isinstance(result, dict):
-            result["conversation_id"] = conv_id
-            result["conversation_title"] = title
-            if parent_id:
-                result["parent_id"] = parent_id
-    return result
+    history = body.conversation_history or []
+    parent_id = (body.parent_conversation_id or "").strip() or None
+
+    async def event_generator():
+        queue = status_bus.register(sid)
+        task = asyncio.create_task(
+            process_message(
+                user_msg,
+                history,
+                default_live=True,
+                username=username,
+                session_id=sid,
+            )
+        )
+        try:
+            while not task.done():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    yield f"data: {_json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    continue
+
+            # Drain any remaining status events pushed before task completed
+            while not queue.empty():
+                event = queue.get_nowait()
+                yield f"data: {_json.dumps(event)}\n\n"
+
+            result = task.result()
+
+            # Strip noisy L2 messages before sending to frontend
+            if isinstance(result, dict):
+                content = result.get("content")
+                if isinstance(content, dict) and content.get("path_hops"):
+                    _strip_l2_noise(content)
+
+            assistant_content = result.get("content") if isinstance(result, dict) else None
+            if assistant_content is None and isinstance(result, dict):
+                assistant_content = result.get("message") or "No response"
+            elif assistant_content is None:
+                assistant_content = "No response"
+
+            if conversation_id:
+                append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
+                if isinstance(result, dict):
+                    result["conversation_id"] = conversation_id
+            else:
+                title = (user_msg[:60] + "…") if len(user_msg) > 60 else user_msg or "New chat"
+                conv_id = create_conversation(APP_DIR, username, title, parent_id=parent_id)
+                append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
+                if isinstance(result, dict):
+                    result["conversation_id"] = conv_id
+                    result["conversation_title"] = title
+                    if parent_id:
+                        result["parent_id"] = parent_id
+
+            done_event = {"type": "done", "result": result}
+            yield f"data: {_json.dumps(done_event)}\n\n"
+        except Exception as exc:
+            import logging
+            logging.getLogger("atlas.app").exception("SSE generator error")
+            if not task.done():
+                task.cancel()
+            error_event = {"type": "done", "result": {"role": "assistant", "content": f"Error: {exc}"}}
+            yield f"data: {_json.dumps(error_event)}\n\n"
+        finally:
+            status_bus.deregister(sid)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # --- Batch Upload API ---
