@@ -116,6 +116,13 @@ async def orchestrate_ip_risk(
         f"and destination spread (unique destination IPs and ports)."
     )
 
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(session_id or "default", "Checking Panorama address groups and policies...")
+        await status_bus.push(session_id or "default", "Querying Splunk traffic data...")
+    except Exception:
+        pass
+
     panorama_result, splunk_result = await asyncio.gather(
         _call_agent(PANORAMA_AGENT_URL, panorama_task, timeout=120.0),
         _call_agent(SPLUNK_AGENT_URL,   splunk_task,   timeout=120.0),
@@ -128,6 +135,12 @@ async def orchestrate_ip_risk(
     if isinstance(splunk_result, Exception):
         logger.warning("Splunk agent exception: %s", splunk_result)
         splunk_result = None
+
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(session_id or "default", "Synthesizing risk assessment...")
+    except Exception:
+        pass
 
     synthesis = await _synthesize(ip, panorama_result, splunk_result, prompt)
 

@@ -106,6 +106,11 @@ async def _llm_classify_intent(prompt: str) -> str:
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(state.get("session_id") or "default", "Classifying your query...")
+    except Exception:
+        pass
     prompt = state["prompt"]
     prefilled = state.get("prefilled_tool_name")
 
@@ -361,6 +366,12 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
 
     session_id = state.get("session_id") or "default"
     prompt = state["prompt"]
+
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(session_id, "Analyzing your query...")
+    except Exception:
+        pass
 
     # If a previous turn asked for clarification, combine with the original prompt.
     # Do this before the IP check — the clarification answer won't contain IPs.
