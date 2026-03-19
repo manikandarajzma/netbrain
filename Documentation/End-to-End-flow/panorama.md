@@ -260,46 +260,7 @@ If the cookie is missing, invalid, or expired → 401 + `{"redirect": "/login"}`
 
 ### RBAC check
 
-The RBAC check for Panorama tools happens later inside `chat_service.process_message()`, but the role is resolved from the session here:
-
-```python
-# auth.py
-ROLE_ALLOWED_TOOLS = {
-    "admin":    None,                                    # all tools
-    "netadmin": {"query_network_path", "check_path_allowed",
-                 "query_panorama_ip_object_group",
-                 "query_panorama_address_group_members"},
-    "guest":    set(),                                   # no tools
-}
-```
-
-Both Panorama tools are accessible to `admin` and `netadmin` roles. `guest` is denied.
-
-### How roles are assigned (OIDC login flow)
-
-When a user logs in via Microsoft (`GET /auth/microsoft` → Microsoft login page → `GET /auth/callback`):
-
-1. Atlas redirects the browser to `https://login.microsoftonline.com/{tenant_id}/v2.0/authorize`. Azure handles all credential verification (password, MFA) — Atlas never sees the password. Azure redirects back to `/auth/callback` with a short-lived one-time **authorization code** — a single-use opaque string that proves authentication succeeded. It expires in seconds, is useless without the app's `client_secret`, and cannot itself be used to access any resources.
-
-2. `authlib` makes a **server-to-server POST** to Azure's token endpoint, exchanging the code (plus the app's `client_secret`) for the actual tokens. This exchange never goes through the browser — tokens never appear in the URL bar, browser history, or referrer headers. Azure responds with three tokens:
-
-   - **`id_token`** — a JWT containing identity claims about the user (`email`, `name`, `groups`, etc.). This is what Atlas reads to identify who logged in and which group they belong to. It is consumed once at login time and not stored. **Code:** [app.py:208–214](../../app.py#L208-L214) — the JWT payload segment is base64-decoded manually to extract claims.
-
-   - **`access_token`** — a JWT that authorizes calls to Microsoft APIs (e.g. Microsoft Graph) on behalf of the user. Atlas does not call any Microsoft APIs after login, so this token is received but not used. **Code:** [app.py:237](../../app.py#L237) — passed into `create_session(tokens={...})` and silently dropped there.
-
-   - **`refresh_token`** — an opaque long-lived token that can be used to obtain new `access_token`s without re-prompting the user. Atlas does not implement token refresh — sessions expire after 30 minutes and the user must log in again. This token is also received but not used. **Code:** [app.py:238](../../app.py#L238) — same as `access_token`, passed in and dropped.
-
-   All three tokens are passed to `create_session()` in [auth.py:115–134](../../auth.py#L115-L134), but that function intentionally discards them — the docstring states: *"tokens is accepted for interface compatibility but is intentionally not stored — OAuth tokens are too large for a cookie and are not needed after the group is resolved at sign-in."* Only `{ username, group, auth_mode, created_at }` is baked into the cookie.
-
-   > **What is a JWT?** A JSON Web Token is a string of three base64url-encoded segments separated by dots: `header.payload.signature`. The **payload** is a plain JSON object containing claims (`"email"`, `"groups"`, etc.) — readable by anyone, but not encrypted. The **signature** is a cryptographic hash signed with Azure's private key — it proves the token came from Azure and has not been tampered with. authlib verifies the signature against Azure's public keys before Atlas reads any claims.
-
-3. Atlas manually decodes the `id_token` JWT payload to extract the `groups` claim. The `groups` claim is a Microsoft extension that only appears in the `id_token` — it is never returned by the standard `/userinfo` endpoint.
-
-4. `extract_group_from_token()` in [auth.py](../../auth.py) iterates the `groups` claim and matches each value directly against the keys of `GROUP_ALLOWED_TOOLS` (e.g. `"admin"`, `"netadmin"`). This works because on-prem synced groups emit the `sAMAccountName` in the token — the group name is the same string Atlas uses internally, so no mapping is needed. If no group matches → 302 redirect to `/login?error=norole`.
-
-5. A signed session cookie is set (`atlas_session`, `HttpOnly`, `SameSite=Lax`, 30 min TTL) containing `{ username, group, auth_mode, created_at }`. No PIM, no app roles — auth is entirely group-based.
-
-For full detail on the login flow see [auth-rbac.md](../Security/auth-rbac.md).
+The RBAC check for Panorama tools happens later inside `chat_service.process_message()`, but the role is resolved from the session here. The user's role is determined by their AD group membership at login time. If no matching role is found → 302 redirect to `/login?error=norole`.
 
 ---
 
