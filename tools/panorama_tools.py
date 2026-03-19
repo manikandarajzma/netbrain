@@ -32,21 +32,21 @@ logger = setup_logging(__name__)
 # Caching disabled — all data fetched fresh on every request
 # ---------------------------------------------------------------------------
 
-_CACHE_TTL = 0.0
+_CACHE_TTL = 300.0  # 5 minutes
 
-# Device group list cache: disabled
+# Device group list cache: (list[str], timestamp) | None
 _dg_cache: tuple[list, float] | None = None
 
-# Address object cache: disabled
+# Address object cache: "loc_type:loc_name" -> ({name: {type, value}}, timestamp)
 _addr_obj_cache: dict[str, tuple[dict, float]] = {}
 
-# Zone cache: disabled
+# Zone cache
 _zone_cache: dict = {}
-_ZONE_CACHE_TTL = 0.0
+_ZONE_CACHE_TTL = 300.0  # 5 minutes
 
-# Device group mapping cache: disabled
+# Device group mapping cache: {"hostname_serial": dict, "serial_dg": dict, "ts": float} | None
 _dg_fw_cache: dict | None = None
-_DG_FW_CACHE_TTL = 0.0
+_DG_FW_CACHE_TTL = 300.0  # 5 minutes
 
 
 def _parse_address_entries(entries) -> dict:

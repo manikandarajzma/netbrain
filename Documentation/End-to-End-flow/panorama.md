@@ -1,9 +1,9 @@
 # Panorama Query — End-to-End Flow
 
-This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Atlas supports two distinct query paths depending on intent:
+This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Atlas supports two query paths:
 
-- **Direct MCP path (`network` intent)** — group lookups, member listings, unused object queries. Detailed step-by-step trace in Steps 0–10 below.
-- **A2A multi-agent path (`netbrain` intent)** — path queries with Panorama firewall enrichment ("find path from 10.0.0.1 to 10.0.1.1"). Covered in the [NetBrain Path Query](#netbrain-path-query-netbrain-intent) section.
+- **Path 1: Direct MCP (`network` intent)** — group lookups, member listings, unused object queries. The LLM picks a tool, the tool calls Panorama directly, and the result is returned.
+- **Path 2: A2A (`netbrain` and `risk` intent)** — queries that require multiple agents. NetBrain path queries and IP risk assessments both use agent-to-agent communication.
 
 ---
 
@@ -177,278 +177,82 @@ The UI renders two things:
 
 ---
 
-## Path 2: A2A Risk Assessment (risk intent)
+## Path 2: A2A Queries
 
-Used for: "is 11.0.0.1 suspicious?", "are there any risks with 10.0.0.1?"
+Used when the query requires multiple agents working together. Atlas supports two A2A patterns:
 
-### LangGraph entry
+- **`netbrain` intent** — path queries like "find path from 10.0.0.1 to 10.0.1.1". The NetBrain agent traces the network path and calls the Panorama agent to enrich any firewall hops it encounters.
+- **`risk` intent** — risk queries like "is 11.0.0.1 suspicious?". The orchestrator fans out to both Panorama and Splunk agents in parallel, then synthesizes their results.
 
-**File:** [`graph_builder.py`](../../graph_builder.py), [`graph_nodes.py`](../../graph_nodes.py)
-
-`classify_intent` assigns `intent = "risk"` when the prompt contains one IP address plus risk keywords (suspicious, threat, risky, unusual, malicious, etc.). The graph routes `risk` → `risk_orchestrator` node → `build_final_response`.
-
-```
-classify_intent (intent="risk")
-    │
-    ▼
-risk_orchestrator   ←── graph_nodes.py: calls orchestrate_ip_risk()
-    │                       │
-    │               agents/orchestrator.py
-    │                   │               │
-    ├── A2A POST ────────►               │
-    │   localhost:8003                  │
-    │   (Panorama agent)                │
-    │                               A2A POST ──► localhost:8002
-    │                                           (Splunk agent)
-    │                   asyncio.gather waits for both
-    │                   ↓
-    │               _synthesize() ←── skills/risk_synthesis.md (system prompt)
-    │                   ↓
-    │               Ollama LLM → risk assessment string
-    ▼
-build_final_response → DirectAnswerBadge.jsx
-```
-
-### risk_orchestrator node
-
-**File:** [`graph_nodes.py`](../../graph_nodes.py) — `risk_orchestrator(state)`
-
-The node extracts `prompt` from the LangGraph state and delegates to `orchestrate_ip_risk()`:
-
-```python
-async def risk_orchestrator(state: AtlasState) -> dict:
-    result = await orchestrate_ip_risk(state["prompt"], username=..., session_id=...)
-    return {"final_response": result}
-```
-
-### Fan-out to agents in parallel
-
-**File:** [`agents/orchestrator.py`](../../agents/orchestrator.py)
-
-The orchestrator extracts the IP with a regex, constructs descriptive natural language tasks, and fires both A2A calls simultaneously:
-
-```python
-panorama_task = (
-    "Assess the Panorama security posture for IP 11.0.0.1. "
-    "Find which address group it belongs to, list the group members, "
-    "and show all referencing security policies."
-)
-splunk_task = (
-    "Analyze Splunk firewall data for IP 11.0.0.1. "
-    "Get recent deny events, a traffic summary broken down by action, "
-    "and destination spread (unique destination IPs and ports)."
-)
-
-panorama_result, splunk_result = await asyncio.gather(
-    _call_agent(PANORAMA_AGENT_URL, panorama_task),   # HTTP POST localhost:8003
-    _call_agent(SPLUNK_AGENT_URL,   splunk_task),     # HTTP POST localhost:8002
-)
-```
-
-Each `_call_agent` call sends an A2A-format JSON body and returns the text from the `artifacts` in the response. Both run concurrently — neither waits for the other.
-
-### Panorama agent internals
-
-**File:** [`agents/panorama_agent.py`](../../agents/panorama_agent.py) — FastAPI, port 8003
-
-The Panorama agent is a standalone FastAPI service. It receives the A2A task at `POST /` and runs the shared tool-calling loop.
-
-**Skill:** `skills/panorama_agent.md` is loaded at request time via `_load_skill()` and passed as the system prompt to `run_agent_loop`. It provides Panorama domain knowledge — address objects, device groups, zones, policy concepts — so the LLM can interpret tool results accurately.
-
-**Agent loop** ([`agents/agent_loop.py`](../../agents/agent_loop.py)):
-
-```
-SystemMessage: skills/panorama_agent.md   ← domain knowledge
-HumanMessage:  "Assess the Panorama security posture for IP 11.0.0.1..."
-    ↓
-LLM (Ollama, llm.bind_tools([5 tools]))   ← tool docstrings drive selection
-    ↓
-tool_call: panorama_ip_object_group(ip_address="11.0.0.1")
-    ↓
-ToolMessage: {"address_groups": [{"name": "leander_web", "device_group": "leander"}]}
-    ↓
-tool_call: panorama_address_group_members(address_group_name="leander_web", device_group="leander")
-    ↓
-ToolMessage: {"members": [...], "policies": [...]}
-    ↓
-AIMessage: "11.0.0.1 belongs to address group leander_web..."   ← no more tool_calls → loop ends
-```
-
-The loop runs up to 5 iterations. At each step the LLM decides whether to call another tool or produce a final answer. Tool docstrings (`Use for / Do NOT use for / Examples`) drive which tool gets called and with what arguments — `skills/panorama_agent.md` provides background knowledge but has no tool-selection logic.
-
-**Available tools:**
-
-| Tool | Purpose |
-|---|---|
-| `panorama_ip_object_group` | Find which address groups contain an IP |
-| `panorama_address_group_members` | Get members and referencing security policies for a group |
-| `panorama_unused_objects` | Find orphaned/unused objects |
-| `panorama_firewall_zones` | Get security zones for firewall interfaces |
-| `panorama_firewall_device_group` | Get device group for one or more firewalls |
-
-Returns a **natural language summary** in the A2A artifact format.
-
-### Splunk agent internals
-
-**File:** [`agents/splunk_agent.py`](../../agents/splunk_agent.py) — FastAPI, port 8002
-
-Identical pattern. **Skill:** `skills/splunk_agent.md` is loaded as the system prompt — Splunk domain knowledge (deny events, risk signals, traffic fields).
-
-The LLM runs the same tool-calling loop with three Splunk tools:
-
-| Tool | Purpose |
-|---|---|
-| `splunk_recent_denies` | Firewall deny events for the IP in the last 24h |
-| `splunk_traffic_summary` | Total traffic counts broken down by action (allow/deny) |
-| `splunk_unique_destinations` | Unique destination IPs and ports (spread analysis) |
-
-Returns a natural language summary of the IP's Splunk traffic behavior.
-
-### Synthesis
-
-**File:** [`agents/orchestrator.py`](../../agents/orchestrator.py) — `_synthesize()`
-
-**Skill:** `skills/risk_synthesis.md` is loaded and used as the **system prompt** for the synthesis LLM call. Unlike the agent loops above, this call has **no tools bound** — it is a pure text completion. The skill file specifies:
-- What risk signals to look for (deny counts, destination spread thresholds, sensitive ports)
-- The exact output format to produce (Verdict, Panorama section, Splunk section, Recommendation)
-
-```python
-user_content = (
-    f"User query: {prompt}\n\n"
-    f"IP address: {ip}\n\n"
-    f"--- Panorama Agent Summary ---\n{panorama_text}\n\n"
-    f"--- Splunk Agent Summary ---\n{splunk_text}"
-)
-messages = [SystemMessage(content=skill), HumanMessage(content=user_content)]
-response = await llm.ainvoke(messages)   # no tools — text completion only
-```
-
-The synthesis LLM (Ollama) reads both agent summaries and produces a structured assessment:
-
-```
-**Verdict:** <one sentence>
-
-**Panorama**
-- Group: `leander_web` (8 members, device group: `leander`)
-- Referencing policies:
-| Policy | Action | Source | Destination |
-...
-
-**Splunk**
-- Deny events (24h): 0
-- Total traffic events: 42 (38 allow, 4 deny)
-- Destination spread: 3 unique IPs, 2 unique ports
-
-**Recommendation**
-No action required.
-```
-
-### Response flow
-
-`orchestrate_ip_risk` returns `{"role": "assistant", "content": {"direct_answer": synthesis}}` → `risk_orchestrator` node sets `final_response` → LangGraph routes to `build_final_response` → `DirectAnswerBadge.jsx` renders with ReactMarkdown + remark-gfm (table support).
+The steps below trace a NetBrain path query — it's the best example of A2A since one agent calls another mid-reasoning.
 
 ---
 
-## Path 3: NetBrain Path Query (netbrain intent)
+### Step 1: Intent Classification
 
-Used for: "find path from 10.0.0.1 to 10.0.1.1", "trace route between hosts", "is traffic from X to Y on TCP 443 allowed?"
+The query `"find path from 10.0.0.1 to 10.0.1.1"` contains two IP addresses, so `classify_intent` assigns `intent = "netbrain"`. The LangGraph routes to the `netbrain_agent` node.
 
-### LangGraph entry
+---
 
-**File:** [`graph_builder.py`](../../graph_builder.py), [`graph_nodes.py`](../../graph_nodes.py)
+### Step 2: Atlas sends the query to the NetBrain agent
 
-`classify_intent` assigns `intent = "netbrain"` when the prompt contains two IP addresses, or path keywords (path, route, trace, hops). The graph routes `netbrain` → `netbrain_agent` node → `build_final_response`.
+The `netbrain_agent` node in [graph_nodes.py](../../graph_nodes.py) forwards the raw user query as an A2A HTTP POST to the NetBrain agent running on port 8004.
 
-```
-classify_intent (intent="netbrain")
-    │
-    ▼
-netbrain_agent node   ←── graph_nodes.py: A2A POST to localhost:8004
-    │
-    ▼
-NetBrain agent (port 8004)
-    │   agent_loop.py (tool-calling loop, up to 5 iterations)
-    │   SystemMessage: skills/netbrain_agent.md
-    │
-    ├── tool_call: netbrain_query_path  ──► MCP Server → NetBrain API
-    │
-    └── tool_call: ask_panorama_agent  ──► A2A POST localhost:8003
-                                            │
-                                            ▼
-                                        Panorama agent (port 8003)
-                                            agent_loop.py (tool-calling loop)
-                                            SystemMessage: skills/panorama_agent.md
-                                            → zones + device group
-    ↓
-AIMessage: path summary with enriched firewall hops
-    ↓
-build_final_response → DirectAnswerBadge.jsx
-```
+---
 
-### netbrain_agent node
+### Step 3: NetBrain agent runs its tool-calling loop
 
-**File:** [`graph_nodes.py`](../../graph_nodes.py) — `netbrain_agent(state)`
+**File:** [agents/netbrain_agent.py](../../agents/netbrain_agent.py)
 
-Unlike `risk_orchestrator`, this node does **not** pre-process the prompt. It forwards the raw user prompt verbatim as an A2A task to the NetBrain agent at port 8004. The NetBrain agent's own LLM interprets the query.
+The NetBrain agent receives the task and starts a tool-calling loop. Its system prompt (`skills/netbrain_agent.md`) gives it path query knowledge and instructs it to call the Panorama agent whenever it encounters a Palo Alto firewall hop.
 
-```python
-async def netbrain_agent(state: AtlasState) -> dict:
-    task = {"id": ..., "message": {"role": "user", "parts": [{"type": "text", "text": state["prompt"]}]}}
-    response = await client.post("http://localhost:8004", json=task)
-    # extract text from artifacts, return as direct_answer
-```
+The loop runs up to 5 iterations:
 
-### NetBrain agent internals
+1. **LLM calls `netbrain_query_path`** — traces the hop-by-hop path between the two IPs via the NetBrain API.
 
-**File:** [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) — FastAPI, port 8004
+   Result: path with 3 hops — `SW-CORE-01`, `PA-FW-LEANDER` (a firewall), `SW-EDGE-02`.
 
-The NetBrain agent receives the task and runs the shared tool-calling loop.
+2. **LLM calls `ask_panorama_agent`** — because `PA-FW-LEANDER` is a Palo Alto firewall, the LLM sends a task to the Panorama agent asking for its zones and device group.
 
-**Skill:** `skills/netbrain_agent.md` is loaded as the system prompt via `_load_skill()`. It covers path query concepts and — critically — instructs the LLM *when* to call `ask_panorama_agent`: whenever a hop in the path is identified as a Palo Alto firewall, the LLM should ask the Panorama agent for its zones and device group. This cross-agent delegation logic lives in the skill, not in code.
+---
 
-**Agent loop** with 3 tools bound:
+### Step 4: Panorama agent handles the enrichment request
 
-| Tool | Transport | Purpose |
-|---|---|---|
-| `netbrain_query_path` | MCP | Trace hop-by-hop path between two IPs |
-| `netbrain_check_allowed` | MCP | Check if traffic is allowed/denied on the path |
-| `ask_panorama_agent` | A2A (HTTP POST to port 8003) | Enrich a firewall hop with zones and device group |
+**File:** [agents/panorama_agent.py](../../agents/panorama_agent.py)
 
-**Full tool-calling loop example:**
+The Panorama agent receives the A2A request on port 8003 and runs its own independent tool-calling loop with `skills/panorama_agent.md` as the system prompt. It calls its Panorama MCP tools to look up the firewall's zones and device group, then returns a natural language summary:
 
 ```
-SystemMessage: skills/netbrain_agent.md   ← path concepts + when to call Panorama
-HumanMessage:  "Find path from 10.0.0.1 to 10.0.1.1"
-    ↓
-LLM → tool_call: netbrain_query_path(source="10.0.0.1", destination="10.0.1.1")
-    ↓
-ToolMessage: {"path_hops": [
-    {"device": "SW-CORE-01", "is_firewall": false},
-    {"device": "PA-FW-LEANDER", "is_firewall": true, "interfaces": ["Ethernet1/1", "Ethernet1/2"]},
-    {"device": "SW-EDGE-02", "is_firewall": false}
-]}
-    ↓
-LLM → tool_call: ask_panorama_agent(
-    "Get security zones for PA-FW-LEANDER interfaces Ethernet1/1, Ethernet1/2 and its device group."
-)
-    ↓  (A2A HTTP POST → Panorama agent runs its own agent_loop with skills/panorama_agent.md)
-ToolMessage: "PA-FW-LEANDER is in device group leander.
-              Ethernet1/1: trust zone, Ethernet1/2: untrust zone."
-    ↓
-LLM → AIMessage: "Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops:
-    1. SW-CORE-01
-    2. PA-FW-LEANDER (device group: leander, Ethernet1/1→trust, Ethernet1/2→untrust)
-    3. SW-EDGE-02"
-    (no more tool_calls → loop ends)
+"PA-FW-LEANDER is in device group leander.
+ Ethernet1/1: trust zone, Ethernet1/2: untrust zone."
 ```
 
-**`ask_panorama_agent` in detail:** This tool is implemented directly in `netbrain_agent.py`. It sends an A2A HTTP POST to port 8003, waits for the Panorama agent's `agent_loop` to complete, and returns the natural language answer as a `ToolMessage`. The Panorama agent runs its full tool-calling loop (`skills/panorama_agent.md` + Panorama tools) independently — the NetBrain agent has no visibility into that inner loop, it only receives the final text.
+The NetBrain agent has no visibility into this inner loop — it only receives the final text.
 
-This is **nested agent-to-agent reasoning**: the NetBrain LLM decides when enrichment is needed, constructs the task text, and integrates the result into its own reasoning chain.
+---
 
-### Response flow
+### Step 5: NetBrain agent produces the final answer
 
-NetBrain agent returns text in A2A artifact format → `netbrain_agent` node extracts text, returns `{"final_response": {"role": "assistant", "content": {"direct_answer": text}}}` → LangGraph routes to `build_final_response` → `DirectAnswerBadge.jsx` renders the path summary.
+With the Panorama enrichment returned as a tool result, the LLM has everything it needs and produces a final answer — no more tool calls:
+
+```
+Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops:
+1. SW-CORE-01
+2. PA-FW-LEANDER (device group: leander, Ethernet1/1→trust, Ethernet1/2→untrust)
+3. SW-EDGE-02
+```
+
+---
+
+### Step 6: Response rendered in the UI
+
+The NetBrain agent's answer is returned to Atlas as an A2A artifact. Atlas extracts the text and passes it back to the frontend as a `direct_answer`, rendered as a highlighted response using ReactMarkdown.
+
+---
+
+### Risk intent — how it differs
+
+For `risk` queries, the orchestrator ([agents/orchestrator.py](../../agents/orchestrator.py)) fans out to **two agents in parallel** — Panorama (port 8003) and Splunk (port 8002) — using `asyncio.gather`. Each runs its own independent tool-calling loop. Once both return, a third LLM call (with `skills/risk_synthesis.md` as the system prompt and no tools) synthesizes the two summaries into a structured risk assessment with a Verdict, Panorama findings, Splunk findings, and a Recommendation.
 
 ---
 

@@ -11,7 +11,10 @@
       "Bash(git branch -D feature/Agent-health-dashboard)",
       "Bash(unzip -l /Users/manig/Downloads/a2a_changes.zip)",
       "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/panorama_tools.py)",
-      "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/shared.py mcp_client.py)"
+      "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/shared.py mcp_client.py)",
+      "Bash(while read hash msg)",
+      "Bash(do git show $hash -- tools/panorama_tools.py)",
+      "Bash(done)"
     ]
   }
 }
