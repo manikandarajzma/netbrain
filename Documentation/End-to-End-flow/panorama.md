@@ -94,7 +94,9 @@ async def query_panorama_ip_object_group(ip_address: str, ...) -> Dict[str, Any]
     """
 ```
 
-The LLM is then given the user's query along with all the tool descriptions and asked to pick the right one. It responds with a tool name and the arguments to call it with — for example, `query_panorama_ip_object_group` with `ip_address = "11.0.0.1"`.
+Before invoking the LLM, a system prompt is assembled from skill files. `base.md` is always included. For queries containing Panorama keywords (e.g. "group", "address", "members"), `panorama_agent.md` is appended — it gives the LLM background knowledge about Panorama concepts like address objects, address groups, and device groups. This helps the LLM understand the query and pick the right tool. The skills have no effect on tool execution itself.
+
+The LLM is then given the user's query, the system prompt, and all the tool descriptions, and asked to pick the right tool. It responds with a tool name and the arguments to call it with — for example, `query_panorama_ip_object_group` with `ip_address = "11.0.0.1"`.
 
 Before the tool is called, the user's role is checked. If their role doesn't permit that tool, an error is returned immediately and nothing is executed.
 
