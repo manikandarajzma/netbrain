@@ -66,11 +66,13 @@ On every request, FastAPI reads the `atlas_session` cookie and verifies it. The 
 
 If the cookie is valid, the user's identity and role are decoded from it. The role controls which tools they can call — this is checked later in Step 5. There is no server-side session store; everything is encoded in the cookie itself.
 
+Once the session is confirmed valid, FastAPI passes the request to the appropriate route handler.
+
 ---
 
 ## Step 4: FastAPI Routes to chat_service
 
-Both `/api/discover` and `/api/chat` hand off to the same `process_message()` function in `chat_service.py`. The only difference is that `/api/discover` stops after tool selection (for the loading indicator), while `/api/chat` runs the full pipeline including tool execution.
+Both `/api/discover` and `/api/chat` go through the same session check, then hand off to the same `process_message()` function in `chat_service.py`. The only difference is that `/api/discover` stops after tool selection (used to update the loading indicator), while `/api/chat` runs the full pipeline — tool execution, result formatting, and response.
 
 ---
 
