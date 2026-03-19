@@ -149,28 +149,15 @@ The tool runs inside the MCP server. For `query_panorama_ip_object_group`, it do
 
 ## Step 8: Result Normalization (chat_service.py)
 
-**File:** [chat_service.py](../../chat_service.py) → `_normalize_result()`
+The raw result from the tool is a structured JSON object — useful for the frontend to render tables, but not something that can be shown directly to the user as a readable answer. Normalization adds a `direct_answer` field: a single plain-English sentence summarising the result.
 
-For `query_panorama_ip_object_group`, normalization generates a human-readable `direct_answer`:
+For example, after a `query_panorama_ip_object_group` call, the normalizer produces:
 
-```python
-if tool_name == "query_panorama_ip_object_group" and result.get("address_groups"):
-    group_names = [ag.get("name") for ag in address_groups]
-    # → ["web-servers"]
-    direct_answer = "11.0.0.1 is part of address group 'web-servers'"
-    # If resolved via address objects:
-    direct_answer += " (via web-server-01)"
-    result["direct_answer"] = direct_answer
+```
+"11.0.0.1 is part of address group 'web-servers' (via web-server-01)"
 ```
 
-For `query_panorama_address_group_members`:
-
-```python
-if tool_name == "query_panorama_address_group_members":
-    count = len(members)
-    direct_answer = f"Address group 'web-servers' contains {count} members"
-    result["direct_answer"] = direct_answer
-```
+This is what appears as the highlighted answer badge in the UI above the data tables.
 
 ---
 
