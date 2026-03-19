@@ -346,45 +346,19 @@ For full detail on the OIDC login flow and token handling see [auth-rbac.md](../
 ## Step 1: User Types a Query (Frontend)
 
 **File:** [frontend/src/components/chat/ChatInput.jsx](../../frontend/src/components/chat/ChatInput.jsx)
-**Store:** [frontend/src/stores/chatStore.js](../../frontend/src/stores/chatStore.js)
+**File:** [frontend/src/stores/chatStore.js](../../frontend/src/stores/chatStore.js)
 
-### ChatInput.jsx — the input box
-
-`ChatInput.jsx` is the React component that renders the text box, file upload button, and send/stop button. It has no query logic of its own. When the user presses Enter:
-
-```js
-const text = inputText.trim()
-setInputText('')        // clears the input box
-await sendMessage(text) // hands off to the store
-```
-
-### chatStore.js — the frontend brain
-
-`chatStore.js` is a [Zustand](https://github.com/pmndrs/zustand) store — a global state container shared across all React components. It holds all frontend state (`messages`, `isLoading`, `currentStatus`, `abortController`, `conversationHistory`) and all actions (`sendMessage`, `stopGeneration`, etc.).
-
-Any component can subscribe to it: `useChatStore(s => s.sendMessage)`. The component re-renders only when that specific slice of state changes.
-
-### What sendMessage does
-
-The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. `chatStore.sendMessage(text)` runs:
-
-1. **Disambiguation check** — inspects the last assistant message in `conversationHistory` for `requires_site: true` and a `rack` field. This was a NetBox rack-lookup feature that is no longer active. No active tool returns these fields, so `textToSend` is always the original text unchanged.
-
-2. **UI state** — `isLoading: true`, `currentStatus: 'Identifying query'`. This renders the loading indicator and switches the send button to a stop button.
-
-3. **History is intentionally empty** — `historySlice = []`. Each query is stateless; prior conversation context is not sent to the LLM to prevent responses from previous exchanges polluting unrelated queries.
-
-`textToSend` is a local variable holding the user's message string — `"What address group is 11.0.0.1 part of?"` in this case. It becomes the `"message"` field in the JSON body of every outgoing request:
+The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. The input box clears and two HTTP requests fire simultaneously — `/api/discover` and `/api/chat` — both carrying the same body:
 
 ```json
 { "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
 ```
 
-This exact body is sent to both `/api/discover` (Step 2) and `/api/chat` (Step 6). `historySlice` becomes `"conversation_history"` — always `[]` since history is disabled.
+`conversation_history` is always empty — each query is stateless. Prior conversation context is not sent to the LLM to prevent earlier exchanges from polluting unrelated queries.
 
 ---
 
-## Step 2: Tool Pre-selection (Frontend → FastAPI)
+## Step 2: Tool Pre-selection (`/api/discover`)
 
 **File:** [frontend/src/utils/api.js](../../frontend/src/utils/api.js) → `discoverTool()`
 
@@ -396,15 +370,17 @@ Cookie: atlas_session=<signed-cookie>
 { "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
 ```
 
-- The `atlas_session` cookie is sent automatically by the browser — it identifies who is making the request and drives RBAC. See [FAQ](#faq).
-- An `AbortController` is created per message send; its `signal` is shared by both `/api/discover` and `/api/chat`. The stop button calls `ctrl.abort()` to cancel both in-flight requests. See [FAQ](#faq).
-- On 401, the browser is immediately redirected to `/login`. The 401 is sent by FastAPI when the `atlas_session` cookie is missing, expired, or invalid — it can come from either `/api/discover` or `/api/chat`. In practice it most commonly occurs on `/api/discover` (which fires first) when the 30-minute session has expired during idle time. See [FAQ: What happens on a 401 response?](#what-happens-on-a-401-response).
+`/api/discover` exists purely for UI feedback. It runs a full LLM call to identify which tool will be used and returns quickly — before any backend system is contacted:
 
-> **What `/api/discover` actually does:** Despite the name, this is not MCP tool list discovery. It invokes `process_message(..., discover_only=True)` in `chat_service.py`, which runs a full LLM call — the LLM selects the appropriate tool and extracts arguments from the prompt — but stops before executing the tool. The response is `{ tool_name, parameters, tool_display_name, intent }`. No backend system (Panorama) is contacted at this point.
->
-> The sole purpose is **UI feedback**. The calls are sequential: `/api/discover` is awaited first → `tool_display_name: "Panorama"` is returned → `currentStatus` updates to `"Querying Panorama"` → only then does `/api/chat` fire to actually execute the query. If `/api/discover` fails, `currentStatus` falls back to `"Processing"` but `/api/chat` still runs.
->
-> The cost of this UX feature is **one full redundant LLM call per query** — the tool selection that `/api/discover` performs is repeated from scratch by `/api/chat`.
+```json
+{ "tool_name": "query_panorama_ip_object_group", "tool_display_name": "Panorama", "intent": "network" }
+```
+
+The UI uses `tool_display_name` to update the loading indicator from `"Identifying query"` to `"Querying Panorama"`. If this call fails, the label falls back to `"Processing"` — `/api/chat` continues regardless.
+
+> **Note:** The tool selection `/api/discover` performs is repeated from scratch by `/api/chat`. This is intentional — discover is fire-and-forget for UX only. The cost is one redundant LLM call per query.
+
+The `atlas_session` cookie is sent automatically by the browser on every request. It identifies the user and drives RBAC. If it is missing or expired, FastAPI returns a `401` and the browser redirects to `/login`. See [FAQ](#faq).
 
 ---
 

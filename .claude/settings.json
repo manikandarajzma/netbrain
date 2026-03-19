@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(find:*)",
-      "Bash(sort:*)"
+      "Bash(sort:*)",
+      "Bash(git restore agents/orchestrator.py frontend/src/components/chat/ChatMessages.jsx frontend/src/stores/chatStore.js frontend/src/utils/api.js status_bus.py)",
+      "Bash(grep -n \"health\\\\|/health\" agents/*.py app.py)",
+      "Bash(git restore app.py frontend/src/components/layout/AppSidebar.jsx)",
+      "Bash(git checkout main)",
+      "Bash(git branch -d feature/Agent-health-dashboard)",
+      "Bash(git branch -D feature/Agent-health-dashboard)",
+      "Bash(unzip -l /Users/manig/Downloads/a2a_changes.zip)",
+      "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/panorama_tools.py)",
+      "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/shared.py mcp_client.py)"
     ]
   }
 }
