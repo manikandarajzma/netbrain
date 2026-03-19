@@ -7,45 +7,6 @@ This document traces the complete lifecycle of a Panorama query through Atlas, f
 
 ---
 
-## Architecture Overview
-
-Atlas uses **LangGraph** to route queries through a graph of nodes. The path a Panorama query takes depends on intent classification:
-
-```
-Browser (React + Zustand)
-    │  POST /api/discover  (tool pre-selection, UX only)
-    │  POST /api/chat      (full query)
-    ▼
-FastAPI (app.py)
-    │  Session cookie validation (auth.py)
-    │  RBAC check (auth.py)
-    ▼
-chat_service.py → atlas_graph (LangGraph)
-    │
-    ├── intent: "network"  ──────────────────────────────────────────────┐
-    │   (e.g. "what group is 11.0.0.1 in?")                             │
-    │   fetch_mcp_tools → tool_selector → check_rbac → tool_executor    │
-    │       └── MCP Server → panorama_tools.py → Panorama API           │
-    │                                                                    ▼
-    ├── intent: "risk"                                        build_final_response
-    │   (e.g. "is 11.0.0.1 suspicious?")                         │
-    │   risk_orchestrator                                         ▼
-    │       ├── Panorama agent (port 8003)                  FastAPI → JSON → React
-    │       │       └── agent_loop.py (tool-calling loop)
-    │       │           └── panorama_tools via MCP
-    │       └── Splunk agent (port 8002)
-    │               └── agent_loop.py (tool-calling loop)
-    │                   └── splunk_tools via MCP
-    │       └── Ollama synthesis (risk_synthesis.md skill)
-    │
-    └── intent: "netbrain"
-        (e.g. "find path from 10.0.0.1 to 10.0.1.1")
-        netbrain_agent (port 8004)
-            └── agent_loop.py (tool-calling loop)
-                ├── netbrain_query_path (MCP)
-                └── ask_panorama_agent (A2A → port 8003)
-```
-
 ---
 
 ## Intent Classification
