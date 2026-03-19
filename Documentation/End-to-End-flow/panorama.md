@@ -175,13 +175,7 @@ The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. Th
 
 ## Step 2: Tool Pre-selection (`/api/discover`)
 
-`/api/discover` exists purely for UI feedback. While `/api/chat` does the real work, `/api/discover` fires simultaneously and asks the LLM which tool it would use for this query. The response looks like:
-
-```json
-{ "tool_name": "query_panorama_ip_object_group", "tool_display_name": "Panorama", "intent": "network" }
-```
-
-The UI uses `tool_display_name` to update the loading indicator from `"Identifying query..."` to `"Querying Panorama"`. If this call fails, the label falls back to `"Processing"` — `/api/chat` continues regardless.
+`/api/discover` exists purely for UI feedback. While `/api/chat` does the real work, `/api/discover` fires simultaneously and asks the LLM which tool it would use for this query. The result is used to update the loading indicator — e.g. from `"Identifying query..."` to `"Querying Panorama"`. If this call fails, the label falls back to `"Processing"` — `/api/chat` continues regardless.
 
 The tool selection is repeated from scratch by `/api/chat`. This is intentional — discover is fire-and-forget for UX only.
 
@@ -474,7 +468,6 @@ if discover_only:
     return {
         "tool_name": "query_panorama_ip_object_group",
         "parameters": {"ip_address": "11.0.0.1"},
-        "tool_display_name": "Panorama",
         "format": "table",
     }
 ```
@@ -1214,7 +1207,7 @@ User          Browser           FastAPI          chat_service       MCP Server  
  │              │                  │                   │◄────────────────│                 │              │
  │              │                  │                   │ LLM: select tool│                 │              │
  │              │                  │                   │ (llama3.1:8b)   │                 │              │
- │              │                  │◄─ tool_display_name─│               │                 │              │
+ │              │                  │◄─ tool selected ───│               │                 │              │
  │              │◄─ {tool: "Panorama"}│                 │                │                 │              │
  │              │ POST /api/chat   │                   │                 │                │              │
  │              │─────────────────►│                   │                 │                │              │
