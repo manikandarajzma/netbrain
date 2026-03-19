@@ -66,7 +66,7 @@ On every request, FastAPI reads the `atlas_session` cookie and verifies it. The 
 
 If the cookie is valid, the user's identity and role are decoded from it. The role controls which tools they can call — this is checked later in Step 5. There is no server-side session store; everything is encoded in the cookie itself.
 
-Once the session is confirmed valid, FastAPI passes the request to the appropriate route handler.
+Once the session is confirmed valid, FastAPI proceeds — either the `/api/discover` handler or the `/api/chat` handler, depending on which of the two requests the browser sent simultaneously in Step 1.
 
 ---
 
