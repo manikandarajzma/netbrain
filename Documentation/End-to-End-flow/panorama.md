@@ -70,65 +70,7 @@ If the cookie is valid, the user's identity and role are decoded from it. The ro
 
 ## Step 4: FastAPI Routes to chat_service
 
-**File:** [app.py](../../app.py)
-
-There are two routes involved — one per request sent by the frontend.
-
-### `/api/discover` route
-
-```python
-@app.post("/api/discover")
-async def api_discover(request: Request, body: ChatRequest):
-    username = get_current_username(request)   # reads + verifies the session cookie
-    if not username:
-        return response_401_clear_session(request)
-    result = await process_message(
-        body.message.strip(),                  # "What address group is 11.0.0.1 part of?"
-        body.conversation_history or [],       # prior messages from the current conversation
-        discover_only=True,                    # tells process_message to stop after tool selection
-        username=username,                     # for conversation history persistence
-        session_id=get_session_id(request),   # raw cookie value — needed for RBAC group lookup
-    )
-    return result
-```
-
-### `/api/chat` route
-
-```python
-@app.post("/api/chat")
-async def api_chat(request: Request, body: ChatRequest):
-    username = get_current_username(request)
-    if not username:
-        return response_401_clear_session(request)
-    result = await process_message(
-        body.message.strip(),
-        body.conversation_history or [],
-        discover_only=False,                   # default — runs the full pipeline including tool execution
-        username=username,
-        session_id=get_session_id(request),
-    )
-    return result
-```
-
-The two routes are identical except for `discover_only`. Both call the same `process_message()` function in `chat_service.py`.
-
-### Why session_id is passed separately from username
-
-`username` is extracted from the cookie and passed to `process_message()` for two purposes: **conversation history persistence** (conversations are stored on disk keyed by username — `create_conversation(APP_DIR, username, ...)`, `append_to_conversation(APP_DIR, username, ...)`) and as a **fallback identifier** for `_check_tool_access()` if `session_id` is unavailable. `session_id` is the raw cookie string — it's passed separately so `chat_service.py` can call `get_group_for_session(session_id)` to look up the user's group for RBAC enforcement. The group is not stored in the username; it lives in the session payload.
-
-### Request body validation — ChatRequest
-
-FastAPI automatically deserializes and validates the JSON body using the `ChatRequest` Pydantic model before the route function runs:
-
-```python
-class ChatRequest(BaseModel):
-    message: str                                    # required — the user's query text
-    conversation_history: list[dict[str, Any]] = [] # optional — prior messages from the current conversation
-    conversation_id: str | None = None              # optional — used for history persistence
-    parent_conversation_id: str | None = None       # optional — links follow-up conversations
-```
-
-If `message` is missing or not a string, FastAPI returns `422 Unprocessable Entity` before the route function is even called. `body.message.strip()` removes leading/trailing whitespace before passing to `process_message()`.
+Both `/api/discover` and `/api/chat` hand off to the same `process_message()` function in `chat_service.py`. The only difference is that `/api/discover` stops after tool selection (for the loading indicator), while `/api/chat` runs the full pipeline including tool execution.
 
 ---
 
