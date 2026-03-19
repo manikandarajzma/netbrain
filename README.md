@@ -91,6 +91,35 @@ atlas/
 
 ---
 
+## Key Components
+
+### Backend
+
+| Component | What it is | How Atlas uses it |
+|-----------|-----------|-------------------|
+| **FastAPI** | Python web framework | Serves the chat API (`/api/chat`, `/api/discover`), handles authentication, and manages session cookies |
+| **LangGraph** | Graph-based orchestration framework from LangChain | Defines the query routing pipeline as a graph of nodes — intent classification → tool selection → tool execution → response |
+| **LangChain** | LLM abstraction layer | Provides `ChatOllama`, `bind_tools()`, and message types (`HumanMessage`, `SystemMessage`, etc.) used when invoking the LLM |
+| **Ollama** | Local LLM runtime | Runs the language model (llama3.1:8b by default) locally — no external API calls |
+| **MCP (Model Context Protocol)** | Protocol for exposing tools to LLMs | Atlas tools (Panorama, NetBrain, Splunk) are registered as MCP tools. The LLM selects a tool by name; the MCP client executes it |
+| **FastMCP** | Python library for building MCP servers | Used to define and serve the MCP tools in `mcp_server.py` with minimal boilerplate |
+| **A2A (Agent-to-Agent)** | Pattern where one agent calls another over HTTP | The NetBrain agent calls the Panorama agent mid-reasoning to enrich firewall hops. Each agent is a standalone FastAPI service that receives a task, runs its own LLM tool-calling loop, and returns a natural language answer |
+| **Authlib** | OIDC/OAuth2 library | Handles the Microsoft Entra ID login flow — redirects to Azure, exchanges the auth code for tokens, extracts user identity |
+| **itsdangerous** | Cryptographic signing library | Signs and verifies the session cookie (`atlas_session`) — encodes user identity and role into a tamper-proof, time-limited cookie |
+| **Azure Key Vault** | Cloud secrets store | Stores Panorama and NetBrain credentials. Retrieved at runtime via `azure-identity` using the VM's managed identity — no secrets in `.env` |
+| **aiohttp** | Async HTTP client | Used by the Panorama and NetBrain tool implementations to make concurrent API calls |
+
+### Frontend
+
+| Component | What it is | How Atlas uses it |
+|-----------|-----------|-------------------|
+| **React 18** | UI framework | Renders the chat interface, message history, and data tables |
+| **Vite** | Frontend build tool | Bundles and builds the React app; proxies API requests to FastAPI during development |
+| **Zustand** | Lightweight state management | Manages global state — active conversation, message history, loading status, user info |
+| **react-markdown + remark-gfm** | Markdown renderer | Renders LLM responses that contain markdown formatting and tables (used for A2A path and risk results) |
+
+---
+
 ## Prerequisites
 
 | Requirement | Purpose |
