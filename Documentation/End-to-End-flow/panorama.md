@@ -136,117 +136,25 @@ The steps below trace the full lifecycle of a direct Panorama query — "What ad
 
 **File:** [app.py](../../app.py), [auth.py](../../auth.py)
 
-Before a user can type any query, they must be authenticated. This happens once per session — not on every query.
+Authentication happens once per session — not on every query. Here's the full flow:
 
-### 1. User visits Atlas — no session cookie
+1. **User visits Atlas with no session** — they get redirected to `/login`.
 
-The user opens Atlas in the browser. FastAPI checks every incoming request for a valid `atlas_session` cookie. If none exists (first visit, or cookie expired), the request is rejected with a `302` redirect to `/login`.
+2. **User clicks "Sign in with Microsoft"** — the browser is sent to Azure's login page. Atlas is not involved in credential checking.
 
-### 2. User clicks "Sign in with Microsoft" → `GET /auth/microsoft`
+3. **User authenticates on Azure** — enters password, completes MFA. Azure handles all of this.
 
-The login page renders a link:
+4. **Azure redirects back to Atlas** — with a short-lived, single-use code in the URL that proves login succeeded.
 
-The user clicks "Sign in with Microsoft" on the login page. The browser hits `GET /auth/microsoft` ([app.py](../../app.py)), which builds a redirect URL to Azure's login page and sends the browser there. Atlas is not involved in credential checking — that all happens on Azure's side.
+5. **Atlas exchanges the code for user info** — the server (not the browser) contacts Azure directly to swap the code for the user's identity: name, email, and which AD groups they belong to. This never touches the browser — the user's credentials are never exposed.
 
-Atlas generates a random `state` value and stores it temporarily. Azure will echo it back in the callback so Atlas can verify the response wasn't forged by a third party. See [FAQ: What is the state parameter / CSRF token?](#what-is-the-state-parameter--csrf-token).
+6. **Atlas resolves the role** — the user's AD group is matched against the known roles (`admin`, `netadmin`, `guest`). If no match, login is rejected.
 
-### 3. User authenticates on Azure's login page
+7. **A signed session cookie is set** — Atlas signs `{ username, group }` into a tamper-proof cookie (`atlas_session`) and sends it to the browser. The cookie expires after 30 minutes, is invisible to JavaScript, and is sent automatically on every subsequent request.
 
-The browser is now on Azure's login page (`login.microsoftonline.com`). The user enters their credentials and completes MFA if required. Atlas is not involved at this point.
+8. **User lands on Atlas** — authenticated. Every request to `/api/discover` and `/api/chat` now carries this cookie automatically.
 
-### 4. Azure redirects the browser back to Atlas
-
-After successful authentication, Azure redirects the browser to the `redirect_uri` that was included in the authorization URL:
-
-```
-GET http://localhost:8000/auth/callback?code=<auth-code>&state=<csrf-token>
-```
-
-`code` is a short-lived, single-use authorization code — not a token. It proves authentication succeeded but cannot be used to access anything on its own. It expires in seconds and is useless without the app's `client_secret`.
-
-### 5. Atlas exchanges the code for tokens → `GET /auth/callback`
-
-The browser hits Atlas's callback route ([app.py:178](../../app.py#L178)):
-
-```python
-# app.py:178-200
-@app.get("/auth/callback")
-async def auth_callback(request: Request):
-    ...
-    try:
-        token = await oauth.microsoft.authorize_access_token(request)
-    except Exception as exc:
-        print(f"OIDC token error: {exc}", flush=True)
-        return RedirectResponse(url="/login?error=oidc", status_code=302)
-```
-
-`authorize_access_token()` is a single authlib call that does two things internally:
-
-1. **CSRF check** — reads `state` from the callback URL query params and compares it to the value stored in the Starlette session cookie from step 2. Raises an exception if they don't match.
-2. **Token exchange** — makes a server-to-server POST to Azure's token endpoint:
-
-```
-POST https://login.microsoftonline.com/{tenant_id}/v2.0/token
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=authorization_code
-&code=<auth-code-from-url>
-&redirect_uri=http://localhost:8000/auth/callback
-&client_id=<AZURE_CLIENT_ID>
-&client_secret=<AZURE_CLIENT_SECRET>
-```
-
-This exchange never goes through the browser — the tokens never appear in the URL bar, history, or logs. Azure verifies the code and secret, then returns `id_token`, `access_token`, and `refresh_token` as a JSON response which authlib parses into `token`.
-
-This two-step design — code in the URL, tokens exchanged privately — is the core security property of the **OAuth 2.0 Authorization Code Flow**.
-
-### 6. Atlas decodes the `id_token` JWT to extract user claims
-
-```python
-id_token = token.get("id_token")
-payload = id_token.split(".")[1]
-payload += "=" * (4 - len(payload) % 4)   # restore base64 padding
-userinfo = json.loads(base64.urlsafe_b64decode(payload))
-```
-
-A JWT has three segments separated by `.` — header, payload, signature — each base64url-encoded. Atlas splits on `.`, takes the middle segment (the payload), restores the padding that JWT omits, and decodes it to a JSON dict. The signature was already verified by `authorize_access_token()`, so Atlas only needs the claims dict.
-
-The `groups` claim is extracted from this dict — it contains the Azure AD group Object IDs the user belongs to. Microsoft does not include group memberships in the `/userinfo` endpoint, which is why Atlas decodes the `id_token` directly rather than using authlib's built-in userinfo fetch.
-
-### 7. Role resolution
-
-```python
-group = extract_group_from_token(userinfo)
-if group is None:
-    return RedirectResponse(url="/login?error=norole", status_code=302)
-```
-
-`extract_group_from_token()` in [auth.py](../../auth.py) matches the group GUIDs from the `groups` claim against `ROLE_ALLOWED_TOOLS` — a dict mapping known group IDs to roles. If the user is not in any recognised group, login is rejected with `?error=norole`.
-
-### 8. Signed session cookie is created and set
-
-```python
-session_id = create_session(username, group=group, auth_mode="oidc", tokens={...})
-
-r = RedirectResponse(url="/", status_code=302)
-r.set_cookie(key="atlas_session", value=session_id, max_age=1800, httponly=True, samesite="lax")
-return r
-```
-
-`create_session()` uses `itsdangerous.URLSafeTimedSerializer` to sign `{username, group, auth_mode, tokens}` into a tamper-proof string using `SESSION_SECRET` from `.env`. The cookie is:
-
-- `HttpOnly` — the browser refuses to expose this cookie to JavaScript (`document.cookie` returns nothing for it). Even if an attacker injects a `<script>` tag via XSS, they cannot read or exfiltrate the session token. The cookie travels only in HTTP headers, which your JS code never sees.
-- `SameSite=Lax` — controls when the browser attaches the cookie to cross-site requests:
-  - **Sent** on top-level navigations initiated by the user (e.g. clicking a link to Atlas from another site) — needed so the OIDC redirect back from Azure still carries the session.
-  - **Blocked** on cross-site subrequests (e.g. an `<img>`, `<form>`, or `fetch()` embedded in a third-party page trying to silently hit `/api/chat` on your behalf). This stops CSRF: a malicious page cannot trigger authenticated Atlas API calls just because your browser holds the cookie.
-  - `SameSite=Strict` would be even tighter (block even top-level cross-site navigations) but would break the Azure OIDC redirect flow.
-- `max_age=1800` — 30-minute TTL baked into the signature; `loads()` rejects it after expiry
-
-### 9. Browser is redirected to `/` — user is now authenticated
-
-The browser follows the `302` to `/`, now carrying the `atlas_session` cookie. From this point on, every request to `/api/discover` and `/api/chat` includes the cookie automatically — the per-request validation is described in [Step 3](#step-3-session--rbac-check-fastapi).
-
-For full detail on the OIDC login flow and token handling see [auth-rbac.md](../Security/auth-rbac.md).
+For full detail see [auth-rbac.md](../Security/auth-rbac.md).
 
 ---
 
