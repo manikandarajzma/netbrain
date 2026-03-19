@@ -123,183 +123,23 @@ The MCP client sends a JSON-RPC `tools/call` message over the streamable-http tr
 
 **File:** [tools/panorama_tools.py](../../tools/panorama_tools.py)
 
-### Panorama API key retrieval (panoramaauth.py)
+The tool runs inside the MCP server. For `query_panorama_ip_object_group`, it does the following:
 
-**File:** [panoramaauth.py](../../panoramaauth.py)
+1. **Gets an API key** — fetches fresh credentials from Azure Key Vault and exchanges them for a Panorama API key via the Panorama keygen endpoint. No caching — a fresh key is used on every call.
 
-```python
-api_key = await panoramaauth.get_api_key()
-```
+2. **Finds all device groups** — queries Panorama for the list of device groups to search across (plus shared objects). Results are cached for 5 minutes to avoid unnecessary API calls.
 
-`get_api_key()` always requests a fresh key — no caching. On every call it:
+3. **Finds address objects containing the IP** — for each device group, fetches all address objects and checks if `11.0.0.1` falls within any of them (exact match, CIDR range, or IP range). These fetches run in parallel.
 
-1. Loads `PANORAMA_USERNAME` and `PANORAMA_PASSWORD` exclusively from **Azure Key Vault** using `DefaultAzureCredential`:
-   ```python
-   from azure.identity import DefaultAzureCredential
-   from azure.keyvault.secrets import SecretClient
-   _client = SecretClient(vault_url=AZURE_KEYVAULT_URL, credential=_cred)
-   PANORAMA_USERNAME = _client.get_secret("PANORAMA-USERNAME").value
-   PANORAMA_PASSWORD = _client.get_secret("PANORAMA-PASSWORD").value
-   ```
-   If `AZURE_KEYVAULT_URL` is not set, credentials are unavailable and authentication fails.
+4. **Finds address groups containing those objects** — for each matching address object, checks which address groups reference it (including nested groups resolved recursively).
 
-2. Calls the Panorama XML API keygen endpoint:
-   ```
-   GET https://192.168.15.247/api/?type=keygen&user=<user>&password=<encoded>
-   ```
-   SSL certificate verification is disabled (`ssl.CERT_NONE`) because Panorama uses a self-signed certificate.
-   > **Production note:** `PANORAMA_VERIFY_SSL=false` should be validated before production deployment. If Panorama has a valid CA-signed certificate, remove the SSL bypass (`ssl.CERT_NONE` / `check_hostname=False`) in `panoramaauth.py` and set `PANORAMA_VERIFY_SSL=true` in `.env`.
-
-3. Parses the XML response:
-   ```xml
-   <response status="success"><result><key>LUFRPT14...</key></result></response>
-   ```
-   Extracts the key from the XML and returns it directly — no caching.
-
----
-
-### Caching and parallel processing
-
-To avoid hammering the Panorama appliance on every query, the toolbox includes two layers of caching plus concurrent fetches.
-
-#### Device‑group / address‑object cache
-`panorama_tools._get_address_objects_cached()` and `_get_address_groups_for_location()` each maintain an in‑memory cache keyed by location (e.g. `"device-group:my-dg"` or `"shared"`).
-
-```python
-now = _time.monotonic()
-cached = _addr_obj_cache.get(key)
-if cached and (now - cached[1]) < _CACHE_TTL:
-    logger.debug("Address objects: cache hit for %s (%d objects)", key, len(cached[0]))
-    return cached[0]
-# fetch from Panorama and on success store:
-_addr_obj_cache[key] = (objects, now)
-```
-
-- TTL is five minutes (`_CACHE_TTL`).
-- After a cache miss the first query pays the HTTP cost; subsequent requests serve the cached value until expiry.
-- If Panorama credentials expire the code clears both the API key cache and the location cache to force a re‑auth on the next request.
-- Cache entries do **not** auto‑refresh; they only update when a fetch is performed. Manual invalidation requires restarting the MCP server.
-
-Log messages at DEBUG level indicate hits/misses and object counts:
-```
-Device groups: cache hit (2 groups)
-Address objects: fetched 6001 from device-group:my-dg
-```
-
-#### API key
-A fresh API key is fetched from Panorama's `keygen` endpoint on every tool invocation — no caching. This ensures a stale or expired key is never reused.
-
-#### Parallel HTTP requests
-Once the list of locations (shared + device groups) is determined, requests for objects/groups are dispatched concurrently with `asyncio.gather()`: this turns an N‑round‑trip operation into a single parallel batch.
-
-```python
-addr_obj_results = await asyncio.gather(
-    *[_get_address_objects_cached(session, panorama_url, api_key, ssl_context, lt, ln)
-      for lt, ln in locations],
-    return_exceptions=True,
-)
-```
-
-The same pattern appears later when fetching address groups. `return_exceptions=True` ensures a failure on one location doesn’t abort the whole query; errors are logged and skipped.
-
-| Phase | Before | After |
-|-------|--------|-------|
-| DG list | 1 HTTP call | cached (0–1) |
-| Objects | serial N calls | N parallel + cache |
-| Groups | serial N calls | N parallel |
-
-On a warm cache with two groups, a typical IP lookup now needs **2–4 total HTTP calls** instead of 20+.  
-
-These optimizations are what keep Panorama queries snappy even when the configuration contains thousands of address objects.
-
----
-
-### API retrieval details
-
-Every interaction with Panorama is a simple GET to the device’s `/api/` endpoint. URLs are built dynamically using the configured `PANORAMA_URL`, the current API key, and a URL‑quoted XPath expression. For example, to fetch address objects from a device group:
-
-```python
-xpath = (
-    f"/config/devices/entry[@name='localhost.localdomain']"
-    f"/device-group/entry[@name='{location_name}']/address"
-)
-url = (
-    f"{panorama_url}/api/?type=config&action=get"
-    f"&xpath={urllib.parse.quote(xpath)}&key={api_key}"
-)
-async with session.get(url, ssl=ssl_context,
-                       timeout=aiohttp.ClientTimeout(total=45)) as resp:
-    resp_text = await resp.text()
-    # xml parsing follows here…
-```
-
-The client uses `aiohttp` with a 45‑second timeout and an SSL context constructed from `PANORAMA_VERIFY_SSL`. The raw XML response is parsed with `xml.etree.ElementTree` and inspected for `status="success"` before further processing.
-
-
-### IP validation
-
-```python
-query_ip = ipaddress.ip_address("11.0.0.1")   # validates format
-```
-
-CIDR notation is also supported: `ipaddress.ip_network(ip, strict=False)`.
-
-### Step 8a: Discover device groups to search
-
-When no `device_group` is specified, the tool searches **shared** objects and **all device groups**:
-
-```
-GET /api/?type=config&action=get
-    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry
-    &key=<api_key>
-```
-
-Returns XML listing all device group names configured in Panorama.
-
-### Step 8b: Find address objects containing the IP
-
-For each location (shared + each device group):
-
-```
-GET /api/?type=config&action=get
-    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='<dg-name>']/address
-    &key=<api_key>
-```
-
-The XML response contains address object entries with `<ip-netmask>`, `<ip-range>`, or `<fqdn>`. The tool uses Python's `ipaddress` module to check containment:
-
-- `ip-netmask` with CIDR → `ip in ipaddress.ip_network(...)`
-- `ip-netmask` without CIDR → exact IP comparison
-- `ip-range` → `start <= ip <= end`
-- FQDN → skipped (cannot match IP)
-
-Matching objects are collected: e.g., `{"name": "web-server-01", "type": "ip-netmask", "value": "11.0.0.0/24"}`.
-
-### Step 8c: Find address groups containing those objects
-
-```
-GET /api/?type=config&action=get
-    &xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='<dg-name>']/address-group
-    &key=<api_key>
-```
-
-Each address group entry has `<static><member>` children. The tool checks whether any matching address object name appears as a member. Nested groups (groups containing groups) are resolved recursively.
-
-### Return value
+5. **Returns the result:**
 
 ```python
 {
     "ip_address": "11.0.0.1",
-    "address_objects": [
-        {"name": "web-server-01", "type": "ip-netmask", "value": "11.0.0.0/24",
-         "location": "device-group", "device_group": "<dg-name>"}
-    ],
-    "address_groups": [
-        {"name": "web-servers", "location": "device-group", "device_group": "<dg-name>",
-         "members": ["web-server-01"]}
-    ],
-    "device_group": null,
-    "vsys": "vsys1"
+    "address_objects": [{"name": "web-server-01", "value": "11.0.0.0/24", ...}],
+    "address_groups": [{"name": "web-servers", "members": ["web-server-01"], ...}]
 }
 ```
 
