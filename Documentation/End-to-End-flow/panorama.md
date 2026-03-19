@@ -405,9 +405,7 @@ Skills are Markdown files in [`skills/`](../../skills/) loaded as system prompts
 |---|---|---|
 | `skills/base.md` | Main LangGraph (all queries) | Role statement + short-reply context hint |
 | `skills/panorama_agent.md` | Panorama agent | Panorama domain knowledge (concepts, terminology, zones) |
-| `skills/splunk_agent.md` | Splunk agent | Splunk domain knowledge (deny events, risk signals) |
 | `skills/netbrain_agent.md` | NetBrain agent | Path query concepts, Panorama enrichment instructions |
-| `skills/risk_synthesis.md` | Risk orchestrator synthesis | Output format + risk signal guidance |
 
 **Design principle:** skills contain only domain knowledge. Tool selection logic lives in tool docstrings (`@mcp.tool()` descriptions). Sequential chaining logic lives in code (`tool_executor` deterministic chaining, `agent_loop.py`).
 
@@ -446,7 +444,7 @@ CONCEPTS:
 | What arguments do I pass? | Docstring (`Examples`) |
 | What does "address group" mean? | Skill |
 | What's the difference between a zone and a device group? | Skill |
-| What format should my response be in? | Skill (`risk_synthesis.md`) |
+| What format should my response be in? | Skill |
 
 ---
 
@@ -492,13 +490,13 @@ User          Browser           FastAPI          chat_service       MCP Server  
 
 ## Direct MCP vs A2A Agent: When Each Is Used
 
-| | Direct MCP (network intent) | Agent via A2A (risk intent) |
+| | Direct MCP (network intent) | Agent via A2A (netbrain intent) |
 |---|---|---|
-| Trigger | Group/member lookups, unused objects | Risk assessment queries |
-| Tool selection | Ollama LLM picks from all MCP tools | Ollama LLM within agent picks from Panorama-only tools |
+| Trigger | Group/member lookups, unused objects | Path queries between two IPs |
+| Tool selection | Ollama LLM picks from all MCP tools | Ollama LLM within agent picks from NetBrain/Panorama tools |
 | Chaining | Deterministic code in `tool_executor` | LLM-driven tool-calling loop |
 | Output | Structured JSON → table/visualization | Natural language summary |
-| Port | Via MCP server (internal) | HTTP 8003 |
+| Port | Via MCP server (internal) | HTTP 8004 → 8003 |
 
 ---
 
@@ -510,15 +508,11 @@ User          Browser           FastAPI          chat_service       MCP Server  
 | [`graph_builder.py`](../../graph_builder.py) | LangGraph graph construction and routing |
 | [`graph_state.py`](../../graph_state.py) | State schema shared across all graph nodes |
 | [`agents/panorama_agent.py`](../../agents/panorama_agent.py) | Panorama agent — AI agent exposing A2A interface (FastAPI, port 8003) |
-| [`agents/splunk_agent.py`](../../agents/splunk_agent.py) | Splunk agent — AI agent exposing A2A interface (FastAPI, port 8002) |
 | [`agents/netbrain_agent.py`](../../agents/netbrain_agent.py) | NetBrain agent — AI agent exposing A2A interface (FastAPI, port 8004) |
 | [`agents/agent_loop.py`](../../agents/agent_loop.py) | Shared tool-calling loop used by all agents |
-| [`agents/orchestrator.py`](../../agents/orchestrator.py) | Risk fan-out: parallel A2A calls + Ollama synthesis |
 | [`tools/panorama_tools.py`](../../tools/panorama_tools.py) | Panorama MCP tool implementations + Panorama API calls |
 | [`skills/panorama_agent.md`](../../skills/panorama_agent.md) | Panorama agent system prompt |
-| [`skills/splunk_agent.md`](../../skills/splunk_agent.md) | Splunk agent system prompt |
 | [`skills/netbrain_agent.md`](../../skills/netbrain_agent.md) | NetBrain agent system prompt |
-| [`skills/risk_synthesis.md`](../../skills/risk_synthesis.md) | Risk synthesis system prompt |
 | [`mcp_client.py`](../../mcp_client.py) | Client that calls the MCP server |
 | [`mcp_server.py`](../../mcp_server.py) | MCP server process (FastMCP) |
 | [`panoramaauth.py`](../../panoramaauth.py) | Panorama API key management |

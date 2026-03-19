@@ -8,8 +8,6 @@ Atlas is a natural language interface for querying network infrastructure. Ask q
 
 - **Panorama** — "What address group is 11.0.0.1 in?", "Show members of leander_web", "Find unused address objects"
 - **NetBrain** — "Find path from 10.0.0.1 to 10.0.1.1", "Is traffic from X to Y on TCP 443 allowed?"
-- **Splunk** — "Show recent deny events for 10.0.0.250"
-
 ---
 
 ## Architecture
@@ -29,7 +27,7 @@ FastAPI (app.py)
   ▼
 LangGraph (graph_builder.py, graph_nodes.py)
   │
-  ├── network intent ──► MCP Server (port 8765) ──► Panorama / Splunk API
+  ├── network intent ──► MCP Server (port 8765) ──► Panorama API
   │
   └── netbrain intent ──► NetBrain agent (port 8004)
                               └── ask_panorama_agent ──► Panorama agent (port 8003)
@@ -56,7 +54,6 @@ atlas/
 ├── mcp_server.py              # MCP server (port 8765) — exposes tools
 ├── panoramaauth.py            # Panorama API key retrieval (Azure Key Vault)
 ├── netbrainauth.py            # NetBrain authentication
-├── splunkauth.py              # Splunk authentication
 ├── kv_helper.py               # Azure Key Vault helper
 ├── status_bus.py              # SSE status updates
 │
@@ -64,13 +61,11 @@ atlas/
 │   ├── agent_loop.py          # Shared tool-calling loop used by all agents
 │   ├── panorama_agent.py      # Panorama agent (port 8003)
 │   ├── netbrain_agent.py      # NetBrain agent (port 8004)
-│   ├── splunk_agent.py        # Splunk agent (port 8002)
-│   └── orchestrator.py        # Risk orchestrator (fans out to Panorama + Splunk)
+│   └── netbrain_agent.py      # NetBrain agent (port 8004)
 │
 ├── tools/                     # MCP tool implementations
 │   ├── panorama_tools.py      # Panorama XML API tools
 │   ├── netbrain_tools.py      # NetBrain API tools
-│   ├── splunk_tools.py        # Splunk API tools
 │   ├── docs_tool.py           # Documentation search tool
 │   └── shared.py              # Shared config (Ollama URL, model, etc.)
 │
@@ -78,8 +73,7 @@ atlas/
 │   ├── base.md                # Loaded for all queries
 │   ├── panorama_agent.md      # Panorama domain knowledge
 │   ├── netbrain_agent.md      # NetBrain path query knowledge
-│   ├── splunk_agent.md        # Splunk domain knowledge
-│   └── risk_synthesis.md      # Risk assessment output format
+│   └── netbrain_agent.md      # NetBrain path query knowledge
 │
 └── frontend/                  # React 18 SPA (Vite)
     ├── src/
@@ -98,7 +92,7 @@ atlas/
 | **FastAPI** | Python web framework | Serves the chat API (`/api/chat`, `/api/discover`), handles authentication, and manages session cookies |
 | **LangGraph** | Graph-based orchestration layer (built on LangChain) | Defines the query routing pipeline as a graph of nodes — intent classification → tool selection → tool execution → response. LangChain provides the underlying LLM interface (`ChatOllama`, `bind_tools()`, message types) that LangGraph nodes use |
 | **Ollama** | Local LLM runtime | Runs the language model (llama3.1:8b by default) locally — no external AI API calls |
-| **MCP (Model Context Protocol)** | Protocol for exposing tools to LLMs | Atlas tools (Panorama, NetBrain, Splunk) are registered as MCP tools. The LLM selects a tool by name; the MCP client executes it against the target API |
+| **MCP (Model Context Protocol)** | Protocol for exposing tools to LLMs | Atlas tools (Panorama, NetBrain) are registered as MCP tools. The LLM selects a tool by name; the MCP client executes it against the target API |
 | **FastMCP** | Python library for building MCP servers | Used to define and serve the MCP tools in `mcp_server.py` — tool docstrings become the descriptions the LLM uses for tool selection |
 | **A2A (Agent-to-Agent)** | Pattern where one agent calls another over HTTP | The NetBrain agent calls the Panorama agent mid-reasoning to enrich firewall hops. Each agent is a standalone FastAPI service that receives a plain-text task, runs its own LLM tool-calling loop, and returns a natural language answer |
 | **Authlib** | OIDC/OAuth2 library | Handles the Microsoft Entra ID login flow — redirects to Azure, exchanges the auth code for tokens, extracts user identity |
@@ -213,7 +207,7 @@ cd /opt/atlas && .venv/bin/python run_web.py
 | `find_unused_panorama_objects` | Panorama | Find orphaned/unused address objects |
 | `query_network_path` | NetBrain | Trace hop-by-hop path between two IPs |
 | `check_path_allowed` | NetBrain | Check if traffic between two IPs is allowed |
-| `get_splunk_recent_denies` | Splunk | Recent firewall deny events for an IP |
+
 
 ---
 
