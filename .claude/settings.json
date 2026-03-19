@@ -14,7 +14,8 @@
       "Bash(zip /Users/manig/Downloads/a2a_changes.zip tools/shared.py mcp_client.py)",
       "Bash(while read hash msg)",
       "Bash(do git show $hash -- tools/panorama_tools.py)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(xargs -I{} basename {})"
     ]
   }
 }
