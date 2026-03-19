@@ -78,7 +78,21 @@ Both `/api/discover` and `/api/chat` go through the same session check, then han
 
 ## Step 5: Tool Discovery in chat_service
 
-`process_message()` asks the MCP server for the list of available tools. Each tool has a name and a description that explains what it does and when to use it — this description comes directly from the function's docstring in [tools/panorama_tools.py](../../tools/panorama_tools.py).
+`process_message()` asks the MCP server for the list of available tools. Each tool has a name and a description that explains what it does and when to use it — this description comes directly from the function's docstring in [tools/panorama_tools.py](../../tools/panorama_tools.py):
+
+```python
+@mcp.tool()
+async def query_panorama_ip_object_group(ip_address: str, ...) -> Dict[str, Any]:
+    """
+    Find which Panorama address groups contain a given IP address.
+
+    Use for: queries with an IP address (has dots, e.g. "10.0.0.1") asking which address group it belongs to.
+    Do NOT use for: device names (have dashes).
+
+    Examples:
+    - "what address group is 10.0.0.1 in?" → ip_address="10.0.0.1"
+    """
+```
 
 The LLM is then given the user's query along with all the tool descriptions and asked to pick the right one. It responds with a tool name and the arguments to call it with — for example, `query_panorama_ip_object_group` with `ip_address = "11.0.0.1"`.
 
