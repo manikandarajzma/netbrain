@@ -163,21 +163,7 @@ For example, after a `query_panorama_ip_object_group` call:
 
 ## Step 9: Conversation History Persistence (FastAPI)
 
-**File:** [app.py](../../app.py), [chat_history.py](../../chat_history.py)
-
-After `process_message()` returns:
-
-```python
-if conversation_id:
-    append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
-else:
-    title = user_msg[:60] + "…"
-    conv_id = create_conversation(APP_DIR, username, title)
-    append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
-    result["conversation_id"] = conv_id
-```
-
-Conversations are stored per-user on disk. The `conversation_id` is returned in the response so the frontend can track it.
+The user's message and the assistant's response are saved to disk, keyed by username. If this is a new conversation, one is created and its ID is returned to the frontend so subsequent messages are appended to the same thread.
 
 ---
 
