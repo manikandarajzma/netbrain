@@ -154,8 +154,6 @@ Authentication happens once per session — not on every query. Here's the full 
 
 8. **User lands on Atlas** — authenticated. Every request to `/api/discover` and `/api/chat` now carries this cookie automatically.
 
-For full detail see [auth-rbac.md](../Security/auth-rbac.md).
-
 ---
 
 ## Step 1: User Types a Query (Frontend)
