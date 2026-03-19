@@ -149,15 +149,15 @@ The tool runs inside the MCP server. For `query_panorama_ip_object_group`, it do
 
 ## Step 8: Result Normalization (chat_service.py)
 
-The raw result from the tool is a structured JSON object — useful for the frontend to render tables, but not something that can be shown directly to the user as a readable answer. Normalization adds a `direct_answer` field: a single plain-English sentence summarising the result.
+The raw result from the tool is a structured JSON object. Normalization adds a `direct_answer` field — a single plain-English sentence summarising the result. The frontend shows this as a highlighted badge at the top, with the full data tables rendered below it.
 
-For example, after a `query_panorama_ip_object_group` call, the normalizer produces:
+For example, after a `query_panorama_ip_object_group` call:
 
 ```
 "11.0.0.1 is part of address group 'web-servers' (via web-server-01)"
 ```
 
-This is what appears as the highlighted answer badge in the UI above the data tables.
+> The LLM is not used here because it's faster and more reliable. Having the LLM rephrase a structured result adds latency and introduces the risk of hallucination or inconsistent wording. Since the result is already structured — we know the IP, the group name, the object name — the sentence can be constructed directly from the data with no ambiguity.
 
 ---
 
