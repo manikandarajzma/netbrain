@@ -7,86 +7,6 @@ This document traces the complete lifecycle of a Panorama query through Atlas, f
 
 ---
 
----
-
-## Intent Classification
-
-**File:** [`graph_nodes.py`](../../graph_nodes.py) — `classify_intent()`
-
-Every query enters the LangGraph at `classify_intent`. The node inspects the prompt and returns one of several intents:
-
-| Condition | Intent | Route |
-|---|---|---|
-| One IP + risk keywords (suspicious, threat, etc.) | `risk` | `risk_orchestrator` |
-| Two IPs, or path keywords (path, route, trace, hops) | `netbrain` | `netbrain_agent` |
-| Documentation question | `doc` | `doc_tool_caller` |
-| Everything else | `network` | `fetch_mcp_tools` → tool selector |
-
-Panorama queries like "what group is 11.0.0.1 in?" or "show unused address objects" fall through to `network`.
-
----
-
-## Skills System
-
-Skills are Markdown files in [`skills/`](../../skills/) loaded as system prompts. Each agent or LLM call has its own skill file:
-
-| File | Loaded by | Purpose |
-|---|---|---|
-| `skills/base.md` | Main LangGraph (all queries) | Role statement + short-reply context hint |
-| `skills/panorama_agent.md` | Panorama agent | Panorama domain knowledge (concepts, terminology, zones) |
-| `skills/splunk_agent.md` | Splunk agent | Splunk domain knowledge (deny events, risk signals) |
-| `skills/netbrain_agent.md` | NetBrain agent | Path query concepts, Panorama enrichment instructions |
-| `skills/risk_synthesis.md` | Risk orchestrator synthesis | Output format + risk signal guidance |
-
-**Design principle:** skills contain only domain knowledge. Tool selection logic lives in tool docstrings (`@mcp.tool()` descriptions). Sequential chaining logic lives in code (`tool_executor` deterministic chaining, `agent_loop.py`).
-
-### Skills vs MCP tool docstrings
-
-These two mechanisms are complementary and answer different questions:
-
-**MCP tool docstring** — scoped to one tool, answers: "should I call this tool, and with what arguments?"
-
-```python
-@mcp.tool()
-async def query_panorama_ip_object_group(ip_address: str) -> dict:
-    """
-    Find which Panorama address groups contain a given IP address.
-
-    Use for: queries with an IP address asking which group it belongs to.
-    Do NOT use for: device names (have dashes).
-
-    Examples:
-    - "what address group is 10.0.0.1 in?" → ip_address="10.0.0.1"
-    """
-```
-
-The LLM sees all tool docstrings side-by-side and uses them to pick the right tool and extract the right arguments. This is selection logic, not background knowledge.
-
-**Skill** — loaded as the system prompt, answers: "what domain am I working in and what do terms mean?"
-
-```markdown
-# skills/panorama_agent.md
-You are working with Palo Alto Panorama — a centralized firewall management platform.
-
-CONCEPTS:
-- Address object: a named IP, range, or CIDR
-- Address group: a named collection of address objects
-- Device group: a set of firewalls managed together
-- Security zone: trust, untrust, dmz
-```
-
-No tool selection here — just background knowledge that makes tool outputs interpretable and responses accurate.
-
-| Question | Where it lives |
-|---|---|
-| Should I call this tool? | Docstring (`Use for / Do NOT use for`) |
-| What arguments do I pass? | Docstring (`Examples`) |
-| What does "address group" mean? | Skill |
-| What's the difference between a zone and a device group? | Skill |
-| What format should my response be in? | Skill (`risk_synthesis.md`) |
-
----
-
 ## Path 1: Direct MCP Query (network intent)
 
 The steps below trace the full lifecycle of a direct Panorama query — "What address group is 11.0.0.1 part of?" — from browser to rendered response.
@@ -1148,6 +1068,76 @@ HttpOnly only blocks *reading* the cookie from JS. It does not stop an attacker 
 **Atlas's exposure:**
 
 Atlas renders chat responses from an LLM. If the LLM ever produced a response containing a `<script>` tag and the frontend rendered it as raw HTML, that would be an XSS vector. React's JSX escapes HTML by default (`dangerouslySetInnerHTML` is not used for chat messages), so injected tags are rendered as literal text — but `HttpOnly` is a second line of defence regardless.
+
+---
+
+### How does Atlas decide which path to take?
+
+**File:** [`graph_nodes.py`](../../graph_nodes.py) — `classify_intent()`
+
+Every query enters the LangGraph at `classify_intent`. The node inspects the prompt and returns one of several intents:
+
+| Condition | Intent | Route |
+|---|---|---|
+| One IP + risk keywords (suspicious, threat, etc.) | `risk` | `risk_orchestrator` |
+| Two IPs, or path keywords (path, route, trace, hops) | `netbrain` | `netbrain_agent` |
+| Documentation question | `doc` | `doc_tool_caller` |
+| Everything else | `network` | `fetch_mcp_tools` → tool selector |
+
+Panorama queries like "what group is 11.0.0.1 in?" or "show unused address objects" fall through to `network`.
+
+---
+
+### What are skills and how do they differ from tool docstrings?
+
+Skills are Markdown files in [`skills/`](../../skills/) loaded as system prompts. Each agent or LLM call has its own skill file:
+
+| File | Loaded by | Purpose |
+|---|---|---|
+| `skills/base.md` | Main LangGraph (all queries) | Role statement + short-reply context hint |
+| `skills/panorama_agent.md` | Panorama agent | Panorama domain knowledge (concepts, terminology, zones) |
+| `skills/splunk_agent.md` | Splunk agent | Splunk domain knowledge (deny events, risk signals) |
+| `skills/netbrain_agent.md` | NetBrain agent | Path query concepts, Panorama enrichment instructions |
+| `skills/risk_synthesis.md` | Risk orchestrator synthesis | Output format + risk signal guidance |
+
+**Design principle:** skills contain only domain knowledge. Tool selection logic lives in tool docstrings (`@mcp.tool()` descriptions). Sequential chaining logic lives in code (`tool_executor` deterministic chaining, `agent_loop.py`).
+
+**MCP tool docstring** — scoped to one tool, answers: "should I call this tool, and with what arguments?"
+
+```python
+@mcp.tool()
+async def query_panorama_ip_object_group(ip_address: str) -> dict:
+    """
+    Find which Panorama address groups contain a given IP address.
+
+    Use for: queries with an IP address asking which group it belongs to.
+    Do NOT use for: device names (have dashes).
+
+    Examples:
+    - "what address group is 10.0.0.1 in?" → ip_address="10.0.0.1"
+    """
+```
+
+**Skill** — loaded as the system prompt, answers: "what domain am I working in and what do terms mean?"
+
+```markdown
+# skills/panorama_agent.md
+You are working with Palo Alto Panorama — a centralized firewall management platform.
+
+CONCEPTS:
+- Address object: a named IP, range, or CIDR
+- Address group: a named collection of address objects
+- Device group: a set of firewalls managed together
+- Security zone: trust, untrust, dmz
+```
+
+| Question | Where it lives |
+|---|---|
+| Should I call this tool? | Docstring (`Use for / Do NOT use for`) |
+| What arguments do I pass? | Docstring (`Examples`) |
+| What does "address group" mean? | Skill |
+| What's the difference between a zone and a device group? | Skill |
+| What format should my response be in? | Skill (`risk_synthesis.md`) |
 
 ---
 
