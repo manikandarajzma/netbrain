@@ -3,7 +3,7 @@
 This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Atlas supports two query paths:
 
 - **Path 1: Direct MCP (`network` intent)** — group lookups, member listings, unused object queries. The LLM picks a tool, the tool calls Panorama directly, and the result is returned.
-- **Path 2: A2A (`netbrain` and `risk` intent)** — queries that require multiple agents. NetBrain path queries and IP risk assessments both use agent-to-agent communication.
+- **Path 2: A2A (`netbrain` intent)** — path queries where the NetBrain agent traces the route and calls the Panorama agent to enrich any firewall hops it encounters.
 
 ---
 
@@ -179,12 +179,7 @@ The UI renders two things:
 
 ## Path 2: A2A Queries
 
-Used when the query requires multiple agents working together. Atlas supports two A2A patterns:
-
-- **`netbrain` intent** — path queries like "find path from 10.0.0.1 to 10.0.1.1". The NetBrain agent traces the network path and calls the Panorama agent to enrich any firewall hops it encounters.
-- **`risk` intent** — risk queries like "is 11.0.0.1 suspicious?". The orchestrator fans out to both Panorama and Splunk agents in parallel, then synthesizes their results.
-
-The steps below trace a NetBrain path query — it's the best example of A2A since one agent calls another mid-reasoning.
+Used for path queries like "find path from 10.0.0.1 to 10.0.1.1". The NetBrain agent traces the network path and calls the Panorama agent mid-reasoning to enrich any firewall hops it encounters.
 
 ---
 
@@ -247,12 +242,6 @@ Path from 10.0.0.1 to 10.0.1.1 traverses 3 hops:
 ### Step 6: Response rendered in the UI
 
 The NetBrain agent's answer is returned to Atlas as an A2A artifact. Atlas extracts the text and passes it back to the frontend as a `direct_answer`, rendered as a highlighted response using ReactMarkdown.
-
----
-
-### Risk intent — how it differs
-
-For `risk` queries, the orchestrator ([agents/orchestrator.py](../../agents/orchestrator.py)) fans out to **two agents in parallel** — Panorama (port 8003) and Splunk (port 8002) — using `asyncio.gather`. Each runs its own independent tool-calling loop. Once both return, a third LLM call (with `skills/risk_synthesis.md` as the system prompt and no tools) synthesizes the two summaries into a structured risk assessment with a Verdict, Panorama findings, Splunk findings, and a Recommendation.
 
 ---
 
