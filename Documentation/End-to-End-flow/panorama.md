@@ -166,10 +166,10 @@ For full detail see [auth-rbac.md](../Security/auth-rbac.md).
 The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. The input box clears and two HTTP requests fire simultaneously — `/api/discover` and `/api/chat` — both carrying the same body:
 
 ```json
-{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
+{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [...] }
 ```
 
-`conversation_history` is always empty — each query is stateless. Prior conversation context is not sent to the LLM to prevent earlier exchanges from polluting unrelated queries.
+`conversation_history` contains the prior messages from the current conversation (up to the last 20), so the LLM has context from earlier exchanges.
 
 ---
 
@@ -182,7 +182,7 @@ POST /api/discover
 Content-Type: application/json
 Cookie: atlas_session=<signed-cookie>
 
-{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
+{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [...] }
 ```
 
 `/api/discover` exists purely for UI feedback. It runs a full LLM call to identify which tool will be used and returns quickly — before any backend system is contacted:
@@ -280,7 +280,7 @@ async def api_discover(request: Request, body: ChatRequest):
         return response_401_clear_session(request)
     result = await process_message(
         body.message.strip(),                  # "What address group is 11.0.0.1 part of?"
-        body.conversation_history or [],       # [] — always empty from frontend
+        body.conversation_history or [],       # prior messages from the current conversation
         discover_only=True,                    # tells process_message to stop after tool selection
         username=username,                     # for conversation history persistence
         session_id=get_session_id(request),   # raw cookie value — needed for RBAC group lookup
@@ -319,7 +319,7 @@ FastAPI automatically deserializes and validates the JSON body using the `ChatRe
 ```python
 class ChatRequest(BaseModel):
     message: str                                    # required — the user's query text
-    conversation_history: list[dict[str, Any]] = [] # optional — always [] from the frontend
+    conversation_history: list[dict[str, Any]] = [] # optional — prior messages from the current conversation
     conversation_id: str | None = None              # optional — used for history persistence
     parent_conversation_id: str | None = None       # optional — links follow-up conversations
 ```
@@ -499,7 +499,7 @@ After discovery, the frontend fires the actual chat request:
 
 ```
 POST /api/chat
-{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [] }
+{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [...] }
 ```
 
 `process_message()` runs again from scratch (not reusing the discover result), this time with `discover_only=False`. The LLM is invoked again, makes the same tool selection, and proceeds to execution.
