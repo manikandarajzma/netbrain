@@ -62,66 +62,9 @@ The tool selection is repeated from scratch by `/api/chat`. This is intentional 
 
 ## Step 3: Session & RBAC Check (FastAPI)
 
-**File:** [app.py](../../app.py), [auth.py](../../auth.py)
+On every request, FastAPI reads the `atlas_session` cookie and verifies it. The cookie is cryptographically signed — if it has been tampered with, is missing, or has expired (30 min TTL), the request is rejected and the browser is redirected to `/login`.
 
-### Session validation
-
-```python
-# app.py
-def get_current_username(request: Request) -> str | None:
-    sid = request.cookies.get("atlas_session")
-    return get_username_for_session(sid)
-```
-
-`get_username_for_session` calls `get_session(sid)` ([auth.py:137](../../auth.py#L137)) which uses `itsdangerous.URLSafeTimedSerializer` to verify the cookie and decode its payload.
-
-#### What is itsdangerous.URLSafeTimedSerializer?
-
-`itsdangerous` is a Python library for signing data so it cannot be tampered with. `URLSafeTimedSerializer` specifically:
-
-- **Signs** the session payload with an HMAC using `SESSION_SECRET` (from `.env`) and a `salt` (`"atlas-session"`) as the key. The salt scopes the serializer — a cookie signed for Atlas cannot be replayed against another app that shares the same secret.
-
-  > **What is a salt?** A salt is an extra fixed string mixed into the HMAC computation to change its output — even when the secret key is the same. Its purpose here is **scoping**: it ensures a signed value created in one context cannot be replayed in another. For example, if Atlas used the same `SESSION_SECRET` for both session cookies and password-reset links, the two serializers would produce completely different signatures because they have different salts (`"atlas-session"` vs. `"password-reset"`), so a stolen session cookie could not be used as a reset token. The salt is **not secret** — it is a fixed string in the code. All security comes from `SESSION_SECRET`. The salt just ensures the same secret produces different signatures in different contexts.
-- **Serialises** the payload to a URL-safe base64 string (no `+`, `/`, or `=` characters). Serialisation means converting a Python object (a dict like `{"username": "alice", "group": "netadmin", ...}`) into a flat string that can be transmitted or stored — in this case, as a cookie value. The dict cannot be stored directly in a cookie; it must first be encoded into a string. `URLSafeTimedSerializer` encodes it as base64url, which uses only characters safe for URLs and cookie values (`A-Z`, `a-z`, `0-9`, `-`, `_`) — no `+`, `/`, or `=` which would require percent-encoding in a URL.
-- **Embeds a timestamp** in the signed output, enabling time-limited verification.
-
-```python
-# auth.py:61
-_session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="atlas-session")
-
-# Signing (at login):
-session_id = _session_serializer.dumps({"username": ..., "group": ..., ...})
-
-# Verifying (on every request):
-payload = _session_serializer.loads(session_id, max_age=1800)  # max_age = 30 min TTL
-```
-
-`loads()` is called inside `get_session()` in [auth.py:142](../../auth.py#L142), which is called by `get_username_for_session()`, which is called by `get_current_username()` in `app.py` on every incoming request:
-
-```python
-# auth.py:137
-def get_session(session_id: Optional[str]) -> Optional[dict]:
-    try:
-        payload = _session_serializer.loads(session_id, max_age=OIDC_SESSION_TTL)
-        if isinstance(payload, dict):
-            return payload
-    except (BadSignature, Exception):
-        pass
-    return None
-```
-
-`loads()` does three things atomically in a single call:
-1. **Verifies the HMAC signature** — if the cookie value was modified in any way, this raises `BadSignature` and `get_session()` returns `None`.
-2. **Checks the embedded timestamp** — if more than `max_age=1800` seconds have elapsed since signing, it raises `SignatureExpired` and `get_session()` returns `None`.
-3. **Deserialises the payload** — if both checks pass, returns the original dict `{username, group, auth_mode, created_at}`.
-
-There is no server-side session store — the cookie payload IS the session. This means sessions survive app restarts and work across multiple app instances, as long as `SESSION_SECRET` is the same on all instances. If `SESSION_SECRET` is not set in `.env`, a random secret is generated per process ([auth.py:58](../../auth.py#L58)), invalidating all existing sessions on every restart.
-
-If the cookie is missing, invalid, or expired → 401 + `{"redirect": "/login"}`.
-
-### RBAC check
-
-The RBAC check for Panorama tools happens later inside `chat_service.process_message()`, but the role is resolved from the session here. The user's role is determined by their AD group membership at login time. If no matching role is found → 302 redirect to `/login?error=norole`.
+If the cookie is valid, the user's identity and role are decoded from it. The role controls which tools they can call — this is checked later in Step 5. There is no server-side session store; everything is encoded in the cookie itself.
 
 ---
 
