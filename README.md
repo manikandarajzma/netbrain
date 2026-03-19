@@ -102,7 +102,6 @@ atlas/
 | **FastMCP** | Python library for building MCP servers | Used to define and serve the MCP tools in `mcp_server.py` — tool docstrings become the descriptions the LLM uses for tool selection |
 | **A2A (Agent-to-Agent)** | Pattern where one agent calls another over HTTP | The NetBrain agent calls the Panorama agent mid-reasoning to enrich firewall hops. Each agent is a standalone FastAPI service that receives a plain-text task, runs its own LLM tool-calling loop, and returns a natural language answer |
 | **Authlib** | OIDC/OAuth2 library | Handles the Microsoft Entra ID login flow — redirects to Azure, exchanges the auth code for tokens, extracts user identity |
-| **itsdangerous** | Cryptographic signing library | Signs and verifies the session cookie (`atlas_session`) — encodes user identity and role into a tamper-proof, time-limited cookie with no server-side session store |
 | **Azure Key Vault** | Cloud secrets store | Stores Panorama and NetBrain credentials. Retrieved at runtime via `azure-identity` using the VM's managed identity — no secrets in `.env` |
 | **aiohttp** | Async HTTP client | Used by the Panorama and NetBrain tool implementations to make concurrent API calls to their respective APIs |
 
