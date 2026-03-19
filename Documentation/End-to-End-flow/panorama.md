@@ -175,27 +175,15 @@ The user types `"What address group is 11.0.0.1 part of?"` and presses Enter. Th
 
 ## Step 2: Tool Pre-selection (`/api/discover`)
 
-**File:** [frontend/src/utils/api.js](../../frontend/src/utils/api.js) → `discoverTool()`
-
-```
-POST /api/discover
-Content-Type: application/json
-Cookie: atlas_session=<signed-cookie>
-
-{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [...] }
-```
-
-`/api/discover` exists purely for UI feedback. It runs a full LLM call to identify which tool will be used and returns quickly — before any backend system is contacted:
+`/api/discover` exists purely for UI feedback. While `/api/chat` does the real work, `/api/discover` fires simultaneously and asks the LLM which tool it would use for this query. The response looks like:
 
 ```json
 { "tool_name": "query_panorama_ip_object_group", "tool_display_name": "Panorama", "intent": "network" }
 ```
 
-The UI uses `tool_display_name` to update the loading indicator from `"Identifying query"` to `"Querying Panorama"`. If this call fails, the label falls back to `"Processing"` — `/api/chat` continues regardless.
+The UI uses `tool_display_name` to update the loading indicator from `"Identifying query..."` to `"Querying Panorama"`. If this call fails, the label falls back to `"Processing"` — `/api/chat` continues regardless.
 
-> **Note:** The tool selection `/api/discover` performs is repeated from scratch by `/api/chat`. This is intentional — discover is fire-and-forget for UX only. The cost is one redundant LLM call per query.
-
-The `atlas_session` cookie is sent automatically by the browser on every request. It identifies the user and drives RBAC. If it is missing or expired, FastAPI returns a `401` and the browser redirects to `/login`. See [FAQ](#faq).
+The tool selection is repeated from scratch by `/api/chat`. This is intentional — discover is fire-and-forget for UX only.
 
 ---
 
