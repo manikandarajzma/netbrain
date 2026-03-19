@@ -2,7 +2,7 @@
 
 This document traces the complete lifecycle of a Panorama query through Atlas, from the moment a user types a message in the browser to the rendered response. Atlas supports two distinct query paths depending on intent:
 
-- **Direct MCP path (`network` intent)** — group lookups, member listings, unused object queries. Detailed step-by-step trace in Steps 0–11 below.
+- **Direct MCP path (`network` intent)** — group lookups, member listings, unused object queries. Detailed step-by-step trace in Steps 0–10 below.
 - **A2A multi-agent path (`netbrain` intent)** — path queries with Panorama firewall enrichment ("find path from 10.0.0.1 to 10.0.1.1"). Covered in the [NetBrain Path Query](#netbrain-path-query-netbrain-intent) section.
 
 ---
@@ -102,20 +102,7 @@ If the request came from `/api/discover`, the process stops here and returns the
 
 ---
 
-## Step 6: Full Chat Request (Frontend → FastAPI)
-
-After discovery, the frontend fires the actual chat request:
-
-```
-POST /api/chat
-{ "message": "What address group is 11.0.0.1 part of?", "conversation_history": [...] }
-```
-
-`process_message()` runs again from scratch (not reusing the discover result), this time with `discover_only=False`. The LLM is invoked again, makes the same tool selection, and proceeds to execution.
-
----
-
-## Step 7: MCP Tool Execution
+## Step 6: MCP Tool Execution
 
 **File:** [chat_service.py](../../chat_service.py) → `call_mcp_tool()`
 **File:** [mcp_client.py](../../mcp_client.py)
@@ -132,7 +119,7 @@ The MCP client sends a JSON-RPC `tools/call` message over the streamable-http tr
 
 ---
 
-## Step 8: panorama_tools.py — Tool Execution
+## Step 7: panorama_tools.py — Tool Execution
 
 **File:** [tools/panorama_tools.py](../../tools/panorama_tools.py)
 
@@ -318,7 +305,7 @@ Each address group entry has `<static><member>` children. The tool checks whethe
 
 ---
 
-## Step 9: Result Normalization (chat_service.py)
+## Step 8: Result Normalization (chat_service.py)
 
 **File:** [chat_service.py](../../chat_service.py) → `_normalize_result()`
 
@@ -345,7 +332,7 @@ if tool_name == "query_panorama_address_group_members":
 
 ---
 
-## Step 10: Conversation History Persistence (FastAPI)
+## Step 9: Conversation History Persistence (FastAPI)
 
 **File:** [app.py](../../app.py), [chat_history.py](../../chat_history.py)
 
@@ -365,7 +352,7 @@ Conversations are stored per-user on disk. The `conversation_id` is returned in 
 
 ---
 
-## Step 11: Response Rendering (Frontend)
+## Step 10: Response Rendering (Frontend)
 
 **File:** [frontend/src/stores/chatStore.js](../../frontend/src/stores/chatStore.js)
 
