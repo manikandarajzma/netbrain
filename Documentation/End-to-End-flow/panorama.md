@@ -169,46 +169,11 @@ The user's message and the assistant's response are saved to disk, keyed by user
 
 ## Step 10: Response Rendering (Frontend)
 
-**File:** [frontend/src/stores/chatStore.js](../../frontend/src/stores/chatStore.js)
+The frontend receives the normalized result and inspects its shape to decide how to render it. If the result contains arrays (e.g. `address_groups`, `address_objects`), it is classified as a table response.
 
-```js
-const content = data.content ?? data.message ?? 'No response'
-addMessage('assistant', content)
-```
-
-`content` is the normalized result dict from the backend.
-
-### Response classification
-
-**File:** [frontend/src/utils/responseClassifier.js](../../frontend/src/utils/responseClassifier.js)
-
-`classifyResponse(content)` examines the object shape:
-
-```js
-// Panorama result has address_groups array → classified as 'table'
-const arrayKeys = Object.keys(c).filter(k => Array.isArray(v) && v.every(...))
-// → arrayKeys = ["address_objects", "address_groups"]
-return { type: 'table', content }
-```
-
-### AssistantMessage rendering
-
-**File:** [frontend/src/components/messages/AssistantMessage.jsx](../../frontend/src/components/messages/AssistantMessage.jsx)
-
-```jsx
-// Direct answer badge shown at top (e.g. "11.0.0.1 is part of address group 'web-servers'")
-{hasDirectAnswer && <DirectAnswerBadge text={content.direct_answer} />}
-
-// Tables rendered in order: members → address_objects → address_groups → policies
-const tableOrder = ['members', 'address_objects', 'address_groups', 'policies']
-for (const key of tableOrder) {
-    groups.push({ type: 'horizontal', rows: arr, columns: colOrder, heading })
-}
-```
-
-Panorama-specific column ordering is defined in `formatters.js` via `PANORAMA_COLUMN_ORDER` and `PANORAMA_TABLE_LABELS`, ensuring consistent column display.
-
-Hidden fields (not rendered in tables): `vsys`, `queried_ip`, `intent`, `format`, `desc_units`, etc.
+The UI renders two things:
+1. The `direct_answer` as a highlighted badge at the top — e.g. `"11.0.0.1 is part of address group 'web-servers'"`
+2. The full data as tables below it, in a fixed order: members → address objects → address groups → policies
 
 ---
 
