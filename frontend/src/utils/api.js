@@ -73,8 +73,8 @@ export async function clearChatHistory() {
   return res.json()
 }
 
-// Chat can take a long time (NetBrain path calculation can take up to ~6 minutes).
-const CHAT_FETCH_TIMEOUT_MS = 420000
+// Chat can take a long time (NetBrain path + troubleshoot orchestrator can take up to ~10 minutes).
+const CHAT_FETCH_TIMEOUT_MS = 600000
 
 export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null, onStatus = null) {
   const body = { message, conversation_history: conversationHistory }

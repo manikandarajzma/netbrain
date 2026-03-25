@@ -17,3 +17,13 @@ export function downloadCsv(headers, rows, filename = 'export.csv') {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+export function downloadExcel(headers, rows, filename = 'export.xlsx') {
+  import('xlsx').then(XLSX => {
+    const wsData = [headers, ...rows]
+    const ws = XLSX.utils.aoa_to_sheet(wsData)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Data')
+    XLSX.writeFile(wb, filename)
+  })
+}

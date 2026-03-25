@@ -2,11 +2,15 @@
 FastAPI application with Microsoft Entra ID (OIDC) authentication.
 All credentials are in Azure Key Vault; no local passwords.
 """
+import hashlib
+import logging
 import os
 from pathlib import Path
 
 import asyncio
 import json as _json
+
+_sse_log = logging.getLogger("atlas.app")
 
 from fastapi import Depends, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -390,13 +394,17 @@ async def api_discover(request: Request, body: ChatRequest):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
+    import uuid as _uuid
     from atlas.chat_service import process_message
+    # Use a throwaway session_id so discover never overwrites the real session's
+    # status_bus queue or _pending_ts_prompts entry (both are keyed by session_id).
+    discover_session_id = f"discover-{_uuid.uuid4().hex}"
     result = await process_message(
         body.message.strip(),
         body.conversation_history or [],
         discover_only=True,
         username=username,
-        session_id=get_session_id(request),
+        session_id=discover_session_id,
     )
     return result
 
@@ -473,6 +481,40 @@ async def api_chat(request: Request, body: ChatRequest):
     conversation_id = (body.conversation_id or "").strip() or None
     user_msg = body.message.strip()
     history = body.conversation_history or []
+
+    # --- Response cache (skips graph + LLM entirely on repeat read queries) ---
+    _WRITE_RE = __import__('re').compile(
+        r'\b(create|update|close|resolve|assign|delete|submit|open an? incident|add note)\b',
+        __import__('re').IGNORECASE,
+    )
+    _cache_key = f"atlas:api:{hashlib.sha256(user_msg.lower().strip().encode()).hexdigest()[:20]}"
+
+    def _resp_cache_get():
+        try:
+            import redis as _r
+            return _json.loads(_r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                                           decode_responses=True).get(_cache_key) or "")
+        except Exception:
+            return None
+
+    def _resp_cache_set(result: dict):
+        try:
+            import redis as _r
+            _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                        decode_responses=True).setex(_cache_key, 120, _json.dumps(result))
+        except Exception:
+            pass
+
+    if not _WRITE_RE.search(user_msg):
+        cached_result = _resp_cache_get()
+        if cached_result:
+            logging.getLogger("atlas.app").info("API cache hit: %r", user_msg[:60])
+            # Return cached result directly as a done SSE event
+            async def _cached_event_generator():
+                done_event = {"type": "done", "result": cached_result}
+                yield f"data: {_json.dumps(done_event)}\n\n"
+            return StreamingResponse(_cached_event_generator(), media_type="text/event-stream")
+    # -------------------------------------------------------------------------
     parent_id = (body.parent_conversation_id or "").strip() or None
 
     async def event_generator():
@@ -489,17 +531,35 @@ async def api_chat(request: Request, body: ChatRequest):
         try:
             while not task.done():
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield f"data: {_json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
-                    continue
+                    # Send SSE comment as heartbeat so the proxy doesn't drop idle connections
+                    yield ": keep-alive\n\n"
 
             # Drain any remaining status events pushed before task completed
             while not queue.empty():
                 event = queue.get_nowait()
                 yield f"data: {_json.dumps(event)}\n\n"
 
+            _sse_log.info("SSE: task completed, reading result")
             result = task.result()
+            _sse_log.info("SSE: result obtained, role=%s", result.get("role") if isinstance(result, dict) else type(result))
+            if not _WRITE_RE.search(user_msg) and isinstance(result, dict) and "error" not in str(result).lower()[:100]:
+                _resp_cache_set(result)
+            elif _WRITE_RE.search(user_msg):
+                # After any write (create/update/close), flush read caches so the
+                # next troubleshoot or list query reflects the new state.
+                try:
+                    import redis as _r
+                    _rc = _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+                    for _pattern in ("atlas:api:*", "atlas:snow:*", "atlas:snow:resp:*", "atlas:ts_cache:*"):
+                        _keys = _rc.keys(_pattern)
+                        if _keys:
+                            _rc.delete(*_keys)
+                            _sse_log.info("Write op: flushed %d keys matching %s", len(_keys), _pattern)
+                except Exception as _ce:
+                    _sse_log.warning("Write op: cache flush failed: %s", _ce)
 
             # Strip noisy L2 messages before sending to frontend
             if isinstance(result, dict):
@@ -528,10 +588,11 @@ async def api_chat(request: Request, body: ChatRequest):
                         result["parent_id"] = parent_id
 
             done_event = {"type": "done", "result": result}
+            _sse_log.info("SSE: sending done event, content_type=%s", type(result.get("content")).__name__ if isinstance(result, dict) else "?")
             yield f"data: {_json.dumps(done_event)}\n\n"
+            _sse_log.info("SSE: done event sent successfully")
         except Exception as exc:
-            import logging
-            logging.getLogger("atlas.app").exception("SSE generator error")
+            _sse_log.exception("SSE generator error")
             if not task.done():
                 task.cancel()
             error_event = {"type": "done", "result": {"role": "assistant", "content": f"Error: {exc}"}}

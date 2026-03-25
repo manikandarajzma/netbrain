@@ -15,7 +15,14 @@
       "Bash(while read hash msg)",
       "Bash(do git show $hash -- tools/panorama_tools.py)",
       "Bash(done)",
-      "Bash(xargs -I{} basename {})"
+      "Bash(xargs -I{} basename {})",
+      "Bash(zip /Users/manig/Downloads/atlas_docs.zip /Users/manig/Documents/coding/atlas/README.md /Users/manig/Documents/coding/atlas/Documentation/End-to-End-flow/panorama.md /Users/manig/Documents/coding/atlas/Documentation/General/LangGraph.md)",
+      "Bash(.venv/bin/pip show redis)",
+      "Bash(uv add redis)",
+      "Bash(redis-cli ping:*)",
+      "Bash(xargs redis-cli:*)",
+      "Bash(SN_URL=\"https://dev252605.service-now.com\" SN_USER=\"admin\" SN_PASS='+vc$1VAVAe6p' __NEW_LINE_97d632a659d8b55c__ echo \"=== INCIDENTS ===\" curl -s -u \"$SN_USER:$SN_PASS\" \"$SN_URL/api/now/table/incident?sysparm_query=short_descriptionLIKEEDGE-RTR-01^ORshort_descriptionLIKECORE-SW-01^ORshort_descriptionLIKEPA-FW-01^ORshort_descriptionLIKEDIST-RTR-02&sysparm_fields=number,short_description,state&sysparm_limit=20\")",
+      "Bash(redis-cli -u redis://localhost:6379/0 KEYS \"atlas:ts_cache:*\")"
     ]
   }
 }

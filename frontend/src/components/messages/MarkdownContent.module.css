@@ -73,3 +73,35 @@
   padding: 0.25rem 0.75rem;
   color: var(--text-muted);
 }
+
+.tableWrapper {
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.root table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.root th {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.root td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.root tr:last-child td { border-bottom: none; }
+.root tr:hover td { background: var(--bg-active); }

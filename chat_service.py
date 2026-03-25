@@ -5,6 +5,7 @@ The LLM selects and calls tools directly from their MCP schemas — no custom ro
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -406,6 +407,40 @@ def _get_interrupt_question(state_snapshot) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Redis checkpointer — initialized lazily on first call so the event loop is
+# already running when AsyncRedisSaver.__init__ calls get_running_loop().
+# ---------------------------------------------------------------------------
+
+_checkpointer_lock = asyncio.Lock()
+_checkpointer_ready = False
+
+
+async def _ensure_checkpointer() -> None:
+    """Initialise the AsyncRedisSaver once and rebuild atlas_graph with it."""
+    global _checkpointer_ready
+    if _checkpointer_ready:
+        return
+    async with _checkpointer_lock:
+        if _checkpointer_ready:
+            return  # double-checked locking
+        try:
+            import atlas.graph_builder as _gb
+            from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            cp = AsyncRedisSaver(
+                redis_url=redis_url,
+                ttl={"default_collection_ttl": 86400},  # 24-hour TTL for conversation state
+            )
+            await cp.asetup()
+            _gb.atlas_graph = _gb.build_graph(cp)
+            _checkpointer_ready = True
+            logger.info("Atlas graph re-compiled with AsyncRedisSaver (thread-id checkpointing enabled)")
+        except Exception as exc:
+            logger.warning("Could not initialise Redis checkpointer (%s) — running without state persistence", exc)
+            _checkpointer_ready = True  # don't retry on every call
+
+
 async def process_message(
     prompt: str,
     conversation_history: list[dict[str, str]],
@@ -421,6 +456,7 @@ async def process_message(
     """
     Process one user message via the Atlas LangGraph agent.
     """
+    await _ensure_checkpointer()
     from atlas.graph_builder import atlas_graph
 
     last_follow_up_action = _extract_last_follow_up_action(conversation_history or [])
@@ -449,5 +485,8 @@ async def process_message(
         "last_follow_up_action": last_follow_up_action,
     }
 
-    result_state = await atlas_graph.ainvoke(initial_state)
+    config: dict = {"recursion_limit": 50}
+    if session_id:
+        config["configurable"] = {"thread_id": session_id}
+    result_state = await atlas_graph.ainvoke(initial_state, config=config)
     return result_state.get("final_response") or {"role": "assistant", "content": "Something went wrong. Please try again."}

@@ -7,10 +7,14 @@ function DocLink({ children }) {
   return <code className={styles.docRef}>{children}</code>
 }
 
+function TableWrapper({ children }) {
+  return <div className={styles.tableWrapper}><table>{children}</table></div>
+}
+
 export default function MarkdownContent({ text }) {
   return (
     <div className={styles.root}>
-      <ReactMarkdown components={{ a: DocLink }}>{text}</ReactMarkdown>
+      <ReactMarkdown components={{ a: DocLink, table: TableWrapper }}>{text}</ReactMarkdown>
     </div>
   )
 }

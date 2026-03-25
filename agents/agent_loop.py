@@ -1,6 +1,7 @@
 """
 Shared tool-calling loop for agents.
 """
+import asyncio
 import json
 import logging
 
@@ -14,10 +15,11 @@ async def run_agent_loop(
     max_iterations: int = 5,
 ) -> str:
     """
-    Run a tool-calling loop.
+    Run a Plan-and-Execute agent loop.
 
-    The LLM decides which tools to call and in what order.
-    Iterates until the LLM stops issuing tool calls or max_iterations is reached.
+    Step 0: Planning call — LLM generates a <plan> with no tools bound.
+    Step 1+: Tool-calling loop — LLM executes the plan one step at a time.
+    Stops when the LLM issues no tool calls or max_iterations is reached.
     Returns the LLM's final natural-language response.
     """
     from langchain_openai import ChatOpenAI
@@ -38,6 +40,8 @@ async def run_agent_loop(
     tool_map = {t.name: t for t in tools}
 
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=task)]
+
+
     last_response = None
 
     for i in range(max_iterations):
@@ -71,10 +75,19 @@ async def run_agent_loop(
         return "No response generated."
     content = last_response.content
     # If the loop hit max_iterations while the LLM was still issuing tool calls,
-    # last_response is a tool-call message with no text.  Make one final call
+    # last_response is a tool-call message with no text. Make one final call
     # without tools bound so the LLM synthesises from the accumulated context.
     if not content and last_response.tool_calls:
         logger.warning("Agent loop hit max_iterations with pending tool calls — forcing synthesis")
         synthesis_response = await llm.ainvoke(messages)
         content = synthesis_response.content or "Investigation complete — no summary generated."
+    # Strip internal reasoning tags and plan echoes — not for display
+    import re
+    content = re.sub(r"<plan>.*?</plan>", "", content or "", flags=re.DOTALL).strip()
+    content = re.sub(r"<reflection>.*?</reflection>", "", content, flags=re.DOTALL).strip()
+    content = re.sub(r"<plan>.*", "", content, flags=re.DOTALL).strip()
+    content = re.sub(r"<reflection>.*", "", content, flags=re.DOTALL).strip()
+    # Strip any plan echo the LLM outputs instead of calling tools
+    content = re.sub(r"EXECUTION PLAN.*", "", content, flags=re.DOTALL).strip()
+    content = re.sub(r"PLAN\s*\(execute.*", "", content, flags=re.DOTALL).strip()
     return content or "Investigation complete — no summary generated."

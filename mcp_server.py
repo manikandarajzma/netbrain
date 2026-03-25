@@ -24,10 +24,11 @@ if _this_dir not in sys.path:
 from tools.shared import mcp, MCP_SERVER_HOST, MCP_SERVER_PORT
 
 # Import domain modules – the act of importing triggers @mcp.tool() registration
-import tools.splunk_tools      # noqa: F401
-import tools.panorama_tools    # noqa: F401
-import tools.netbrain_tools    # noqa: F401
-import tools.docs_tool         # noqa: F401
+import tools.splunk_tools       # noqa: F401
+import tools.panorama_tools     # noqa: F401
+import tools.netbrain_tools     # noqa: F401
+import tools.docs_tool          # noqa: F401
+import tools.servicenow_tools   # noqa: F401
 
 logger = logging.getLogger("atlas.server")
 

@@ -638,7 +638,6 @@ async def _add_panorama_device_groups_to_hops(simplified_hops: List[Dict[str, An
 @mcp.tool()
 async def query_panorama_ip_object_group(
     ip_address: str,
-    device_group: Optional[str] = None,
     vsys: str = "vsys1"
 ) -> Dict[str, Any]:
     """
@@ -662,7 +661,6 @@ async def query_panorama_ip_object_group(
 
     Args:
         ip_address: IP address to search for (e.g., "192.168.1.100", "10.0.0.1", "10.0.0.254")
-        device_group: Optional device group name to search within (if None, searches shared objects)
         vsys: VSYS name (default: "vsys1")
 
     Returns:
@@ -671,23 +669,20 @@ async def query_panorama_ip_object_group(
             - address_objects: List of address objects containing this IP
             - address_groups: List of address groups containing this IP or its address objects
             - policies: List of security and NAT policies that use the found address groups
-            - device_group: Device group where objects were found (if applicable)
             - error: Error message if query fails
 
     **Examples:**
-    - Query: "what address group 10.0.0.254 belongs to" → ip_address="10.0.0.254", device_group=None
-    - Query: "which object group contains 192.168.1.100" → ip_address="192.168.1.100", device_group=None
-    - Query: "find group for IP 10.0.0.1" → ip_address="10.0.0.1", device_group=None
+    - Query: "what address group 10.0.0.254 belongs to" → ip_address="10.0.0.254"
+    - Query: "which object group contains 192.168.1.100" → ip_address="192.168.1.100"
+    - Query: "find group for IP 10.0.0.1" → ip_address="10.0.0.1"
     """
     import xml.etree.ElementTree as ET
     import urllib.parse
     import ipaddress
 
-    # Sanitize device_group: the LLM sometimes passes the string "null" or "None"
-    if device_group and device_group.lower() in ("null", "none", ""):
-        device_group = None
+    device_group = None  # always search all locations; not exposed as a parameter
 
-    logger.debug(f"query_panorama_ip_object_group called with ip_address={ip_address}, device_group={device_group}, vsys={vsys}")
+    logger.debug(f"query_panorama_ip_object_group called with ip_address={ip_address}, vsys={vsys}")
 
     # Validate IP address or CIDR notation
     query_ip = None
@@ -2069,4 +2064,292 @@ async def check_panorama_policy(
                 if matching_policies else
                 f"No security policies found matching {source_ip} -> {dest_ip}."
             ),
+        }
+
+
+@mcp.tool()
+async def get_panorama_service_objects(
+    service_names: List[str],
+    device_group: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve Panorama service object names to their actual protocol and port definitions.
+
+    Args:
+        service_names: List of service object names to look up (e.g. ["test_port", "application-default"])
+        device_group:  Optional device group to search first before falling back to shared.
+
+    Returns:
+        dict mapping service name -> {"protocol": "tcp"/"udp", "port": "443", "description": "..."}
+        Built-in names ("any", "application-default") are returned as-is with a note.
+    """
+    BUILTIN = {
+        "any": {"protocol": "any", "port": "any", "note": "matches all traffic"},
+        "application-default": {"protocol": "any", "port": "application-default", "note": "port determined by App-ID"},
+    }
+
+    results: Dict[str, Any] = {}
+    to_resolve = []
+    for name in service_names:
+        if name in BUILTIN:
+            results[name] = BUILTIN[name]
+        else:
+            to_resolve.append(name)
+
+    if not to_resolve:
+        return results
+
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        return {name: {"error": "Panorama auth failed"} for name in service_names}
+
+    panorama_url = panoramaauth.PANORAMA_URL
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    async def _fetch_service(session, xpath: str, name: str) -> Optional[dict]:
+        url = f"{panorama_url}/api/?type=config&action=get&xpath={urllib.parse.quote(xpath)}&key={api_key}"
+        try:
+            async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
+                    return None
+                root = ET.fromstring(await resp.text())
+                entry = root.find(".//entry[@name='" + name + "']") or root.find(".//entry")
+                if entry is None:
+                    return None
+                proto_el = entry.find("protocol")
+                if proto_el is None:
+                    return None
+                for proto in ("tcp", "udp", "sctp"):
+                    proto_child = proto_el.find(proto)
+                    if proto_child is not None:
+                        port_el = proto_child.find("port")
+                        port = port_el.text if port_el is not None else "any"
+                        desc_el = entry.find("description")
+                        return {
+                            "protocol": proto,
+                            "port": port,
+                            "description": desc_el.text if desc_el is not None else "",
+                        }
+                return None
+        except Exception as exc:
+            logger.debug("Service object fetch failed for %s: %s", name, exc)
+            return None
+
+    async with aiohttp.ClientSession() as session:
+        for name in to_resolve:
+            found = None
+            # Try device group first
+            if device_group:
+                xpath = (
+                    f"/config/devices/entry[@name='localhost.localdomain']"
+                    f"/device-group/entry[@name='{device_group}']/service/entry[@name='{name}']"
+                )
+                found = await _fetch_service(session, xpath, name)
+            # Fall back to shared
+            if found is None:
+                xpath = f"/config/shared/service/entry[@name='{name}']"
+                found = await _fetch_service(session, xpath, name)
+            results[name] = found if found is not None else {"error": f"Service object '{name}' not found"}
+
+    return results
+
+
+@mcp.tool()
+async def test_panorama_security_policy_match(
+    firewall_hostname: str,
+    source_ip: str,
+    dest_ip: str,
+    dest_port: Optional[str] = None,
+    protocol: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run PAN-OS 'test security-policy-match' on a specific firewall via Panorama.
+
+    This uses the firewall's own policy evaluation engine — the same test available in
+    Panorama's Test Configuration UI — and returns the exact matching rule name and action.
+
+    Args:
+        firewall_hostname: Hostname of the firewall in the path (e.g. "PA-FW-01")
+        source_ip:         Source IP address
+        dest_ip:           Destination IP address
+        dest_port:         Destination port number as string (e.g. "443"). Optional.
+        protocol:          Protocol name or number: "tcp" (6), "udp" (17), "icmp" (1), or a number. Optional.
+
+    Returns:
+        dict with keys:
+            firewall: hostname tested
+            serial: firewall serial number (if resolved)
+            device_group: device group the firewall belongs to
+            matching_rule: name of the first matching security policy rule (or None)
+            action: rule action (allow/deny/drop/etc.)
+            from_zone: source zone reported by the test
+            to_zone: destination zone reported by the test
+            raw_rules: list of all rules returned by the test
+            error: error message if the test could not be run
+    """
+    PROTO_MAP = {"tcp": "6", "udp": "17", "icmp": "1", "sctp": "132"}
+
+    api_key = await panoramaauth.get_api_key()
+    if not api_key:
+        return {"error": "Failed to authenticate with Panorama.", "firewall": firewall_hostname}
+
+    panorama_url = panoramaauth.PANORAMA_URL
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+
+    # Resolve firewall hostname -> serial number using the device cache
+    hostname_serial: dict = {}
+    serial_dg: dict = {}
+    now = _time.monotonic()
+
+    global _dg_fw_cache
+    if _dg_fw_cache and (now - _dg_fw_cache["ts"]) < _DG_FW_CACHE_TTL:
+        hostname_serial = _dg_fw_cache["hostname_serial"]
+        serial_dg = _dg_fw_cache["serial_dg"]
+    else:
+        try:
+            async with aiohttp.ClientSession() as session:
+                devices_url = (
+                    f"{panorama_url}/api/?type=op"
+                    f"&cmd=<show><devices><all></all></devices></show>&key={api_key}"
+                )
+                async with session.get(devices_url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        root = ET.fromstring(await resp.text())
+                        for dev in root.findall(".//entry"):
+                            hn_el = dev.find("hostname")
+                            sn_el = dev.find("serial")
+                            hostname = hn_el.text if hn_el is not None else None
+                            serial = sn_el.text if sn_el is not None else dev.get("name")
+                            if hostname and serial:
+                                hostname_serial[hostname.lower()] = serial
+
+                dg_xpath = "/config/devices/entry[@name='localhost.localdomain']/device-group"
+                dg_url = (
+                    f"{panorama_url}/api/?type=config&action=get"
+                    f"&xpath={urllib.parse.quote(dg_xpath)}&key={api_key}"
+                )
+                async with session.get(dg_url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        root = ET.fromstring(await resp.text())
+                        for dg_entry in root.findall(".//entry"):
+                            dg_name = dg_entry.get("name")
+                            if not dg_name:
+                                continue
+                            for dev_entry in dg_entry.findall("devices/entry"):
+                                s = dev_entry.get("name")
+                                if s:
+                                    serial_dg[s] = dg_name
+        except Exception as exc:
+            logger.warning("test_panorama_security_policy_match: device cache build failed: %s", exc)
+
+        _dg_fw_cache = {"hostname_serial": hostname_serial, "serial_dg": serial_dg, "ts": now}
+
+    # Look up serial (exact then fuzzy)
+    fw_lower = firewall_hostname.lower()
+    serial = hostname_serial.get(fw_lower)
+    if serial is None:
+        for hn, sn in hostname_serial.items():
+            if fw_lower in hn or hn in fw_lower:
+                serial = sn
+                break
+
+    if not serial:
+        return {
+            "error": f"Firewall '{firewall_hostname}' not found in Panorama device list.",
+            "firewall": firewall_hostname,
+        }
+
+    device_group = serial_dg.get(serial, "unknown")
+
+    # Build the test command XML
+    proto_num = None
+    if protocol:
+        proto_lower = protocol.lower()
+        proto_num = PROTO_MAP.get(proto_lower, proto_lower if proto_lower.isdigit() else None)
+
+    cmd_parts = [
+        f"<source>{source_ip}</source>",
+        f"<destination>{dest_ip}</destination>",
+    ]
+    if dest_port:
+        cmd_parts.append(f"<destination-port>{dest_port}</destination-port>")
+    if proto_num:
+        cmd_parts.append(f"<protocol>{proto_num}</protocol>")
+
+    cmd = f"<test><security-policy-match>{''.join(cmd_parts)}</security-policy-match></test>"
+    url = (
+        f"{panorama_url}/api/?type=op"
+        f"&cmd={urllib.parse.quote(cmd)}"
+        f"&target={urllib.parse.quote(serial)}"
+        f"&key={api_key}"
+    )
+
+    logger.info(
+        "test_panorama_security_policy_match: fw=%s serial=%s %s->%s port=%s proto=%s",
+        firewall_hostname, serial, source_ip, dest_ip, dest_port, protocol,
+    )
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                resp_text = await resp.text()
+                if resp.status != 200:
+                    return {
+                        "error": f"HTTP {resp.status} from Panorama",
+                        "firewall": firewall_hostname,
+                        "serial": serial,
+                        "device_group": device_group,
+                    }
+                root = ET.fromstring(resp_text)
+                xml_status = root.attrib.get("status")
+                if xml_status != "success":
+                    msg_el = root.find(".//msg") or root.find(".//result/msg")
+                    err = (msg_el.text or resp_text[:300]).strip() if msg_el is not None else resp_text[:300]
+                    return {
+                        "error": f"Panorama returned status='{xml_status}': {err}",
+                        "firewall": firewall_hostname,
+                        "serial": serial,
+                        "device_group": device_group,
+                    }
+
+                rules = []
+                for rule_entry in root.findall(".//rules/entry"):
+                    name_el = rule_entry.find("name") or rule_entry
+                    rule_name = (
+                        name_el.text
+                        if name_el.tag == "name" and name_el.text
+                        else rule_entry.get("name", "unknown")
+                    )
+                    action_el = rule_entry.find("action")
+                    from_el = rule_entry.find("from")
+                    to_el = rule_entry.find("to")
+                    rules.append({
+                        "name": rule_name,
+                        "action": action_el.text if action_el is not None else "unknown",
+                        "from_zone": from_el.text if from_el is not None else None,
+                        "to_zone": to_el.text if to_el is not None else None,
+                    })
+
+                first = rules[0] if rules else None
+                return {
+                    "firewall": firewall_hostname,
+                    "serial": serial,
+                    "device_group": device_group,
+                    "matching_rule": first["name"] if first else None,
+                    "action": first["action"] if first else "no-match",
+                    "from_zone": first["from_zone"] if first else None,
+                    "to_zone": first["to_zone"] if first else None,
+                    "raw_rules": rules,
+                }
+    except Exception as exc:
+        logger.warning("test_panorama_security_policy_match: request failed: %s", exc)
+        return {
+            "error": str(exc),
+            "firewall": firewall_hostname,
+            "serial": serial,
+            "device_group": device_group,
         }

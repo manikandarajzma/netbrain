@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { cellText } from '../../utils/formatters.js'
-import { downloadCsv } from '../../utils/csvExport.js'
+import { downloadCsv, downloadExcel } from '../../utils/csvExport.js'
 import styles from './DataTable.module.css'
 
 export default function DataTable({ rows, columns = null, pageSize = 10 }) {
@@ -55,6 +55,12 @@ export default function DataTable({ rows, columns = null, pageSize = 10 }) {
     downloadCsv(headers, data, 'export.csv')
   }
 
+  function exportExcel() {
+    const headers = keys.map(k => k.replace(/_/g, ' '))
+    const data = rows.map(row => keys.map(k => cellText(row[k])))
+    downloadExcel(headers, data, 'export.xlsx')
+  }
+
   function formatHeader(key) {
     return key.replace(/_/g, ' ')
   }
@@ -64,6 +70,7 @@ export default function DataTable({ rows, columns = null, pageSize = 10 }) {
       <div className={styles.tableToolbar}>
         <input value={filterVal} onChange={onFilter} type="text" placeholder="Filter table..." className={styles.filterInput} />
         <button type="button" className={styles.exportCsv} onClick={exportCsv}>Export CSV</button>
+        <button type="button" className={styles.exportCsv} onClick={exportExcel}>Export Excel</button>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table className={styles.table}>

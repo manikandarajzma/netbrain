@@ -3,8 +3,10 @@ Atlas LangGraph nodes.
 All logic is extracted from chat_service.py — no new behaviour introduced.
 """
 import asyncio
+import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -27,6 +29,45 @@ logger = logging.getLogger("atlas.graph_nodes")
 
 
 # ---------------------------------------------------------------------------
+# ServiceNow response cache (keyed on prompt, skips port-8005 round-trip)
+# ---------------------------------------------------------------------------
+
+_SNOW_RESPONSE_TTL = 120  # seconds
+
+_SNOW_WRITE_RE = re.compile(
+    r'\b(create|update|close|resolve|assign|add note|work note|open|submit|delete)\b',
+    re.IGNORECASE,
+)
+
+
+def _snow_resp_key(prompt: str) -> str:
+    digest = hashlib.sha256(prompt.strip().lower().encode()).hexdigest()[:20]
+    return f"atlas:snow:resp:{digest}"
+
+
+def _snow_resp_get(prompt: str) -> str | None:
+    if _SNOW_WRITE_RE.search(prompt):
+        return None
+    try:
+        import redis as _r
+        return _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                           decode_responses=True).get(_snow_resp_key(prompt))
+    except Exception:
+        return None
+
+
+def _snow_resp_set(prompt: str, text: str) -> None:
+    if _SNOW_WRITE_RE.search(prompt):
+        return
+    try:
+        import redis as _r
+        _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                    decode_responses=True).setex(_snow_resp_key(prompt), _SNOW_RESPONSE_TTL, text)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Node 1: classify_intent
 # ---------------------------------------------------------------------------
 
@@ -39,17 +80,25 @@ You are an intent classifier for a network security tool. Classify the message i
 
 CATEGORIES:
 
-network — Looking up firewall objects: what address group an IP belongs to, group members, or which policies reference a group. The user wants to know WHAT something IS, not fix a problem.
+network — Looking up firewall objects: what address group an IP belongs to, group members, policies referencing a group, or details about a specific policy. The user wants to know WHAT something IS, not fix a problem.
   "what group is 10.0.0.5 in?"  →  network
   "what address group is 11.0.0.1 part of?"  →  network
   "show me the members of leander_web"  →  network
   "what policies reference this group? also give me the members"  →  network
   "give me the group members and the policies that reference it"  →  network
+  "what is the action for policy Allow HTTPS from DMZ to Internal"  →  network
+  "show me the policy details for X"  →  network
+  "what does policy X do?"  →  network
 
-troubleshoot — A connectivity PROBLEM between two specific endpoints. The user cannot reach something and wants to know why.
+troubleshoot — Any network or infrastructure PROBLEM the user wants diagnosed or investigated. Covers connectivity issues, device outages, performance degradation, interface errors, policy violations, security events, and change-related problems. The user wants to know WHY something is broken or behaving unexpectedly.
   "why can't 10.0.0.1 connect to 11.0.0.1?"  →  troubleshoot
   "traffic from 10.0.0.1 to 11.0.0.1 is being blocked"  →  troubleshoot
   "is traffic from A to B allowed on port 443?"  →  troubleshoot
+  "PA-FW-01 is dropping packets"  →  troubleshoot
+  "why is CORE-SW-01 having high CPU?"  →  troubleshoot
+  "users in building A can't reach the internet"  →  troubleshoot
+  "troubleshoot connectivity between 10.0.0.1 and 11.0.0.1"  →  troubleshoot
+  "why is there high latency between 10.0.0.1 and 11.0.0.1?"  →  troubleshoot
 
 risk — Security posture or risk assessment for a single IP or host.
   "what is the risk of 10.0.0.5?"  →  risk
@@ -58,6 +107,21 @@ risk — Security posture or risk assessment for a single IP or host.
 netbrain — Tracing or visualising the network path between two IPs.
   "trace path from A to B"  →  netbrain
   "show me the route from X to Y"  →  netbrain
+
+servicenow — Anything about ITSM tickets, incidents, change requests, problems, CMDB CIs, or ServiceNow users. Use this when the user references a ticket number (INC..., CHG..., PRB...), asks about tickets or incidents, or wants to create/update/search records in ServiceNow.
+  "show me open incidents"  →  servicenow
+  "any historical ticket related to PA-FW-01"  →  servicenow
+  "any issues related to PA-FW-01"  →  servicenow
+  "give me details about INC0010005"  →  servicenow
+  "give me details about NC0010005"  →  servicenow
+  "details for INC0010001"  →  servicenow
+  "create an incident for network outage"  →  servicenow
+  "what change requests are scheduled this week?"  →  servicenow
+  "find the CI for 10.0.0.1"  →  servicenow
+  "is there an open ticket for this device?"  →  servicenow
+  "look up user john.smith"  →  servicenow
+  "search knowledge base for VPN setup"  →  servicenow
+  "any known issues for this firewall?"  →  servicenow
 
 doc — A how-to or conceptual question about firewall/network/security tools or processes.
   "how do I request firewall access?"  →  doc
@@ -73,7 +137,18 @@ Reply with ONLY the category name. No explanation. No punctuation.\
 
 
 async def _llm_classify_intent(prompt: str) -> str:
-    """Call the local LLM to classify the intent of a user prompt."""
+    """Call the local LLM to classify the intent of a user prompt. Result is cached in Redis."""
+    cache_key = f"atlas:intent:{hashlib.sha256(prompt.strip().lower().encode()).hexdigest()[:20]}"
+    try:
+        import redis as _r
+        _rc = _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        cached = _rc.get(cache_key)
+        if cached:
+            logger.info("classify_intent: cache hit %r -> %r", prompt[:60], cached)
+            return cached
+    except Exception:
+        pass
+
     try:
         from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
     except ImportError:
@@ -87,7 +162,7 @@ async def _llm_classify_intent(prompt: str) -> str:
         base_url=OLLAMA_BASE_URL,
         temperature=0.0,
         api_key="docker",
-        max_tokens=10,
+        max_tokens=20,
     )
     try:
         response = await llm.ainvoke([
@@ -95,14 +170,90 @@ async def _llm_classify_intent(prompt: str) -> str:
             HumanMessage(content=prompt),
         ])
         raw = (response.content or "").strip().lower().split()[0].rstrip(".,;:")
-        valid = {"troubleshoot", "risk", "netbrain", "doc", "network", "dismiss"}
-        if raw in valid:
-            return raw
-        logger.warning("_llm_classify_intent: unexpected label %r for %r — falling back to doc", raw, prompt[:80])
-        return "doc"
+        valid = {"troubleshoot", "risk", "netbrain", "doc", "network", "dismiss", "servicenow"}
+        result = raw if raw in valid else "doc"
+        if raw not in valid:
+            logger.warning("_llm_classify_intent: unexpected label %r for %r — falling back to doc", raw, prompt[:80])
+        try:
+            _rc.setex(cache_key, 3600, result)  # cache intent for 1 hour
+        except Exception:
+            pass
+        return result
     except Exception as exc:
         logger.warning("_llm_classify_intent failed: %s — falling back to doc", exc)
         return "doc"
+
+
+def _last_assistant_content(history: list) -> str:
+    """Return the last assistant message content as a string."""
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, dict):
+            content = content.get("direct_answer", "")
+        return str(content)
+    return ""
+
+
+_CREATE_FORM_PHRASES = (
+    "need a few details to create",
+    "almost there",
+    "still need the following",
+    "just need a few more",
+)
+
+
+_CHG_USER_RE = re.compile(
+    r'\b(create|open|raise|submit|log)\b.{0,40}\b(change request|change req|change|chg|cr)\b',
+    re.IGNORECASE,
+)
+_INC_USER_RE = re.compile(
+    r'\b(create|open|raise|submit|log)\b.{0,40}\b(incident|inc)\b',
+    re.IGNORECASE,
+)
+
+
+def _resolve_active_flow(active_flow: str | None, history: list) -> str | None:
+    """Return the current create-flow type.
+
+    History (from DB) is the primary source of truth.  The LangGraph checkpoint
+    value is NOT trusted because it may have been written by a previous buggy run.
+    """
+    # 1. Is a form still active? The last assistant message must contain a form phrase.
+    last = _last_assistant_content(history)
+    if not any(p in last.lower() for p in _CREATE_FORM_PHRASES):
+        return None
+
+    # 2. Scan history for the clearest signal of CHG vs INC.
+    #    Check user messages (explicit create intent) AND assistant form messages.
+    flow_type: str | None = None
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, dict):
+            content = content.get("direct_answer", "")
+        low = str(content).lower()
+
+        if role == "user":
+            if _CHG_USER_RE.search(low):
+                flow_type = "create_change_request"
+            elif _INC_USER_RE.search(low):
+                flow_type = "create_incident"
+        elif role == "assistant" and any(p in low for p in _CREATE_FORM_PHRASES):
+            if "change request" in low or "change req" in low or "change_request" in low:
+                flow_type = "create_change_request"
+            elif "incident" in low and flow_type is None:
+                flow_type = "create_incident"
+
+    if flow_type is not None:
+        return flow_type
+
+    # 3. Nothing found in history — fall back to checkpoint (last resort)
+    if active_flow in ("create_change_request", "create_incident"):
+        return active_flow
+
+    return None
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
@@ -113,10 +264,53 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         pass
     prompt = state["prompt"]
     prefilled = state.get("prefilled_tool_name")
+    history = state.get("conversation_history") or []
 
     if prefilled and state.get("prefilled_tool_params") is not None:
-        messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
+        messages = _build_llm_messages(prompt, history)
         return {"intent": "prefilled", "messages": messages, "iteration": 0}
+
+    # active_flow is persisted via Redis checkpointer; _resolve_active_flow falls back to
+    # history scan when the checkpoint has no state (e.g. after a server restart).
+    active_flow = _resolve_active_flow(state.get("active_flow"), history)
+    _SNOW_RECORD_RE = re.compile(r'\b(INC|CHG|PRB)\d+\b')
+    _last = _last_assistant_content(history)
+
+    # Determine if this is a clear servicenow context without needing the LLM
+    _forced_servicenow = (
+        active_flow in ("create_change_request", "create_incident")
+        or (_SNOW_RECORD_RE.search(_last) and len(prompt.split()) <= 8)
+    )
+
+    # discover_only: return display label — never invoke real agents.
+    # We resolve the effective intent here too (from context or LLM) so the label is correct.
+    if state.get("discover_only"):
+        if _forced_servicenow:
+            effective_intent = "servicenow"
+        else:
+            effective_intent = await _llm_classify_intent(prompt)
+        display_map = {
+            "troubleshoot": "Troubleshoot Orchestrator",
+            "netbrain": "NetBrain",
+            "network": "Panorama",
+            "servicenow": "ServiceNow",
+            "risk": "Risk Assessment",
+            "doc": "Documentation",
+        }
+        return {
+            "intent": "dismiss",
+            "final_response": {
+                "tool_display_name": display_map.get(effective_intent, "ServiceNow"),
+                "intent": effective_intent,
+            },
+        }
+
+    if _forced_servicenow:
+        logger.info(
+            "classify_intent: forced servicenow (active_flow=%r, last_has_record=%s)",
+            active_flow, bool(_SNOW_RECORD_RE.search(_last)),
+        )
+        return {"intent": "servicenow", "messages": [], "iteration": 0}
 
     conversation_history = state.get("conversation_history") or []
     prompt_lower_strip = prompt.lower().strip().rstrip("!.")
@@ -213,24 +407,24 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     # is re-evaluated cleanly instead of consuming the old pending as if it were an answer.
     if not state.get("discover_only"):
         session_id = state.get("session_id") or "default"
-        has_pending_ts = session_id in _pending_ts_prompts
+        has_pending_ts = _pending_ts_exists(session_id)
         if has_pending_ts:
             if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
                 # Short, no-IP reply → treat as clarification answer
                 return {"intent": "troubleshoot", "messages": [], "iteration": 0}
             else:
                 # New query with IPs → discard stale pending, evaluate fresh
-                _pending_ts_prompts.pop(session_id, None)
+                _pending_ts_delete(session_id)
                 logger.info("classify_intent: discarding stale pending_ts for session %s (new IP query)", session_id)
 
-    # LLM-based intent classification
+    # LLM-based intent classification (result cached in Redis to avoid repeat LLM calls)
     intent = await _llm_classify_intent(prompt)
     logger.info("classify_intent: LLM classified %r as %r", prompt[:80], intent)
 
     if intent == "dismiss":
         return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "I am not equipped to answer this question. If you feel its a mistake, reach out to the atlas team."}, "messages": [], "iteration": 0}
 
-    if intent in ("troubleshoot", "netbrain", "risk"):
+    if intent in ("troubleshoot", "netbrain", "risk", "servicenow"):
         return {"intent": intent, "messages": [], "iteration": 0}
 
     messages = _build_llm_messages(prompt, state.get("conversation_history") or [])
@@ -292,25 +486,156 @@ async def netbrain_agent(state: AtlasState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Node: servicenow_agent — ServiceNow ITSM queries
+# ---------------------------------------------------------------------------
+
+_SNOW_RECORD_HEADING_RE = re.compile(r'^##\s+(INC|CHG|PRB)\d+', re.MULTILINE)
+_SNOW_CREATED_RE = re.compile(r'\b(INC|CHG|PRB)\d{7,10}\b', re.IGNORECASE)
+
+
+def _active_flow_from_response(text: str, current_flow: str | None) -> str | None:
+    """Determine the new active_flow value from a ServiceNow agent response."""
+    low = text.lower()
+    # Create form was requested — set/keep the flow type
+    if "need a few details to create the change request" in low or "need a few details to create the change" in low:
+        return "create_change_request"
+    if "need a few details to create the incident" in low:
+        return "create_incident"
+    # Still gathering details — preserve current flow
+    if any(p in low for p in ("almost there", "still need the following", "just need a few more")):
+        return current_flow
+    # Record heading present → create/lookup completed; clear the flow
+    if _SNOW_RECORD_HEADING_RE.search(text):
+        return None
+    # Record number returned without a create-form phrase → completed or plain lookup
+    if _SNOW_CREATED_RE.search(text):
+        return None
+    # Default: clear flow (handles errors, plain lists, etc.)
+    return None
+
+
+async def servicenow_agent(state: AtlasState) -> dict[str, Any]:
+    """Send the ServiceNow query to the ServiceNow A2A agent and return its response."""
+    import uuid
+    import httpx
+
+    prompt = state["prompt"]
+    servicenow_url = "http://localhost:8005"
+    history = state.get("conversation_history") or []
+    current_flow = _resolve_active_flow(state.get("active_flow"), history)
+
+    # Short follow-up with no record number? Inject the last known record number so the
+    # LLM knows which record to act on (e.g. "close it" after CHG0030022 was created).
+    _SNOW_RECORD_RE2 = re.compile(r'\b(INC|CHG|PRB)\d+\b')
+    _ACTION_RE = re.compile(r'\b(close|update|resolve|assign|add note|reopen|cancel|approve)\b', re.IGNORECASE)
+    if not _SNOW_RECORD_RE2.search(prompt) and len(prompt.split()) <= 8 and _ACTION_RE.search(prompt):
+        _last_content = _last_assistant_content(history)
+        m = _SNOW_RECORD_RE2.search(_last_content)
+        if m:
+            prompt = f"{prompt} {m.group(0)}"
+            logger.info("servicenow_agent: injected record number %s into prompt", m.group(0))
+
+    # If active_flow is set, the user is replying to a create-details form.
+    # Collect all user replies since the form was shown and send a combined prompt.
+    if current_flow in ("create_change_request", "create_incident"):
+        form_text = _last_assistant_content(history)
+        # Gather user turns after the last assistant form prompt
+        collecting = False
+        user_replies = []
+        _FORM_START = ("need a few details to create",)
+        _FORM_CONT  = ("almost there", "still need", "please provide")
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if isinstance(content, dict):
+                content = content.get("direct_answer", "")
+            low = str(content).lower()
+            if role == "assistant":
+                if any(p in low for p in _FORM_START):
+                    collecting = True
+                    user_replies = []  # reset only on the initial form prompt
+                elif any(p in low for p in _FORM_CONT):
+                    collecting = True   # keep collecting but do NOT reset user_replies
+                continue
+            if collecting and role == "user":
+                user_replies.append(str(content))
+        user_replies.append(prompt)
+        combined = "\n".join(user_replies)
+        prompt = f"[CREATE FORM] {current_flow}\n{form_text}\n\n[USER PROVIDED]\n{combined}"
+
+    # Check response cache before doing anything — skips LLM + API call entirely
+    cached = _snow_resp_get(prompt)
+    if cached:
+        logger.info("ServiceNow node: response cache hit for prompt=%r", prompt[:60])
+        return {"active_flow": _active_flow_from_response(cached, current_flow),
+                "final_response": {"role": "assistant", "content": {"direct_answer": cached}}}
+
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(state.get("session_id") or "default", "Checking ServiceNow...")
+    except Exception:
+        pass
+
+    task = {
+        "id": str(uuid.uuid4()),
+        "message": {
+            "role": "user",
+            "parts": [{"type": "text", "text": prompt}],
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(servicenow_url, json=task)
+            response.raise_for_status()
+            data = response.json()
+            artifacts = data.get("artifacts", [])
+            text = next(
+                (p.get("text") for p in artifacts[0].get("parts", []) if p.get("type") == "text"),
+                None,
+            ) if artifacts else None
+            if text:
+                _snow_resp_set(prompt, text)
+                new_flow = _active_flow_from_response(text, current_flow)
+                logger.info("ServiceNow node: active_flow %r -> %r", current_flow, new_flow)
+                return {
+                    "active_flow": new_flow,
+                    "final_response": {"role": "assistant", "content": {"direct_answer": text}},
+                }
+            return {
+                "active_flow": None,
+                "final_response": {"role": "assistant", "content": "ServiceNow agent returned no data."},
+            }
+    except Exception as e:
+        logger.warning("ServiceNow agent call failed: %s", e)
+        return {
+            "active_flow": None,
+            "final_response": {"role": "assistant", "content": f"ServiceNow agent unavailable: {e}"},
+        }
+
+
+# ---------------------------------------------------------------------------
 # Node: troubleshoot_orchestrator — multi-agent troubleshooting coordinator
 # ---------------------------------------------------------------------------
 
 _TS_CONTEXT_PROMPT = """\
-You are analysing a network troubleshooting query. Determine what context is missing.
+You are analysing a network troubleshooting query. Determine what context is present.
 
 Reply with ONLY a JSON object on one line, no explanation:
 {"has_issue_type": <true|false>, "has_port": <true|false>}
 
-- has_issue_type: true if the query implies a connectivity failure or performance problem. "Cannot connect", "not connecting", "unable to connect", "can't reach", "not working" all count as has_issue_type=true (they imply blocked/unreachable). Only false if the query is completely neutral with no problem framing.
-- has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.)
+- has_issue_type: true if the query describes ANY problem or investigation — connectivity failure, performance issue, device problem, policy check, security event, or general troubleshooting. This includes: "cannot connect", "blocked", "slow", "dropping packets", "high CPU", "not working", "troubleshoot", "check", "investigate", "diagnose". Only false if the query is so vague it has no context at all (e.g. just two IPs with no verb).
+- has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.). For device-based queries (no src/dst IPs), has_port is always true — port is not needed.
 
 Examples:
 "why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"why can't 10.0.0.1 reach 11.0.0.1" → {"has_issue_type": true, "has_port": false}
 "traffic is blocked from 10.0.0.1 to 11.0.0.1 on TCP 443" → {"has_issue_type": true, "has_port": true}
-"why is 10.0.0.1 slow reaching 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"can 10.0.0.1 reach 11.0.0.1 over HTTPS" → {"has_issue_type": true, "has_port": true}
-"check connectivity from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": false, "has_port": false}\
+"troubleshoot connectivity between 10.0.0.1 and 11.0.0.1" → {"has_issue_type": true, "has_port": false}
+"PA-FW-01 is dropping packets" → {"has_issue_type": true, "has_port": true}
+"why is CORE-SW-01 having high CPU?" → {"has_issue_type": true, "has_port": true}
+"users in building A can't reach the internet" → {"has_issue_type": true, "has_port": false}
+"check connectivity from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false}
+"10.0.0.1 11.0.0.1" → {"has_issue_type": false, "has_port": false}\
 """
 
 
@@ -345,10 +670,52 @@ async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool]:
 
 
 # Pending clarification prompts keyed by session_id.
-# When a troubleshoot query lacks port/issue context we return a clarifying
-# question and store the original prompt here.  The next message from the same
-# session is combined with it before running the orchestrator.
-_pending_ts_prompts: dict[str, str] = {}
+# Stored in Redis (with 10-minute TTL) so they survive server reloads.
+# Falls back to an in-memory dict if Redis is unavailable.
+_pending_ts_mem: dict[str, str] = {}
+_PENDING_TS_TTL = 600  # 10 minutes
+
+
+def _pending_ts_set(session_id: str, prompt: str) -> None:
+    try:
+        import os, redis as _redis
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        r.setex(f"atlas:pending_ts:{session_id}", _PENDING_TS_TTL, prompt)
+        return
+    except Exception:
+        pass
+    _pending_ts_mem[session_id] = prompt
+
+
+def _pending_ts_get(session_id: str) -> str | None:
+    try:
+        import os, redis as _redis
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        return r.get(f"atlas:pending_ts:{session_id}")
+    except Exception:
+        pass
+    return _pending_ts_mem.get(session_id)
+
+
+def _pending_ts_exists(session_id: str) -> bool:
+    try:
+        import os, redis as _redis
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        return r.exists(f"atlas:pending_ts:{session_id}") > 0
+    except Exception:
+        pass
+    return session_id in _pending_ts_mem
+
+
+def _pending_ts_delete(session_id: str) -> None:
+    try:
+        import os, redis as _redis
+        r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        r.delete(f"atlas:pending_ts:{session_id}")
+        return
+    except Exception:
+        pass
+    _pending_ts_mem.pop(session_id, None)
 
 
 async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
@@ -374,22 +741,52 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
         pass
 
     # If a previous turn asked for clarification, combine with the original prompt.
-    # Do this before the IP check — the clarification answer won't contain IPs.
-    pending = _pending_ts_prompts.pop(session_id, None)
+    # Primary: Redis-backed store (survives reloads). Fallback: conversation history scan.
+    pending = _pending_ts_get(session_id)
+    if pending:
+        _pending_ts_delete(session_id)
+    if not pending:
+        # Fallback: check if last assistant message was a clarification question and
+        # the user's reply looks like a port/issue-type answer (short, no new IPs).
+        history = state.get("conversation_history") or []
+        if len(history) >= 2:
+            last_assistant = next(
+                (m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"),
+                ""
+            )
+            last_user_before = next(
+                (m.get("content", "") for m in reversed(history[:-1]) if m.get("role") == "user"),
+                ""
+            )
+            is_clarification_reply = (
+                ("which port" in last_assistant.lower() or "what type of issue" in last_assistant.lower())
+                and len(_IP_OR_CIDR_RE.findall(prompt)) == 0
+                and len(prompt.split()) <= 6
+            )
+            if is_clarification_reply and _IP_OR_CIDR_RE.findall(last_user_before):
+                pending = last_user_before
+                logger.info("Recovered pending troubleshoot prompt from conversation history")
+
     if pending:
         full_prompt = f"{pending}\n\nUser clarification: {prompt}"
     else:
-        # Require at least two IPs to proceed — without them we can't troubleshoot anything.
+        # For connectivity queries (2 IPs), check if we have enough context.
+        # For device-based queries (device name, single IP), proceed directly — no IP count gate.
         ip_matches_in_prompt = _IP_OR_CIDR_RE.findall(prompt)
-        if len(ip_matches_in_prompt) < 2:
-            return {"final_response": {"role": "assistant", "content": (
-                "Please provide both a **source IP** and a **destination IP** to troubleshoot.\n"
-                "Example: \"Why can't 10.0.0.1 connect to 11.0.0.1?\""
-            )}}
+        is_connectivity_query = len(ip_matches_in_prompt) >= 2
+        if not is_connectivity_query and len(ip_matches_in_prompt) == 0:
+            # No IPs and no obvious device name context — ask for more info
+            words = prompt.lower().split()
+            has_device_context = any(c.isdigit() or "-" in w for w in words for c in w)
+            if not has_device_context and len(prompt.split()) < 4:
+                return {"final_response": {"role": "assistant", "content": (
+                    "Please describe the problem — include device names, IP addresses, or a description of what is failing.\n"
+                    "Example: \"Why can't 10.0.0.1 connect to 11.0.0.1?\" or \"PA-FW-01 is dropping traffic\""
+                )}}
         issue_clear, port_clear = await _llm_check_ts_context(prompt)
         logger.info("Troubleshoot context check: has_issue_type=%s has_port=%s", issue_clear, port_clear)
 
-        if not issue_clear or not port_clear:
+        if not issue_clear or (is_connectivity_query and not port_clear):
             parts = []
             if not issue_clear:
                 parts.append(
@@ -397,15 +794,16 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
                     "- Blocked / denied — traffic is being dropped or a policy is denying it\n"
                     "- Slow / high latency — connectivity works but performance is degraded\n"
                     "- Intermittent — connectivity drops in and out unpredictably\n"
+                    "- Device issue — a specific device is misbehaving (errors, CPU, outage)\n"
                     "- Path changed — routing appears different from what is expected"
                 )
-            if not port_clear:
+            if is_connectivity_query and not port_clear:
                 parts.append(
                     "**Which port or protocol is affected?**\n"
                     "e.g. TCP 443, UDP 53, TCP 22 — or 'any' if protocol-agnostic"
                 )
             question = "\n\n".join(parts)
-            _pending_ts_prompts[session_id] = prompt
+            _pending_ts_set(session_id, prompt)
             logger.info("Troubleshoot clarification requested for session %s", session_id)
             return {"final_response": {"role": "assistant", "content": question}}
 
@@ -449,7 +847,50 @@ async def fetch_mcp_tools(state: AtlasState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Node 4: tool_selector  (LLM picks a tool)
+# Node 4a: planner_node  (LLM generates a plan before any tool is called)
+# ---------------------------------------------------------------------------
+
+async def planner_node(state: AtlasState) -> dict[str, Any]:
+    """
+    Plan-and-Execute step 0: call the LLM without tools to generate a <plan>.
+    The plan is injected as a SystemMessage so tool_selector can follow it step by step.
+    """
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage as _SM
+
+    try:
+        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+    except ImportError:
+        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
+
+    llm = ChatOpenAI(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.0, api_key="docker")
+    messages = list(state["messages"])
+
+    planning_instruction = _SM(content=(
+        "Before calling any tool, state your plan: list every piece of information you need "
+        "to fully answer the question, and which tool you will call for each step. "
+        "Use exact tool names. Only plan — do not call any tool yet."
+    ))
+
+    try:
+        plan_response = await asyncio.wait_for(
+            llm.ainvoke(messages + [planning_instruction]),
+            timeout=30.0,
+        )
+        if plan_response.content:
+            plan_msg = _SM(content=(
+                f"PLAN (execute every step — do not stop early):\n{plan_response.content}"
+            ))
+            messages = messages + [plan_msg]
+            logger.info("planner_node: %s", plan_response.content[:300])
+    except Exception as exc:
+        logger.debug("planner_node: skipped (%s)", exc)
+
+    return {"messages": messages}
+
+
+# ---------------------------------------------------------------------------
+# Node 4b: tool_selector  (LLM picks a tool)
 # ---------------------------------------------------------------------------
 
 async def tool_selector(state: AtlasState) -> dict[str, Any]:
@@ -611,6 +1052,9 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
 
     # Success: normalize result and accumulate
     normalized = _normalize_result(tool_name, result, state.get("prompt", ""))
+    # Strip follow_up offer from intermediate results that will be chained
+    if tool_name == "query_panorama_ip_object_group" and isinstance(normalized, dict):
+        normalized = {k: v for k, v in normalized.items() if k not in ("follow_up", "follow_up_action")}
     accumulated = list(state.get("accumulated_results") or [])
     accumulated.append(normalized)
 
@@ -620,35 +1064,45 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
         result_summary = result_summary[:6000] + "... [truncated for context length]"
     updated_messages = messages + [ToolMessage(content=result_summary, tool_call_id=tool_call_id)]
 
-    # Deterministic chaining: if IP lookup completed and user asked for members/policies,
-    # call query_panorama_address_group_members directly — do not rely on LLM to chain.
+    # Deterministic chaining: IP lookup always chains to members — no keyword matching needed.
+    # If you know what group an IP is in, members + policies are always the natural next step.
     if tool_name == "query_panorama_ip_object_group" and isinstance(result, dict):
-        prompt_lower_chain = (state.get("prompt") or "").lower()
-        wants_members = any(w in prompt_lower_chain for w in ("members", "contents", "what's in", "whats in"))
-        wants_policies = any(w in prompt_lower_chain for w in ("policies", "policy", "rules", "security rules", "firewall rules"))
-        if wants_members or wants_policies:
-            address_groups = result.get("address_groups", [])
-            if address_groups:
-                first_group = address_groups[0]
-                group_name = first_group.get("name")
-                device_group = first_group.get("device_group")
-                if group_name:
-                    members_params = {"address_group_name": group_name}
-                    if device_group:
-                        members_params["device_group"] = device_group
-                    if wants_policies and not wants_members:
-                        members_params["_policies_only"] = True
-                    members_result = await call_mcp_tool(
-                        "query_panorama_address_group_members",
-                        members_params,
-                        timeout=_TOOL_TIMEOUTS.get("query_panorama_address_group_members", 65.0),
-                    )
-                    if members_result and isinstance(members_result, dict) and "error" not in members_result:
-                        members_normalized = _normalize_result("query_panorama_address_group_members", members_result, state.get("prompt", ""))
-                        accumulated.append(members_normalized)
-                        final = {"multi_results": accumulated} if len(accumulated) > 1 else members_normalized
-                        return {"tool_raw_result": members_result, "accumulated_results": accumulated, "tool_error": None,
-                                "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
+        address_groups = result.get("address_groups", [])
+        if address_groups:
+            first_group = address_groups[0]
+            group_name = first_group.get("name")
+            device_group = first_group.get("device_group")
+            if group_name:
+                members_params = {"address_group_name": group_name}
+                if device_group:
+                    members_params["device_group"] = device_group
+                members_result = await call_mcp_tool(
+                    "query_panorama_address_group_members",
+                    members_params,
+                    timeout=_TOOL_TIMEOUTS.get("query_panorama_address_group_members", 65.0),
+                )
+                if members_result and isinstance(members_result, dict) and "error" not in members_result:
+                    members_normalized = _normalize_result("query_panorama_address_group_members", members_result, state.get("prompt", ""))
+                    # Strip follow_up offer — we're chaining automatically, no need to prompt
+                    if isinstance(members_normalized, dict):
+                        members_normalized = {k: v for k, v in members_normalized.items() if k not in ("follow_up", "follow_up_action")}
+                    accumulated.append(members_normalized)
+
+                    # Also pull Splunk deny events for the IP
+                    ip_address = tool_args.get("ip_address") or tool_args.get("ip")
+                    if ip_address:
+                        splunk_result = await call_mcp_tool(
+                            "get_splunk_recent_denies",
+                            {"ip_address": ip_address},
+                            timeout=_TOOL_TIMEOUTS.get("get_splunk_recent_denies", 65.0),
+                        )
+                        if splunk_result and isinstance(splunk_result, dict) and "error" not in splunk_result:
+                            splunk_normalized = _normalize_result("get_splunk_recent_denies", splunk_result, state.get("prompt", ""))
+                            accumulated.append(splunk_normalized)
+
+                    final = {"multi_results": accumulated} if len(accumulated) > 1 else members_normalized
+                    return {"tool_raw_result": members_result, "accumulated_results": accumulated, "tool_error": None,
+                            "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
 
     # If user asked for members + policies and this result already has both inline
     # (no follow_up_action needed), finalize immediately — don't let the LLM loop.
@@ -663,24 +1117,6 @@ async def tool_executor(state: AtlasState) -> dict[str, Any]:
         final = {"multi_results": accumulated} if len(accumulated) > 1 else normalized
         return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None,
                 "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
-
-    # Stop auto-chaining when the result has a follow_up_action, unless the original
-    # prompt explicitly asked for what this follow_up is offering.
-    # e.g. "find group AND show members" → allow chaining to members step
-    # but stop at members→policies unless prompt also asked for "policies".
-    if isinstance(normalized, dict) and normalized.get("follow_up_action"):
-        prompt_lower = (state.get("prompt") or "").lower()
-        fu_lower = (normalized.get("follow_up") or "").lower()
-        offered_members = "members" in fu_lower
-        offered_policies = "policies" in fu_lower or "policy" in fu_lower
-        user_asked_for_offer = (
-            (offered_members and "members" in prompt_lower) or
-            (offered_policies and any(w in prompt_lower for w in ("policies", "policy")))
-        )
-        if not user_asked_for_offer:
-            final = {"multi_results": accumulated} if len(accumulated) > 1 else normalized
-            return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None,
-                    "final_response": {"role": "assistant", "content": final}, "messages": updated_messages, "iteration": iteration + 1}
 
     return {"tool_raw_result": result, "accumulated_results": accumulated, "tool_error": None, "messages": updated_messages, "iteration": iteration + 1}
 

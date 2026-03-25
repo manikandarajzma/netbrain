@@ -18,7 +18,7 @@ class AtlasState(TypedDict, total=False):
     max_iterations: int
 
     # Routing signals
-    intent: Literal["doc", "network", "prefilled", "dismiss", "risk", "netbrain", "troubleshoot"] | None
+    intent: Literal["doc", "network", "prefilled", "dismiss", "risk", "netbrain", "troubleshoot", "servicenow"] | None
     rbac_error: str | None
 
     # LLM tool selection
@@ -39,3 +39,7 @@ class AtlasState(TypedDict, total=False):
 
     # Final answer
     final_response: dict[str, Any] | None
+
+    # Conversation flow context — persisted across turns via LangGraph checkpointer.
+    # "create_change_request" | "create_incident" | None
+    active_flow: str | None
