@@ -117,6 +117,7 @@ export async function sendChat(message, conversationHistory, signal, conversatio
         const event = JSON.parse(line.slice(6))
         if (event.type === 'status' && onStatus) {
           onStatus(event.message)
+          await new Promise(r => setTimeout(r, 0)) // yield to event loop so React re-renders each step
         } else if (event.type === 'done') {
           return event.result
         }
@@ -124,6 +125,17 @@ export async function sendChat(message, conversationHistory, signal, conversatio
     }
   }
   throw new Error('Chat stream ended without a response')
+}
+
+export async function correctMemory(originalQuery, correctedFinding) {
+  const res = await fetch('/api/memory/correct', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ original_query: originalQuery, corrected_finding: correctedFinding }),
+  })
+  checkAuthRedirect(res)
+  if (!res.ok) throw new Error('Memory correction failed')
+  return res.json()
 }
 
 export async function uploadBatch(file, message, signal) {

@@ -482,39 +482,10 @@ async def api_chat(request: Request, body: ChatRequest):
     user_msg = body.message.strip()
     history = body.conversation_history or []
 
-    # --- Response cache (skips graph + LLM entirely on repeat read queries) ---
     _WRITE_RE = __import__('re').compile(
         r'\b(create|update|close|resolve|assign|delete|submit|open an? incident|add note)\b',
         __import__('re').IGNORECASE,
     )
-    _cache_key = f"atlas:api:{hashlib.sha256(user_msg.lower().strip().encode()).hexdigest()[:20]}"
-
-    def _resp_cache_get():
-        try:
-            import redis as _r
-            return _json.loads(_r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                                           decode_responses=True).get(_cache_key) or "")
-        except Exception:
-            return None
-
-    def _resp_cache_set(result: dict):
-        try:
-            import redis as _r
-            _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                        decode_responses=True).setex(_cache_key, 120, _json.dumps(result))
-        except Exception:
-            pass
-
-    if not _WRITE_RE.search(user_msg):
-        cached_result = _resp_cache_get()
-        if cached_result:
-            logging.getLogger("atlas.app").info("API cache hit: %r", user_msg[:60])
-            # Return cached result directly as a done SSE event
-            async def _cached_event_generator():
-                done_event = {"type": "done", "result": cached_result}
-                yield f"data: {_json.dumps(done_event)}\n\n"
-            return StreamingResponse(_cached_event_generator(), media_type="text/event-stream")
-    # -------------------------------------------------------------------------
     parent_id = (body.parent_conversation_id or "").strip() or None
 
     async def event_generator():
@@ -545,15 +516,13 @@ async def api_chat(request: Request, body: ChatRequest):
             _sse_log.info("SSE: task completed, reading result")
             result = task.result()
             _sse_log.info("SSE: result obtained, role=%s", result.get("role") if isinstance(result, dict) else type(result))
-            if not _WRITE_RE.search(user_msg) and isinstance(result, dict) and "error" not in str(result).lower()[:100]:
-                _resp_cache_set(result)
-            elif _WRITE_RE.search(user_msg):
-                # After any write (create/update/close), flush read caches so the
+            if _WRITE_RE.search(user_msg):
+                # After any write (create/update/close), flush tool-level caches so the
                 # next troubleshoot or list query reflects the new state.
                 try:
                     import redis as _r
                     _rc = _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-                    for _pattern in ("atlas:api:*", "atlas:snow:*", "atlas:snow:resp:*", "atlas:ts_cache:*"):
+                    for _pattern in ("atlas:snow:*", "atlas:snow:resp:*", "atlas:ts_cache:*"):
                         _keys = _rc.keys(_pattern)
                         if _keys:
                             _rc.delete(*_keys)
@@ -633,6 +602,26 @@ def _detect_batch_tool(message: str) -> str:
     if any(kw in msg for kw in path_kw):
         return "query_network_path"
     return "check_path_allowed"
+
+
+class MemoryCorrectRequest(BaseModel):
+    original_query: str
+    corrected_finding: str
+
+
+@app.post("/api/memory/correct")
+async def memory_correct(request: Request, body: MemoryCorrectRequest):
+    """Overwrite a stored memory with a user-supplied correction."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    try:
+        from agent_memory import store_memory_correction
+        await store_memory_correction(body.original_query, body.corrected_finding, agent_type="troubleshoot")
+        return {"status": "ok"}
+    except Exception as exc:
+        logging.getLogger("atlas.app").warning("memory correct failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
 
 
 @app.post("/api/batch-upload")

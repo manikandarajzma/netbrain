@@ -108,7 +108,7 @@ def _cache_set(agent: str, value: str, *parts: str) -> None:
 # Agent caller helper
 # ---------------------------------------------------------------------------
 
-async def _call_agent(url: str, task: str, timeout: float = 60.0) -> str:
+async def _call_agent(url: str, task: str, timeout: float = 10.0) -> str:
     payload = {
         "id": str(uuid.uuid4()),
         "message": {"role": "user", "parts": [{"type": "text", "text": task}]},
@@ -465,7 +465,11 @@ async def call_servicenow_agent(
                     _re2.match(r'^([A-Z][A-Z0-9\-]+-\d+)\s*[:\-]', desc_raw) or
                     _re2.search(r'\bon\s+([A-Z][A-Z0-9\-]+-\d+)', desc_raw)
                 )
-                device = device_match.group(1) if device_match else "-"
+                if device_match:
+                    device = device_match.group(1)
+                else:
+                    ci = r.get("cmdb_ci", "")
+                    device = (ci.get("display_value") or ci.get("value") or "-") if isinstance(ci, dict) else (ci or "-")
                 desc = _cell(desc_raw)
                 state = _cell(r.get("state"))
                 risk = _cell(r.get("risk"))
@@ -518,6 +522,132 @@ TROUBLESHOOT_TOOLS = [
     call_cisco_agent,
 ]
 
+# Map tool name strings back to callables for plan execution
+_TOOL_MAP = {t.name: t for t in TROUBLESHOOT_TOOLS}
+
+# Fingerprint of the current tool set — changes automatically when tools are added/removed
+_TOOL_FINGERPRINT = hashlib.sha256(
+    ",".join(sorted(t.name for t in TROUBLESHOOT_TOOLS)).encode()
+).hexdigest()[:12]
+
+
+def _extract_ips(text: str) -> tuple[str, str]:
+    """Extract first two IPs from text (source, dest). Returns ('', '') if not found."""
+    import re as _re
+    ips = _re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', text)
+    src = ips[0] if len(ips) > 0 else ""
+    dst = ips[1] if len(ips) > 1 else ""
+    return src, dst
+
+
+def _extract_port(text: str) -> str:
+    """Extract port number from text like 'port 443' or 'tcp/443'."""
+    import re as _re
+    m = _re.search(r'\bport\s+(\d+)\b|/(\d+)\b|\b(\d+)/(tcp|udp)\b', text, _re.IGNORECASE)
+    if m:
+        return next(g for g in m.groups() if g and g.isdigit())
+    return ""
+
+
+def _extract_firewalls_from_netbrain(nb_output: str) -> list[str]:
+    """Parse 'Palo Alto firewalls in path: FW1, FW2' from NetBrain output."""
+    import re as _re
+    m = _re.search(r'Palo Alto firewalls? in path:\s*(.+)', nb_output, _re.IGNORECASE)
+    if m:
+        return [fw.strip() for fw in m.group(1).split(',') if fw.strip()]
+    # Fallback: find any line with "Palo Alto" and grab the device name
+    devices = []
+    for line in nb_output.splitlines():
+        if 'palo alto' in line.lower():
+            dm = _re.match(r'Hop\s+\d+:\s+(\S+)', line)
+            if dm:
+                devices.append(dm.group(1))
+    return devices
+
+
+def _extract_devices_from_netbrain(nb_output: str) -> list[str]:
+    """Parse 'All devices in path: D1, D2, ...' from NetBrain output."""
+    import re as _re
+    m = _re.search(r'All devices in path:\s*(.+)', nb_output, _re.IGNORECASE)
+    if m:
+        return [d.strip() for d in m.group(1).split(',') if d.strip()]
+    # Fallback: collect all Hop device names
+    devices = []
+    for line in nb_output.splitlines():
+        dm = _re.match(r'Hop\s+\d+:\s+(\S+)', line)
+        if dm and not _re.match(r'^\d', dm.group(1)):  # skip IPs
+            devices.append(dm.group(1))
+    return devices
+
+
+def _extract_plan_from_messages(messages: list) -> list[str]:
+    """Extract the ordered list of tool names called during a ReAct run."""
+    from langchain_core.messages import AIMessage
+    tool_sequence = []
+    for m in messages:
+        if isinstance(m, AIMessage) and getattr(m, 'tool_calls', None):
+            for tc in m.tool_calls:
+                name = tc.get('name') if isinstance(tc, dict) else getattr(tc, 'name', None)
+                if name and name not in tool_sequence:
+                    tool_sequence.append(name)
+    return tool_sequence
+
+
+async def _execute_plan(
+    tool_sequence: list[str],
+    prompt: str,
+) -> list[str]:
+    """Execute a cached tool plan without the ReAct LLM loop.
+    Returns tool outputs in the same format as the ReAct agent produces."""
+    import asyncio as _asyncio
+
+    src_ip, dst_ip = _extract_ips(prompt)
+    port = _extract_port(prompt)
+    tool_outputs = []
+
+    # NetBrain always runs first (others depend on its output)
+    nb_output = ""
+    if "call_netbrain_agent" in tool_sequence:
+        nb_output = await call_netbrain_agent.ainvoke({"task": prompt})
+        tool_outputs.append(nb_output)
+
+    # Parse device info from NetBrain output for downstream tools
+    firewalls = _extract_firewalls_from_netbrain(nb_output) if nb_output else []
+    devices = _extract_devices_from_netbrain(nb_output) if nb_output else []
+
+    # Remaining tools run in parallel
+    async def _run_tool(name: str):
+        if name == "call_netbrain_agent":
+            return None  # already ran
+        if name == "call_panorama_agent":
+            return await call_panorama_agent.ainvoke({
+                "source_ip": src_ip,
+                "dest_ip": dst_ip,
+                "firewall_hostnames": firewalls,
+                "port": port,
+                "protocol": "tcp",
+            })
+        if name == "call_splunk_agent":
+            return await call_splunk_agent.ainvoke({"task": prompt})
+        if name == "call_servicenow_agent":
+            return await call_servicenow_agent.ainvoke({
+                "device_names": devices,
+                "source_ip": src_ip,
+                "dest_ip": dst_ip,
+                "port": port,
+            })
+        if name == "call_cisco_agent":
+            return await call_cisco_agent.ainvoke({"task": prompt})
+        return None
+
+    parallel_tools = [n for n in tool_sequence if n != "call_netbrain_agent"]
+    results = await _asyncio.gather(*[_run_tool(n) for n in parallel_tools], return_exceptions=True)
+    for r in results:
+        if r and not isinstance(r, Exception):
+            tool_outputs.append(str(r))
+
+    return tool_outputs
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -549,28 +679,51 @@ async def orchestrate_troubleshoot(
         api_key="docker",
     )
 
-    agent = create_react_agent(
-        model=_llm,
-        tools=TROUBLESHOOT_TOOLS,
-        prompt=SystemMessage(content=_load_skill()),
-    )
-
-    result = await agent.ainvoke(
-        {"messages": [("user", prompt)]},
-        config={"recursion_limit": 25},
-    )
-
-    # Collect verbatim tool results from ToolMessages in the message history.
-    # These are used to ground the final synthesis so the LLM cannot hallucinate
-    # policy names, hop counts, or other specific values.
+    # --- Tool plan cache: skip the ReAct LLM loop on cache hit ---
     from langchain_core.messages import ToolMessage, HumanMessage
     import re
 
-    messages = result.get("messages", [])
     tool_outputs: list[str] = []
-    for m in messages:
-        if isinstance(m, ToolMessage) and m.content:
-            tool_outputs.append(str(m.content))
+    _plan_used = False
+    try:
+        from agent_memory import recall_tool_plan, store_tool_plan
+        cached_plan = await recall_tool_plan(prompt, _TOOL_FINGERPRINT)
+        if cached_plan:
+            logger.info("Tool plan cache hit — executing %s directly", cached_plan)
+            try:
+                import atlas.status_bus as status_bus
+                await status_bus.push(session_id or "default", "Using cached agent plan...")
+            except Exception:
+                pass
+            tool_outputs = await _execute_plan(cached_plan, prompt)
+            _plan_used = True
+    except Exception as _plan_exc:
+        logger.warning("Tool plan cache check failed: %s", _plan_exc)
+
+    if not _plan_used:
+        agent = create_react_agent(
+            model=_llm,
+            tools=TROUBLESHOOT_TOOLS,
+            prompt=SystemMessage(content=_load_skill()),
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [("user", prompt)]},
+            config={"recursion_limit": 25},
+        )
+
+        messages = result.get("messages", [])
+        for m in messages:
+            if isinstance(m, ToolMessage) and m.content:
+                tool_outputs.append(str(m.content))
+
+        # Store the tool sequence for future cache hits
+        try:
+            plan = _extract_plan_from_messages(messages)
+            if plan:
+                await store_tool_plan(prompt, plan, _TOOL_FINGERPRINT)
+        except Exception as _store_exc:
+            logger.warning("Tool plan store failed: %s", _store_exc)
 
     if tool_outputs:
         # Strip internal reasoning tags from tool outputs before passing to synthesis
@@ -633,7 +786,24 @@ async def orchestrate_troubleshoot(
                 non_snow_outputs.append(out)
 
         verbatim_block = "\n\n---\n\n".join(non_snow_outputs) if non_snow_outputs else "(no data)"
+        # Recall semantically similar past troubleshooting sessions
+        past_memories = []
+        memory_context = ""
+        try:
+            import atlas.status_bus as status_bus
+            await status_bus.push(_session_id or "default", "Recalling similar past cases from memory...")
+        except Exception:
+            pass
+        try:
+            from agent_memory import recall_memory, format_memory_context
+            past_memories = await recall_memory(prompt, agent_type="troubleshoot", top_k=3)
+            memory_context = format_memory_context(past_memories)
+        except Exception:
+            memory_context = ""
+
         synthesis_system = (
+            (memory_context + "\n\n") if memory_context else ""
+        ) + (
             "You are writing the final troubleshooting report. "
             "Below is the VERBATIM DATA returned by each specialist agent. "
             "You MUST use ONLY the information in this data block — do NOT invent, guess, or paraphrase "
@@ -767,7 +937,27 @@ async def orchestrate_troubleshoot(
     final = re.sub(r"<plan>.*?</plan>", "", final, flags=re.DOTALL).strip()
     final = re.sub(r"<reflection>.*?</reflection>", "", final, flags=re.DOTALL).strip()
 
+    # Store this session in semantic memory — extract Root Cause + Recommendation as the summary
+    try:
+        from agent_memory import store_memory
+        summary_match = re.search(r'\*\*Root Cause\*\*(.*?)$', final, re.DOTALL)
+        summary = summary_match.group(1).strip()[:800] if summary_match else final[:800]
+        await store_memory(prompt, summary, agent_type="troubleshoot")
+    except Exception as _mem_exc:
+        logger.debug("agent_memory: store skipped: %s", _mem_exc)
+
+    # Append recalled memory context as a visible section so users can see what past cases were referenced
+    if past_memories:
+        final = final + "\n\n---\n\n" + memory_context
+
+    # Strip non-serializable fields from memories before returning to frontend
+    serializable_memories = [
+        {k: v for k, v in m.items() if k in ("query", "result_summary", "timestamp", "similarity")}
+        for m in past_memories
+    ]
+
     return {
         "role": "assistant",
         "content": {"direct_answer": final},
+        "memories": serializable_memories,
     }

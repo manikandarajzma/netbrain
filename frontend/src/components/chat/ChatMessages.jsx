@@ -9,6 +9,7 @@ export default function ChatMessages() {
   const messages = useChatStore(s => s.messages)
   const isLoading = useChatStore(s => s.isLoading)
   const currentStatus = useChatStore(s => s.currentStatus)
+  const statusSteps = useChatStore(s => s.statusSteps)
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -19,9 +20,9 @@ export default function ChatMessages() {
     <div className={styles.messages}>
       {messages.length === 0 && !isLoading && <WelcomeState />}
       {messages.map(msg => (
-        <MessageBubble key={msg.id} role={msg.role} content={msg.content} />
+        <MessageBubble key={msg.id} role={msg.role} content={msg.content} memories={msg.memories || []} />
       ))}
-      {isLoading && <StatusMessage text={currentStatus} />}
+      {(isLoading || statusSteps.length > 0) && <StatusMessage text={isLoading ? currentStatus : ''} steps={statusSteps} />}
       <div ref={bottomRef} />
     </div>
   )

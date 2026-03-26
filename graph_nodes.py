@@ -136,8 +136,9 @@ Reply with ONLY the category name. No explanation. No punctuation.\
 """
 
 
-async def _llm_classify_intent(prompt: str) -> str:
+async def _llm_classify_intent(prompt: str, session_id: str | None = None) -> str:
     """Call the local LLM to classify the intent of a user prompt. Result is cached in Redis."""
+    import time as _time
     cache_key = f"atlas:intent:{hashlib.sha256(prompt.strip().lower().encode()).hexdigest()[:20]}"
     try:
         import redis as _r
@@ -165,10 +166,13 @@ async def _llm_classify_intent(prompt: str) -> str:
         max_tokens=20,
     )
     try:
+        _t0 = _time.perf_counter()
         response = await llm.ainvoke([
             SystemMessage(content=_INTENT_SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ])
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("_llm_classify_intent: LLM took %.2fs for %r", _elapsed, prompt[:60])
         raw = (response.content or "").strip().lower().split()[0].rstrip(".,;:")
         valid = {"troubleshoot", "risk", "netbrain", "doc", "network", "dismiss", "servicenow"}
         result = raw if raw in valid else "doc"
@@ -257,9 +261,11 @@ def _resolve_active_flow(active_flow: str | None, history: list) -> str | None:
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
+    import time as _time
+    _sid = state.get("session_id") or "default"
     try:
         import atlas.status_bus as status_bus
-        await status_bus.push(state.get("session_id") or "default", "Classifying your query...")
+        await status_bus.push(_sid, "Classifying your query...")
     except Exception:
         pass
     prompt = state["prompt"]
@@ -418,8 +424,20 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
                 logger.info("classify_intent: discarding stale pending_ts for session %s (new IP query)", session_id)
 
     # LLM-based intent classification (result cached in Redis to avoid repeat LLM calls)
-    intent = await _llm_classify_intent(prompt)
-    logger.info("classify_intent: LLM classified %r as %r", prompt[:80], intent)
+    _t_classify = _time.perf_counter()
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(_sid, "Selecting agent...")
+    except Exception:
+        pass
+    intent = await _llm_classify_intent(prompt, session_id=_sid)
+    _classify_ms = (_time.perf_counter() - _t_classify) * 1000
+    logger.info("classify_intent: LLM classified %r as %r in %.0fms", prompt[:80], intent, _classify_ms)
+    try:
+        import atlas.status_bus as status_bus
+        await status_bus.push(_sid, f"Agent selected: {intent} ({_classify_ms:.0f}ms)")
+    except Exception:
+        pass
 
     if intent == "dismiss":
         return {"intent": "dismiss", "final_response": {"role": "assistant", "content": "I am not equipped to answer this question. If you feel its a mistake, reach out to the atlas team."}, "messages": [], "iteration": 0}

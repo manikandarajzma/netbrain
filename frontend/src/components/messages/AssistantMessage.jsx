@@ -14,9 +14,10 @@ import PathVisualization from '../path/PathVisualization.jsx'
 import DataTable from '../tables/DataTable.jsx'
 import VerticalTable from '../tables/VerticalTable.jsx'
 import BatchResults from '../tables/BatchResults.jsx'
+import MemoryFeedback from './MemoryFeedback.jsx'
 import styles from './AssistantMessage.module.css'
 
-export default function AssistantMessage({ content }) {
+export default function AssistantMessage({ content, memories }) {
   const classified = useMemo(() => classifyResponse(content), [content])
 
   const hasYesNo = typeof content === 'object' && content?.yes_no_answer
@@ -114,7 +115,12 @@ export default function AssistantMessage({ content }) {
   // String content — render as markdown so tool responses with headings,
   // bold, code blocks and horizontal rules display correctly.
   if (classified.type === 'text') {
-    return <MarkdownContent text={classified.content} />
+    return (
+      <>
+        <MarkdownContent text={classified.content} />
+        <MemoryFeedback memories={memories} />
+      </>
+    )
   }
 
   // Object content
@@ -202,6 +208,7 @@ export default function AssistantMessage({ content }) {
         </div>
       )}
       {followUp && <p style={{ marginTop: '0.75rem', fontStyle: 'italic', opacity: 0.6, fontSize: '0.875rem' }}>{followUp}</p>}
+      <MemoryFeedback memories={memories} />
     </>
   )
 }

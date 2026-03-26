@@ -20,6 +20,8 @@ export const useChatStore = create((set, get) => ({
   nextConversationParentId: null,
   isLoading: false,
   currentStatus: '',
+  statusSteps: [],
+  _stepStart: null,
   abortController: null,
   historyLoaded: false,
 
@@ -108,8 +110,8 @@ export const useChatStore = create((set, get) => ({
     } catch (_) {}
   },
 
-  addMessage: (role, content) => {
-    set(s => ({ messages: [...s.messages, { id: nextId++, role, content }] }))
+  addMessage: (role, content, memories = null) => {
+    set(s => ({ messages: [...s.messages, { id: nextId++, role, content, memories: memories || [] }] }))
   },
 
   pushHistory: (role, content) => {
@@ -143,7 +145,7 @@ export const useChatStore = create((set, get) => ({
     pushHistory('user', text)
 
     const ctrl = new AbortController()
-    set({ isLoading: true, currentStatus: 'Identifying query', abortController: ctrl })
+    set({ isLoading: true, currentStatus: 'Identifying query', statusSteps: [], _stepStart: Date.now(), abortController: ctrl })
     const signal = ctrl.signal
     const historySlice = get().conversationHistory
     const parentIdForNew = nextConversationParentId || null
@@ -156,7 +158,18 @@ export const useChatStore = create((set, get) => ({
       const discoverPromise = discoverTool(textToSend, historySlice, signal)
         .then(d => {
           toolDisplayName = d.tool_display_name
-          set({ currentStatus: toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing' })
+          const newStatus = toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing'
+          const now = Date.now()
+          const { currentStatus, statusSteps, _stepStart } = get()
+          if (currentStatus && _stepStart) {
+            set({
+              statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+              currentStatus: newStatus,
+              _stepStart: now,
+            })
+          } else {
+            set({ currentStatus: newStatus, _stepStart: now })
+          }
         })
         .catch(err => {
           if (err && err.name === 'AbortError') throw err
@@ -164,18 +177,39 @@ export const useChatStore = create((set, get) => ({
         })
 
       const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew, (msg) => {
-        set({ currentStatus: msg })
+        const now = Date.now()
+        const { currentStatus, statusSteps, _stepStart } = get()
+        if (currentStatus && _stepStart) {
+          set({
+            statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+            currentStatus: msg,
+            _stepStart: now,
+          })
+        } else {
+          set({ currentStatus: msg, _stepStart: now })
+        }
       })
       await discoverPromise
 
       if (toolDisplayName) {
-        set({ currentStatus: 'Processing results from ' + toolDisplayName })
+        const now = Date.now()
+        const { currentStatus, statusSteps, _stepStart } = get()
+        if (currentStatus && _stepStart) {
+          set({
+            statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+            currentStatus: 'Processing results from ' + toolDisplayName,
+            _stepStart: now,
+          })
+        } else {
+          set({ currentStatus: 'Processing results from ' + toolDisplayName, _stepStart: now })
+        }
       }
 
       await new Promise(r => setTimeout(r, 400))
 
       const content = data.content ?? data.message ?? 'No response'
-      addMessage('assistant', content)
+      const memories = Array.isArray(data.memories) ? data.memories : []
+      addMessage('assistant', content, memories)
       pushHistory('assistant', content)
 
       if (data.conversation_id) {
@@ -193,7 +227,12 @@ export const useChatStore = create((set, get) => ({
         pushHistory('assistant', 'Error: ' + errMsg)
       }
     } finally {
-      set({ isLoading: false, currentStatus: '', abortController: null })
+      // Push the last in-progress step as completed before clearing
+      const { currentStatus: lastStatus, statusSteps: lastSteps, _stepStart: lastStart } = get()
+      const finalSteps = lastStatus && lastStart
+        ? [...lastSteps, { label: lastStatus, duration: (Date.now() - lastStart) / 1000 }]
+        : lastSteps
+      set({ isLoading: false, currentStatus: '', statusSteps: finalSteps, _stepStart: null, abortController: null })
     }
   },
 
@@ -217,7 +256,7 @@ export const useChatStore = create((set, get) => ({
         addMessage('assistant', 'Upload error: ' + errMsg)
       }
     } finally {
-      set({ isLoading: false, currentStatus: '', abortController: null })
+      set({ isLoading: false, currentStatus: '', statusSteps: [], _stepStart: null, abortController: null })
     }
   },
 

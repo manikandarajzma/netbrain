@@ -13,7 +13,7 @@ function getPhase(text) {
   return { label: 'Working', icon: '◈' }
 }
 
-export default function StatusMessage({ text }) {
+export default function StatusMessage({ text, steps = [] }) {
   const [displayText, setDisplayText] = useState(text)
   const [fading, setFading] = useState(false)
   const prevText = useRef(text)
@@ -34,17 +34,18 @@ export default function StatusMessage({ text }) {
 
   return (
     <div className={styles.bubble}>
-      <div className={styles.header}>
-        <span className={styles.phaseIcon}>{phase.icon}</span>
-        <span className={styles.phaseLabel}>{phase.label}</span>
-        <span className={styles.typingDots}>
-          <span /><span /><span />
-        </span>
-      </div>
-      {displayText && displayText.toLowerCase() !== phase.label.toLowerCase() && (
-        <p className={`${styles.statusText} ${fading ? styles.statusFade : ''}`}>
-          {displayText}
-        </p>
+      {steps.map((step, i) => (
+        <div key={i} className={styles.completedStep}>
+          <span className={styles.checkMark}>✓</span>
+          <span className={styles.completedLabel}>{step.label}</span>
+          <span className={styles.stepDuration}>{step.duration.toFixed(1)}s</span>
+        </div>
+      ))}
+      {displayText && (
+        <div className={`${styles.currentStep} ${fading ? styles.statusFade : ''}`}>
+          <span className={styles.currentLabel}>{displayText}</span>
+          <span className={styles.typingDots}><span /><span /><span /></span>
+        </div>
       )}
     </div>
   )
