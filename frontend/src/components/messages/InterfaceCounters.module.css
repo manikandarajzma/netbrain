@@ -1,0 +1,145 @@
+.container {
+  margin-top: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.heading {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-yellow, #f9e2af);
+  opacity: 0.85;
+  margin-bottom: 0.25rem;
+}
+
+.device {
+  padding: 0.75rem 1rem;
+  background: rgba(249, 226, 175, 0.03);
+  border: 1px solid rgba(249, 226, 175, 0.1);
+  border-radius: var(--radius-lg);
+}
+
+.deviceHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.deviceName {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.window {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.allClean {
+  font-size: 0.78rem;
+  color: var(--accent-green, #a6e3a1);
+  opacity: 0.8;
+  margin: 0;
+}
+
+.intfRow {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md);
+  background: rgba(243, 139, 168, 0.06);
+  border-left: 3px solid rgba(243, 139, 168, 0.5);
+  margin-bottom: 0.4rem;
+}
+
+.intfMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.intfName {
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+}
+
+.activeBadge {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: rgba(243, 139, 168, 0.95);
+  background: rgba(243, 139, 168, 0.12);
+  border: 1px solid rgba(243, 139, 168, 0.25);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+.counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.counter {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.counterLabel {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.counterValue {
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  color: rgba(243, 139, 168, 0.9);
+}
+
+.errorText {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.lastClear {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  opacity: 0.55;
+  margin: 0.3rem 0 0;
+}
+
+.cleanList {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+  margin: 0.4rem 0 0;
+}
+
+.cleanLabel {
+  font-weight: 600;
+  color: var(--accent-green, #a6e3a1);
+  opacity: 0.7;
+}
+
+.sshError {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  opacity: 0.55;
+  font-style: italic;
+  margin: 0;
+}

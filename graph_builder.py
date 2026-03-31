@@ -19,7 +19,7 @@ from atlas.graph_nodes import (
     enrich_with_insights,
     risk_orchestrator,
     netbrain_agent,
-    troubleshoot_orchestrator,
+    troubleshoot_orchestrator,  # graph node name kept for state machine compatibility
     servicenow_agent,
 )
 from atlas.chat_service import MAX_AGENT_ITERATIONS

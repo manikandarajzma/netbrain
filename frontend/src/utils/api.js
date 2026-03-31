@@ -127,16 +127,6 @@ export async function sendChat(message, conversationHistory, signal, conversatio
   throw new Error('Chat stream ended without a response')
 }
 
-export async function correctMemory(originalQuery, correctedFinding) {
-  const res = await fetch('/api/memory/correct', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ original_query: originalQuery, corrected_finding: correctedFinding }),
-  })
-  checkAuthRedirect(res)
-  if (!res.ok) throw new Error('Memory correction failed')
-  return res.json()
-}
 
 export async function uploadBatch(file, message, signal) {
   const form = new FormData()

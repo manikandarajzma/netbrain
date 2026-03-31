@@ -868,6 +868,7 @@ async def get_servicenow_user(
 async def search_servicenow_incidents(
     query: str,
     limit: int = 10,
+    updated_within_hours: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Full-text search across ServiceNow incidents — searches short_description,
@@ -877,8 +878,9 @@ async def search_servicenow_incidents(
     (e.g. "any tickets related to PA-FW-01", "incidents mentioning 10.0.0.1").
 
     Args:
-        query: Search term (e.g. "PA-FW-01", "10.0.0.1", "network outage")
-        limit: Max number of results (default 10)
+        query:                Search term (e.g. "PA-FW-01", "10.0.0.1", "network outage")
+        limit:                Max number of results (default 10)
+        updated_within_hours: Only return incidents updated within the last N hours (e.g. 24)
 
     Returns:
         List of matching incidents with number, short_description, state, priority, work_notes.
@@ -894,15 +896,22 @@ async def search_servicenow_incidents(
         logger.info("search_servicenow_incidents: empty query, returning no rows")
         return {"result": []}
     or_clauses = "^OR".join(
-        f"short_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}"
+        f"short_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}^ORcmdb_ciLIKE{t}"
         for t in terms
     )
+    time_filter = ""
+    if updated_within_hours:
+        from datetime import datetime, timezone, timedelta
+        since = datetime.now(timezone.utc) - timedelta(hours=updated_within_hours)
+        time_filter = f"^sys_updated_on>={since.strftime('%Y-%m-%d %H:%M:%S')}"
     params = {
-        "sysparm_query": f"{or_clauses}^ORDERBYDESCopened_at",
+        "sysparm_query": f"{or_clauses}{time_filter}^ORDERBYDESCsys_updated_on",
         "sysparm_limit": min(limit, 50),
-        "sysparm_fields": "number,short_description,description,state,priority,assigned_to,opened_at,resolved_at,close_notes,work_notes",
+        "sysparm_fields": "number,short_description,description,state,priority,urgency,impact,assigned_to,assignment_group,cmdb_ci,opened_at,resolved_at,sys_updated_on,close_notes,work_notes",
     }
-    logger.info("search_servicenow_incidents: %s (terms=%s)", query, terms)
+    logger.info("search_servicenow_incidents: %s (terms=%s, hours=%s)", query, terms, updated_within_hours)
+    if updated_within_hours:
+        return await _get("/api/now/table/incident", params=params)
     return await _cached_get("search_incidents", [query, str(limit)], "/api/now/table/incident", params=params)
 
 

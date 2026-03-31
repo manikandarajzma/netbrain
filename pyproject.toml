@@ -47,6 +47,11 @@ dependencies = [
     "langgraph-checkpoint-redis>=0.4.0",
     "redisvl>=0.16.0",
     "sentence-transformers>=5.3.0",
+    "asyncpg>=0.31.0",
+    "psycopg2-binary>=2.9.11",
+    "nornir>=3.5.0",
+    "nornir-netmiko>=1.0.1",
+    "nornir-utils>=0.2.0",
 ]
 
 [tool.setuptools.packages.find]

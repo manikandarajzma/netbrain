@@ -50,7 +50,42 @@ STATIC_DIR = APP_DIR / "static"
 TEMPLATES_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="Atlas", version="0.1.0")
+async def _midnight_sync_loop():
+    """Background task: sync closed ServiceNow incidents into memory daily at midnight."""
+    from datetime import datetime, timedelta
+    while True:
+        try:
+            now = datetime.now()
+            next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            sleep_secs = (next_midnight - now).total_seconds()
+            _sse_log.info("servicenow_memory_sync: next run in %.0fs (at midnight)", sleep_secs)
+            await asyncio.sleep(sleep_secs)
+            from agents.servicenow_memory_sync import sync_closed_incidents
+            await sync_closed_incidents()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            _sse_log.warning("servicenow_memory_sync: error in midnight loop: %s", exc)
+            await asyncio.sleep(3600)  # retry in 1 hour on failure
+
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    # Run an initial sync on startup so memory is populated immediately
+    try:
+        from agents.servicenow_memory_sync import sync_closed_incidents
+        asyncio.create_task(sync_closed_incidents())
+    except Exception as exc:
+        _sse_log.warning("servicenow_memory_sync: startup sync failed: %s", exc)
+    # Schedule daily midnight syncs
+    sync_task = asyncio.create_task(_midnight_sync_loop())
+    yield
+    sync_task.cancel()
+
+
+app = FastAPI(title="Atlas", version="0.1.0", lifespan=lifespan)
 
 # CORS: require CORS_ALLOWED_ORIGINS (no default "*"). Set to your origin(s), e.g. https://atlas.company.com or localhost for dev.
 _cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
@@ -603,25 +638,6 @@ def _detect_batch_tool(message: str) -> str:
         return "query_network_path"
     return "check_path_allowed"
 
-
-class MemoryCorrectRequest(BaseModel):
-    original_query: str
-    corrected_finding: str
-
-
-@app.post("/api/memory/correct")
-async def memory_correct(request: Request, body: MemoryCorrectRequest):
-    """Overwrite a stored memory with a user-supplied correction."""
-    username = get_current_username(request)
-    if not username:
-        return response_401_clear_session(request)
-    try:
-        from agent_memory import store_memory_correction
-        await store_memory_correction(body.original_query, body.corrected_finding, agent_type="troubleshoot")
-        return {"status": "ok"}
-    except Exception as exc:
-        logging.getLogger("atlas.app").warning("memory correct failed: %s", exc)
-        return {"status": "error", "detail": str(exc)}
 
 
 @app.post("/api/batch-upload")

@@ -22,7 +22,12 @@
       "Bash(redis-cli ping:*)",
       "Bash(xargs redis-cli:*)",
       "Bash(SN_URL=\"https://dev252605.service-now.com\" SN_USER=\"admin\" SN_PASS='+vc$1VAVAe6p' __NEW_LINE_97d632a659d8b55c__ echo \"=== INCIDENTS ===\" curl -s -u \"$SN_USER:$SN_PASS\" \"$SN_URL/api/now/table/incident?sysparm_query=short_descriptionLIKEEDGE-RTR-01^ORshort_descriptionLIKECORE-SW-01^ORshort_descriptionLIKEPA-FW-01^ORshort_descriptionLIKEDIST-RTR-02&sysparm_fields=number,short_description,state&sysparm_limit=20\")",
-      "Bash(redis-cli -u redis://localhost:6379/0 KEYS \"atlas:ts_cache:*\")"
+      "Bash(redis-cli HGET 'atlas:mem:2768135279a0847acaab' result_summary)",
+      "Bash(DEVICE_SSH_USER=admin DEVICE_SSH_PASSWORD=admin uv run python scripts/collect_devices.py)",
+      "Bash(psql atlas:*)",
+      "Bash(grep -rn \"no relevant\\\\|No relevant\\\\|from memory\\\\|incidents from\" /Users/manig/Documents/coding/atlas/ --include=*.py --include=*.jsx --include=*.js --include=*.md)",
+      "Bash(grep -r \"NETBOX\" /Users/manig/Documents/coding/atlas/.env*)",
+      "Bash(redis-cli KEYS \"atlas:*\")"
     ]
   }
 }

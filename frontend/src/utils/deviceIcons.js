@@ -4,6 +4,7 @@ export function deviceTypeToIcon(deviceType) {
   if (t.includes('palo alto') || (t.includes('firewall') && t.includes('palo'))) return '/icons/paloalto_firewall.png'
   if (t.includes('arista') || t.includes('switch')) return '/icons/arista_switch.png'
   if (t.includes('firewall')) return '/icons/paloalto_firewall.png'
+  if (t === 'host' || t.includes('server') || t.includes('endpoint')) return '/icons/host.svg'
   return null
 }
 

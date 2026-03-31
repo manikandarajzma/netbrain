@@ -25,6 +25,10 @@ _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _INDEX_NAME = "atlas:memory"
 _DIMS = 384  # all-MiniLM-L6-v2
 
+import re as _re
+# Matches device hostnames like PA-FW-01, EDGE-RTR-01, CORE-SW-01, DIST-RTR-02
+_DEVICE_RE = _re.compile(r'\b([A-Z]{2,}(?:-[A-Z0-9]+)*-\d{2,})\b')
+
 _index = None
 _vectorizer = None
 
@@ -58,8 +62,9 @@ async def _get_index():
             "fields": [
                 {"name": "query",          "type": "text"},
                 {"name": "result_summary", "type": "text"},
+                {"name": "resolution",     "type": "text"},
                 {"name": "agent_type",     "type": "tag"},
-                {"name": "user_corrected", "type": "tag"},
+                {"name": "devices",        "type": "tag"},
                 {"name": "timestamp",      "type": "numeric"},
                 {"name": "query_embedding", "type": "vector", "attrs": {
                     "dims": _DIMS,
@@ -104,64 +109,63 @@ async def store_memory(
         vec = _get_vectorizer().embed(query)
         vec_bytes = np.array(vec, dtype=np.float32).tobytes()
         mem_key = "atlas:mem:" + hashlib.sha256(query.encode()).hexdigest()[:20]
-
-        # If a user-corrected entry exists for this query, don't overwrite it.
-        try:
-            import redis.asyncio as _aioredis
-            _r = _aioredis.from_url(_REDIS_URL)
-            corrected_flag = await _r.hget(mem_key, "user_corrected")
-            if corrected_flag and (corrected_flag == "1" if isinstance(corrected_flag, str) else corrected_flag == b"1"):
-                logger.info("agent_memory: skipping overwrite — entry is user-corrected for %r", query[:60])
-                await _r.aclose()
-                return
-            # Delete any other stale entries with auto-generated keys for this query
-            existing_keys = []
-            async for k in _r.scan_iter("atlas:mem:*"):
-                if k == mem_key:
-                    continue
-                val = await _r.hget(k, "query")
-                if val and (val == query if isinstance(val, str) else val.decode() == query):
-                    existing_keys.append(k)
-            if existing_keys:
-                await _r.delete(*existing_keys)
-            await _r.aclose()
-        except Exception as _del_exc:
-            logger.debug("agent_memory: pre-delete failed: %s", _del_exc)
-
         doc = {
             "query":           query,
             "result_summary":  result_summary,
             "agent_type":      agent_type,
             "timestamp":       int(time.time()),
             "query_embedding": vec_bytes,
-            "user_corrected":  "0",
         }
-        # Deterministic key so future corrections overwrite cleanly.
-        mem_key = "atlas:mem:" + hashlib.sha256(query.encode()).hexdigest()[:20]
         await idx.load([doc], keys=[mem_key], ttl=_MEMORY_TTL)
         logger.info("agent_memory: stored %s memory for %r", agent_type, query[:80])
     except Exception as exc:
         logger.warning("agent_memory: store failed: %s", exc)
 
 
-async def store_memory_correction(
-    query: str,
-    result_summary: str,
-    agent_type: str = "troubleshoot",
+async def store_incident_memory(
+    incident_number: str,
+    short_description: str,
+    close_notes: str,
+    cmdb_ci: str = "",
 ) -> None:
-    """Store a user-supplied correction. Marks the entry as user_corrected=1
-    so automatic agent runs never overwrite it."""
-    await store_memory(query, result_summary, agent_type)
-    # After storing, set the user_corrected flag directly on the Redis hash
+    """Store a ServiceNow incident as a memory entry.
+    Keyed by incident number so re-syncs are idempotent."""
+    if not short_description.strip():
+        return
     try:
-        import redis.asyncio as _aioredis
-        _r = _aioredis.from_url(_REDIS_URL)
-        mem_key = "atlas:mem:" + hashlib.sha256(query.encode()).hexdigest()[:20]
-        await _r.hset(mem_key, "user_corrected", "1")
-        await _r.aclose()
-        logger.info("agent_memory: marked %r as user_corrected", query[:60])
+        idx = await _get_index()
+        if idx is None:
+            return
+        import numpy as np
+        # Embed combined text so the vector captures both symptom and root cause
+        combined_text = f"{short_description} {close_notes}"
+        vec = _get_vectorizer().embed(combined_text)
+        vec_bytes = np.array(vec, dtype=np.float32).tobytes()
+        # Use cmdb_ci as primary device tag; fall back to extracting hostnames from text
+        if cmdb_ci:
+            found_devices = [cmdb_ci]
+        else:
+            _hostname_re = _re.compile(r'\b([a-zA-Z][a-zA-Z0-9]*(?:-[a-zA-Z0-9]+)*\d+)\b')
+            found_devices = list(dict.fromkeys(
+                m.lower() for m in _hostname_re.findall(combined_text)
+                if len(m) >= 4 and m.lower() not in ("high", "low", "state", "open", "true", "false")
+            ))
+        devices_tag = "|".join(found_devices) if found_devices else ""
+        doc = {
+            "query":           short_description,
+            "result_summary":  f"[{incident_number}] {short_description}",
+            "resolution":      close_notes or "",
+            "agent_type":      "incident",
+            "devices":         devices_tag,
+            "timestamp":       int(time.time()),
+            "query_embedding": vec_bytes,
+        }
+        mem_key = f"atlas:mem:inc:{incident_number}"
+        await idx.load([doc], keys=[mem_key], ttl=_MEMORY_TTL)
+        logger.debug("agent_memory: stored incident %s", incident_number)
     except Exception as exc:
-        logger.warning("agent_memory: failed to set user_corrected flag: %s", exc)
+        logger.warning("agent_memory: store_incident_memory failed: %s", exc)
+
 
 
 async def recall_memory(
@@ -191,7 +195,7 @@ async def recall_memory(
         q = VectorQuery(
             vector=vec_bytes,
             vector_field_name="query_embedding",
-            return_fields=["query", "result_summary", "timestamp"],
+            return_fields=["query", "result_summary", "resolution", "timestamp", "agent_type"],
             num_results=top_k,
             filter_expression=tag_filter,
         )
@@ -210,6 +214,91 @@ async def recall_memory(
         return filtered
     except Exception as exc:
         logger.warning("agent_memory: recall failed: %s", exc)
+        return []
+
+
+async def recall_incidents_by_devices(
+    devices: list[str],
+    top_k: int = 8,
+    query: str = "",
+    min_similarity: float = 0.28,
+) -> list[dict]:
+    """
+    Return the top_k most semantically relevant incidents for the given path devices.
+
+    Uses a single VectorQuery with a device tag filter so Redis scores ALL incidents
+    for the path devices and returns only the top_k — scales to hundreds per device.
+
+    Query enrichment: strip IPs (no semantic value) and append device names so the
+    embedding is grounded in path context ("trace path arista1 arista2" scores much
+    closer to "arista1: Interface flap" than the raw query does).
+
+    Falls back to a plain FilterQuery when no query is provided.
+    Results are marked with match_type='device'.
+    """
+    if not devices:
+        return []
+    try:
+        from redisvl.query.filter import Tag
+
+        idx = await _get_index()
+        if idx is None:
+            return []
+
+        type_filter = Tag("agent_type") == "incident"
+        device_filter = None
+        for device in devices:
+            df = Tag("devices") == device
+            device_filter = df if device_filter is None else (device_filter | df)
+        combined_filter = type_filter & device_filter
+
+        if query:
+            import re as _re2
+            import numpy as np
+            from redisvl.query import VectorQuery
+
+            clean_query = _re2.sub(r'\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d+)?\b', '', query).strip()
+            enriched_query = f"{clean_query} {' '.join(devices)}".strip()
+
+            vec = _get_vectorizer().embed(enriched_query)
+            vec_bytes = np.array(vec, dtype=np.float32).tobytes()
+            q = VectorQuery(
+                vector=vec_bytes,
+                vector_field_name="query_embedding",
+                return_fields=["query", "result_summary", "resolution", "timestamp", "devices"],
+                num_results=top_k,
+                filter_expression=combined_filter,
+            )
+            results = await idx.query(q)
+            filtered = []
+            for r in results:
+                sim = round(1.0 - float(r.get("vector_distance", 1.0)), 3)
+                if sim >= min_similarity:
+                    r["similarity"] = sim
+                    r["match_type"] = "device"
+                    filtered.append(r)
+            logger.info(
+                "agent_memory: device vector recall %d/%d above threshold=%.2f for devices %s, enriched_query=%r",
+                len(filtered), len(results), min_similarity, devices, enriched_query[:80],
+            )
+            if filtered:
+                return filtered
+            # Vector recall found matches but all below threshold — fall back to filter query
+            logger.info("agent_memory: vector recall empty — falling back to filter query for devices %s", devices)
+
+        from redisvl.query import FilterQuery
+        q = FilterQuery(
+            filter_expression=combined_filter,
+            return_fields=["query", "result_summary", "resolution", "timestamp", "devices"],
+            num_results=top_k,
+        )
+        results = await idx.query(q)
+        for r in results:
+            r["match_type"] = "device"
+        logger.info("agent_memory: device filter recall found %d incidents for devices %s", len(results), devices)
+        return results
+    except Exception as exc:
+        logger.warning("agent_memory: recall_incidents_by_devices failed: %s", exc)
         return []
 
 

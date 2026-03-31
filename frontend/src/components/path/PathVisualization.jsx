@@ -21,7 +21,10 @@ export default function PathVisualization({ content }) {
     if (!hops || !hops.length) return []
 
     const h0 = hops[0]
-    const result = [{
+    // Use a Map so we can update nodes after inserting them
+    const nodeMap = new Map()
+
+    nodeMap.set(h0.from_device, {
       name: h0.from_device,
       type: h0.from_device_type,
       in: null,
@@ -30,27 +33,33 @@ export default function PathVisualization({ content }) {
       in_zone: null,
       out_zone: h0.out_zone,
       dg: h0.device_group,
-    }]
+    })
 
-    const seen = new Set([h0.from_device])
     for (const hop of hops) {
-      if (hop.to_device && !seen.has(hop.to_device)) {
-        seen.add(hop.to_device)
-        result.push({
+      // Update from_device's out interface (covers intermediate nodes whose
+      // egress is only known once they appear as from_device in a later hop)
+      const fromNode = nodeMap.get(hop.from_device)
+      if (fromNode && !fromNode.isSource) {
+        fromNode.out = hop.out_interface
+        fromNode.out_zone = hop.out_zone
+      }
+      // Add to_device if not yet seen; out will be filled in when it appears as from_device
+      if (hop.to_device && !nodeMap.has(hop.to_device)) {
+        nodeMap.set(hop.to_device, {
           name: hop.to_device,
           type: hop.to_device_type,
           in: hop.in_interface,
-          out: hop.out_interface,
+          out: null,
           isDest: false,
           in_zone: hop.in_zone,
-          out_zone: hop.out_zone,
+          out_zone: null,
           dg: hop.device_group,
         })
       }
     }
-    if (result.length > 1) {
-      result[result.length - 1].isDest = true
-    }
+
+    const result = [...nodeMap.values()]
+    if (result.length > 1) result[result.length - 1].isDest = true
     return result
   }, [content])
 

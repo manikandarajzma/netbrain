@@ -8,8 +8,8 @@
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   flex-shrink: 0;
-  min-width: 130px;
-  max-width: 190px;
+  min-width: 140px;
+  max-width: 220px;
   position: relative;
   z-index: 1;
   transition: border-color 0.2s, box-shadow 0.2s;

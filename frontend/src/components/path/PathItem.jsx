@@ -8,11 +8,11 @@ export default function PathItem({ node, sourceIp, destIp }) {
   const inInt = node.in != null ? normalizeInterface(node.in) : ''
   const outInt = node.out != null ? normalizeInterface(node.out) : ''
 
-  const intfText = useMemo(() => {
+  const intfLines = useMemo(() => {
     const parts = []
     if (inInt) parts.push('In: ' + inInt)
     if (outInt) parts.push('Out: ' + outInt)
-    return parts.join(' | ')
+    return parts
   }, [inInt, outInt])
 
   const displayName = useMemo(() => {
@@ -22,7 +22,9 @@ export default function PathItem({ node, sourceIp, destIp }) {
     return name || 'Device'
   }, [node, sourceIp, destIp])
 
-  const showIp = node.isSource && sourceIp ? sourceIp : node.isDest && destIp ? destIp : null
+  const showIp = (node.isSource && sourceIp && sourceIp !== displayName) ? sourceIp
+    : (node.isDest && destIp && destIp !== displayName) ? destIp
+    : null
 
   const isFirewall = isFirewallType(node.type)
 
@@ -43,7 +45,11 @@ export default function PathItem({ node, sourceIp, destIp }) {
       <div className={styles.pathNodeBody}>
         <div className={styles.pathDeviceName}>{displayName}</div>
         {showIp && <div className={styles.pathIp}>{showIp}</div>}
-        {intfText && <div className={styles.pathInterfaces}>{intfText}</div>}
+        {intfLines.length > 0 && (
+          <div className={styles.pathInterfaces}>
+            {intfLines.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        )}
         {zonesText && <div className={styles.pathZones}>{zonesText}</div>}
       </div>
     </div>

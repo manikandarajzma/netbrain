@@ -52,7 +52,7 @@ if __name__ == "__main__":
     import json
     import uvicorn
 
-    _host, _port = "0.0.0.0", 8000
+    _host, _port = "0.0.0.0", 8001
     _log_config_path = _root / "log_config.json"
     if _log_config_path.exists():
         _log_cfg = json.loads(_log_config_path.read_text())
@@ -61,7 +61,7 @@ if __name__ == "__main__":
         _log_cfg = None
 
     print(
-        f"Atlas web server starting at http://{_host}:{_port} (reload on). Logs: {_log_file}\n"
+        f"Atlas web server starting at http://{_host}:8001 (reload on). Logs: {_log_file}\n"
         f"Server runs in foreground; press Ctrl+C to stop. If the prompt returns, check {_log_file} for errors.",
         flush=True,
     )

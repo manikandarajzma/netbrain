@@ -1,154 +1,116 @@
 .container {
-  margin-top: 1.25rem;
-  padding: 0.75rem 1rem;
-  background: rgba(137, 180, 250, 0.04);
-  border: 1px solid rgba(137, 180, 250, 0.12);
+  margin-top: 1.5rem;
+  padding: 1rem 1.25rem;
+  background: rgba(137, 180, 250, 0.03);
+  border: 1px solid rgba(137, 180, 250, 0.1);
   border-radius: var(--radius-lg);
 }
 
 .heading {
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent-blue);
-  opacity: 0.7;
-  margin-bottom: 0.6rem;
+  opacity: 0.8;
+  margin-bottom: 0.875rem;
+}
+
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .entry {
-  padding: 0.5rem 0;
-  border-top: 1px solid rgba(137, 180, 250, 0.08);
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-md);
+  border-left: 3px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.entry:first-of-type {
-  border-top: none;
-  padding-top: 0;
+.entrySemantic {
+  border-left-color: rgba(137, 180, 250, 0.5);
 }
 
-.meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
+.entryDevice {
+  border-left-color: rgba(250, 179, 135, 0.5);
 }
 
-.badge {
-  font-size: 0.68rem;
-  color: var(--accent-blue);
-  opacity: 0.6;
-  flex-shrink: 0;
-}
-
-.query {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  opacity: 0.7;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.findingRow {
+.entryHeader {
   display: flex;
   align-items: flex-start;
-  gap: 0.75rem;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
 }
 
-.finding {
+.title {
   font-size: 0.8rem;
-  color: var(--text-muted);
-  opacity: 0.85;
-  flex: 1;
-  line-height: 1.5;
-}
-
-.correctBtn {
-  flex-shrink: 0;
-  background: none;
-  border: 1px solid rgba(137, 180, 250, 0.2);
-  border-radius: 4px;
-  color: var(--accent-blue);
-  opacity: 0.7;
-  font-size: 0.72rem;
-  padding: 0.15rem 0.5rem;
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-
-.correctBtn:hover {
-  opacity: 1;
-}
-
-.editArea {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.textarea {
-  width: 100%;
-  font-size: 0.82rem;
-  color: var(--text-primary);
-  background: var(--bg-input, var(--bg-card));
-  border: 1px solid rgba(137, 180, 250, 0.25);
-  border-radius: 6px;
-  padding: 0.5rem 0.65rem;
-  resize: vertical;
-  font-family: inherit;
-  line-height: 1.5;
-  box-sizing: border-box;
-}
-
-.textarea:focus {
-  outline: none;
-  border-color: var(--accent-blue);
-}
-
-.editActions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-.cancelBtn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  padding: 0.25rem 0.65rem;
-  cursor: pointer;
-}
-
-.saveBtn {
-  background: var(--accent-blue);
-  border: none;
-  border-radius: 4px;
-  color: #1e1e2e;
-  font-size: 0.78rem;
   font-weight: 600;
-  padding: 0.25rem 0.75rem;
-  cursor: pointer;
-  opacity: 0.9;
-}
-
-.saveBtn:hover:not(:disabled) {
+  color: var(--text-primary);
   opacity: 1;
+  line-height: 1.4;
 }
 
-.saveBtn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.savedMsg {
-  font-size: 0.75rem;
-  color: #a6e3a1;
+.tags {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
   flex-shrink: 0;
 }
 
-.errorMsg {
-  font-size: 0.72rem;
-  color: #f38ba8;
+.incBadge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.matchBadge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  letter-spacing: 0.01em;
+}
+
+.matchSemantic {
+  color: rgba(137, 180, 250, 0.9);
+  background: rgba(137, 180, 250, 0.1);
+}
+
+.matchDevice {
+  color: rgba(250, 179, 135, 0.9);
+  background: rgba(250, 179, 135, 0.1);
+}
+
+.age {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.rootCause {
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  opacity: 0.75;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.resolutionLabel {
+  font-weight: 600;
+  opacity: 1;
+  color: var(--accent-green);
+}
+
+.noResolution {
+  opacity: 0.45;
+  font-style: italic;
 }

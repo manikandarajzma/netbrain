@@ -8,6 +8,7 @@ Domain modules:
   - tools.splunk_tools   : get_splunk_recent_denies
   - tools.panorama_tools : query_panorama_ip_object_group, query_panorama_address_group_members
   - tools.netbrain_tools : query_network_path, check_path_allowed
+  - tools.netbox_tools   : get_gateway_for_prefix, get_prefix_for_ip, get_ip_info
 """
 
 import logging
@@ -27,6 +28,7 @@ from tools.shared import mcp, MCP_SERVER_HOST, MCP_SERVER_PORT
 import tools.splunk_tools       # noqa: F401
 import tools.panorama_tools     # noqa: F401
 import tools.netbrain_tools     # noqa: F401
+import tools.netbox_tools       # noqa: F401
 import tools.docs_tool          # noqa: F401
 import tools.servicenow_tools   # noqa: F401
 

@@ -15,6 +15,7 @@ import DataTable from '../tables/DataTable.jsx'
 import VerticalTable from '../tables/VerticalTable.jsx'
 import BatchResults from '../tables/BatchResults.jsx'
 import MemoryFeedback from './MemoryFeedback.jsx'
+import InterfaceCounters from './InterfaceCounters.jsx'
 import styles from './AssistantMessage.module.css'
 
 export default function AssistantMessage({ content, memories }) {
@@ -64,7 +65,7 @@ export default function AssistantMessage({ content, memories }) {
       return Array.isArray(v) && v.length > 0 && v.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
     })
     const BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
-    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action', 'insights'])
+    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action', 'insights', 'interface_counters', 'source', 'destination'])
     const flatKeys = Object.keys(c).filter(k => {
       if (arrayKeys.includes(k) || k === 'ai_analysis' || BADGE_KEYS.has(k) || HIDDEN_KEYS.has(k)) return false
       const v = c[k]
@@ -118,6 +119,7 @@ export default function AssistantMessage({ content, memories }) {
     return (
       <>
         <MarkdownContent text={classified.content} />
+        <InterfaceCounters counters={content?.interface_counters} />
         <MemoryFeedback memories={memories} />
       </>
     )
@@ -128,6 +130,13 @@ export default function AssistantMessage({ content, memories }) {
     <>
       {hasYesNo && <YesNoBadge text={content.yes_no_answer} />}
       {hasMetric && <MetricBadge text={content.metric_answer} />}
+      {classified.type === 'path' && (
+        <>
+          <p className={styles.summaryHeading}>Path Summary</p>
+          <PathVisualization content={content} />
+        </>
+      )}
+
       {hasDirectAnswer && <DirectAnswerBadge text={content.direct_answer} />}
 
       {classified.type === 'batch' && (
@@ -142,8 +151,6 @@ export default function AssistantMessage({ content, memories }) {
           <p className={styles.clarificationPrompt}>Which site? {content.sites.join(', ')}. Reply with the site name.</p>
         </>
       )}
-
-      {classified.type === 'path' && <PathVisualization content={content} />}
 
       {classified.type === 'path-summary' && (
         <div className={styles.pathVisual}>
@@ -208,6 +215,7 @@ export default function AssistantMessage({ content, memories }) {
         </div>
       )}
       {followUp && <p style={{ marginTop: '0.75rem', fontStyle: 'italic', opacity: 0.6, fontSize: '0.875rem' }}>{followUp}</p>}
+      <InterfaceCounters counters={content?.interface_counters} />
       <MemoryFeedback memories={memories} />
     </>
   )

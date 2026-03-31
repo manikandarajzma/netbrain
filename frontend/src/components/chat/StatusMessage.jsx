@@ -35,7 +35,7 @@ export default function StatusMessage({ text, steps = [] }) {
   return (
     <div className={styles.bubble}>
       {steps.map((step, i) => (
-        <div key={i} className={styles.completedStep}>
+        <div key={i} className={`${styles.completedStep} ${step.duration >= 5 ? styles.stepSlow : ''}`}>
           <span className={styles.checkMark}>✓</span>
           <span className={styles.completedLabel}>{step.label}</span>
           <span className={styles.stepDuration}>{step.duration.toFixed(1)}s</span>

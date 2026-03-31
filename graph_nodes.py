@@ -104,9 +104,12 @@ risk — Security posture or risk assessment for a single IP or host.
   "what is the risk of 10.0.0.5?"  →  risk
   "is this IP risky?"  →  risk
 
-netbrain — Tracing or visualising the network path between two IPs.
+netbrain — Tracing or visualising the network path between two IPs, using NetBrain specifically. Only use this when the user does NOT mention Nornir, the database, or "without NetBrain".
   "trace path from A to B"  →  netbrain
   "show me the route from X to Y"  →  netbrain
+  "trace path from A to B without NetBrain"  →  troubleshoot
+  "trace path using Nornir"  →  troubleshoot
+  "trace path using the database"  →  troubleshoot
 
 servicenow — Anything about ITSM tickets, incidents, change requests, problems, CMDB CIs, or ServiceNow users. Use this when the user references a ticket number (INC..., CHG..., PRB...), asks about tickets or incidents, or wants to create/update/search records in ServiceNow.
   "show me open incidents"  →  servicenow
@@ -283,9 +286,10 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     _last = _last_assistant_content(history)
 
     # Determine if this is a clear servicenow context without needing the LLM
+    _PATH_TRACE_RE = re.compile(r'\b(\d{1,3}\.){3}\d{1,3}\b.*\b(\d{1,3}\.){3}\d{1,3}\b|trace\s+path|path\s+trace', re.IGNORECASE)
     _forced_servicenow = (
         active_flow in ("create_change_request", "create_incident")
-        or (_SNOW_RECORD_RE.search(_last) and len(prompt.split()) <= 8)
+        or (_SNOW_RECORD_RE.search(_last) and len(prompt.split()) <= 8 and not _PATH_TRACE_RE.search(prompt))
     )
 
     # discover_only: return display label — never invoke real agents.
@@ -296,7 +300,7 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         else:
             effective_intent = await _llm_classify_intent(prompt)
         display_map = {
-            "troubleshoot": "Troubleshoot Orchestrator",
+            "troubleshoot": "Orchestrator",
             "netbrain": "NetBrain",
             "network": "Panorama",
             "servicenow": "ServiceNow",
@@ -422,6 +426,16 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
                 # New query with IPs → discard stale pending, evaluate fresh
                 _pending_ts_delete(session_id)
                 logger.info("classify_intent: discarding stale pending_ts for session %s (new IP query)", session_id)
+
+    # Deterministic override: "without NetBrain" / Nornir keywords must always route to
+    # troubleshoot — skip the LLM and the Redis cache to avoid stale netbrain classifications.
+    _NO_NETBRAIN_RE = re.compile(
+        r"without netbrain|no netbrain|use nornir|use the database|use netbox|don.t use netbrain",
+        re.IGNORECASE,
+    )
+    if _NO_NETBRAIN_RE.search(prompt):
+        logger.info("classify_intent: deterministic override → troubleshoot (no-NetBrain pattern)")
+        return {"intent": "troubleshoot", "messages": [], "iteration": 0}
 
     # LLM-based intent classification (result cached in Redis to avoid repeat LLM calls)
     _t_classify = _time.perf_counter()
@@ -745,9 +759,9 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
     Uses application-layer state (not LangGraph interrupt) to stay simple.
     """
     try:
-        from atlas.agents.troubleshoot_orchestrator import orchestrate_troubleshoot
+        from atlas.agents.orchestrator import orchestrate_troubleshoot
     except ImportError:
-        from agents.troubleshoot_orchestrator import orchestrate_troubleshoot
+        from agents.orchestrator import orchestrate_troubleshoot
 
     session_id = state.get("session_id") or "default"
     prompt = state["prompt"]
@@ -801,8 +815,15 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
                     "Please describe the problem — include device names, IP addresses, or a description of what is failing.\n"
                     "Example: \"Why can't 10.0.0.1 connect to 11.0.0.1?\" or \"PA-FW-01 is dropping traffic\""
                 )}}
-        issue_clear, port_clear = await _llm_check_ts_context(prompt)
-        logger.info("Troubleshoot context check: has_issue_type=%s has_port=%s", issue_clear, port_clear)
+        # Path trace requests are self-contained — skip clarification regardless of issue/port context.
+        _PATH_TRACE_RE = re.compile(
+            r"\b(trace\s+path|show\s+(me\s+)?the\s+route|find\s+(the\s+)?path|show\s+hops|traceroute)\b",
+            re.IGNORECASE,
+        )
+        is_path_trace = bool(_PATH_TRACE_RE.search(prompt))
+
+        issue_clear, port_clear = (True, True) if is_path_trace else await _llm_check_ts_context(prompt)
+        logger.info("Troubleshoot context check: has_issue_type=%s has_port=%s is_path_trace=%s", issue_clear, port_clear, is_path_trace)
 
         if not issue_clear or (is_connectivity_query and not port_clear):
             parts = []
