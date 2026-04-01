@@ -67,6 +67,24 @@ def _build_nornir(hostname: str, host: str, port: int):
     return Nornir(inventory=inventory, runner=runner)
 
 
+def _run_privileged(hostname: str, host: str, port: int, command: str) -> str:
+    """SSH into a device, enter enable mode, and run a privileged command (e.g. ping)."""
+    from netmiko import ConnectHandler
+
+    device = {
+        "device_type": "arista_eos",
+        "host": host,
+        "port": port,
+        "username": SSH_USER,
+        "password": SSH_PASSWORD,
+        "secret": SSH_PASSWORD,
+        "timeout": 30,
+    }
+    with ConnectHandler(**device) as conn:
+        conn.enable()
+        return conn.send_command(command, read_timeout=30)
+
+
 def _run_show(hostname: str, host: str, port: int, command: str) -> str:
     """SSH into a device and run a single show command. Returns raw output."""
     from nornir_netmiko.tasks import netmiko_send_command
@@ -74,9 +92,18 @@ def _run_show(hostname: str, host: str, port: int, command: str) -> str:
     nr = _build_nornir(hostname, host, port)
     result = nr.run(task=netmiko_send_command, command_string=command)
     for _, multi in result.items():
-        if multi[0].result is not None:
-            return multi[0].result
-    raise RuntimeError(f"No output from {hostname} for '{command}'")
+        task_result = multi[0]
+        # Raise if nornir captured an exception (avoids returning traceback as output)
+        if task_result.failed or task_result.exception:
+            exc = task_result.exception
+            raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
+        r = task_result.result
+        logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
+        if r and not r.strip().startswith("Traceback"):
+            return r
+        if r and r.strip().startswith("Traceback"):
+            raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
+    raise RuntimeError(f"Empty output from {hostname} for '{command}'")
 
 
 # ---------------------------------------------------------------------------
@@ -396,10 +423,13 @@ def get_ospf_neighbors(device: str) -> dict:
         return {"found": False, "device": device, "error": str(e)}
 
 
-def _read_counters(device: str, host: str, port: int, intf: str) -> dict:
-    """Read one snapshot of error counters for a single interface."""
-    raw = _run_show(device, host, port, f"show interfaces {intf} | json")
-    data = json.loads(raw)
+def _read_counters_via_conn(conn, intf: str) -> dict:
+    """Read one snapshot of error counters for a single interface using an existing connection."""
+    raw = conn.send_command(f"show interfaces {intf} | json", read_timeout=15)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Non-JSON for {intf}: {raw[:120]!r}") from exc
     intf_data = data.get("interfaces", {}).get(intf, {})
     c = intf_data.get("interfaceCounters", {})
     e = c.get("inputErrorsDetail", {})
@@ -430,9 +460,10 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
         interfaces: List of interface names, e.g. ["Ethernet1", "Ethernet3"].
     """
     import time
+    from netmiko import ConnectHandler
 
-    conn = _registry().get(device)
-    if not conn:
+    conn_info = _registry().get(device)
+    if not conn_info:
         return {"found": False, "error": f"Device '{device}' not in inventory"}
 
     POLL_INTERVAL = 3
@@ -440,18 +471,31 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
     COUNTER_KEYS  = ("inErrors", "outErrors", "inDiscards", "outDiscards",
                      "fcsErrors", "runtFrames", "giantFrames")
 
+    # Open ONE SSH connection for all iterations — avoids rapid reconnect banner errors
+    netmiko_conn = ConnectHandler(
+        device_type="arista_eos",
+        host=conn_info["host"],
+        port=conn_info["port"],
+        username=SSH_USER,
+        password=SSH_PASSWORD,
+        timeout=30,
+    )
+
     # Collect snapshots: snapshots[iteration][intf] = counter dict
     snapshots: list[dict] = []
-    for i in range(ITERATIONS):
-        if i > 0:
-            time.sleep(POLL_INTERVAL)
-        snap = {}
-        for intf in interfaces:
-            try:
-                snap[intf] = _read_counters(device, conn["host"], conn["port"], intf)
-            except Exception as exc:
-                snap[intf] = {"error": str(exc)}
-        snapshots.append(snap)
+    try:
+        for i in range(ITERATIONS):
+            if i > 0:
+                time.sleep(POLL_INTERVAL)
+            snap = {}
+            for intf in interfaces:
+                try:
+                    snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
+                except Exception as exc:
+                    snap[intf] = {"error": str(exc)}
+            snapshots.append(snap)
+    finally:
+        netmiko_conn.disconnect()
 
     # Report only interfaces with at least one incrementing counter
     active = []
@@ -479,6 +523,188 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
     }
 
 
+import re as _re
+
+
+@tool
+def ping_from_device(
+    device: str, destination: str, source_interface: str = "", vrf: str = ""
+) -> dict:
+    """
+    Run a ping from a network device to a destination IP.
+    Optionally source from a specific interface (e.g. 'Ethernet1').
+    Optionally specify a VRF (e.g. 'CORP', 'MGMT'). Defaults to global/default routing table.
+    Returns {success, loss_pct, rtt_avg_ms, device, destination, vrf, output}.
+
+    Args:
+        device:           Device hostname (must be in inventory).
+        destination:      Target IP address.
+        source_interface: Egress interface to source the ping from (optional).
+        vrf:              VRF name to ping within (optional; omit for default/global).
+    """
+    conn = _registry().get(device)
+    if not conn:
+        return {
+            "success": False,
+            "error": f"Device '{device}' not in inventory",
+            "device": device,
+            "destination": destination,
+        }
+
+    # Build ping command — VRF syntax varies by platform but Arista EOS and IOS both support:
+    #   ping vrf <vrf> <dest> repeat 5 [source <intf>]
+    if vrf and vrf.lower() not in ("", "default", "global"):
+        cmd = f"ping vrf {vrf} {destination} repeat 5"
+    else:
+        cmd = f"ping {destination} repeat 5"
+    if source_interface:
+        cmd += f" source {source_interface}"
+
+    try:
+        raw = _run_privileged(device, conn["host"], conn["port"], cmd)
+        loss_m = _re.search(r"(\d+)%\s+packet\s+loss", raw)
+        rtt_m  = _re.search(r"min/avg/max.*?=\s*[\d.]+/([\d.]+)/", raw)
+        loss_pct = int(loss_m.group(1)) if loss_m else 100
+        rtt_avg  = float(rtt_m.group(1)) if rtt_m else None
+        return {
+            "success":          loss_pct == 0,
+            "loss_pct":         loss_pct,
+            "rtt_avg_ms":       rtt_avg,
+            "device":           device,
+            "destination":      destination,
+            "vrf":              vrf or "default",
+            "source_interface": source_interface or None,
+            "output":           raw,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "device": device,
+            "destination": destination,
+        }
+
+
+@tool  # also exposed as direct endpoint — see /tcp-test below
+def test_tcp_port(
+    device: str, destination: str, port: int, vrf: str = "", timeout: int = 5
+) -> dict:
+    """
+    Test TCP connectivity from a network device to a destination IP and port.
+    Uses telnet to attempt a TCP handshake — verifies whether a service
+    (e.g. HTTPS on 443, SSH on 22) is accepting connections at the network level.
+    Returns {reachable, device, destination, port, output}.
+
+    Args:
+        device:      Device hostname (must be in inventory).
+        destination: Target IP address.
+        port:        TCP port to test (e.g. 443, 80, 22).
+        vrf:         VRF to source from (optional).
+        timeout:     Seconds to wait (default 5).
+    """
+    conn = _registry().get(device)
+    if not conn:
+        return {
+            "reachable": False,
+            "error": f"Device '{device}' not in inventory",
+            "device": device, "destination": destination, "port": port,
+        }
+
+    if vrf and vrf.lower() not in ("", "default", "global"):
+        cmd = f"telnet vrf {vrf} {destination} {port}"
+    else:
+        cmd = f"telnet {destination} {port}"
+
+    try:
+        from netmiko import ConnectHandler
+        device_cfg = {
+            "device_type": "arista_eos",
+            "host": conn["host"], "port": conn["port"],
+            "username": SSH_USER, "password": SSH_PASSWORD,
+            "secret": SSH_PASSWORD, "timeout": 30,
+        }
+        with ConnectHandler(**device_cfg) as nc:
+            nc.enable()
+            raw = nc.send_command_timing(cmd, delay_factor=timeout)
+            if "Connected" in raw or "Escape" in raw:
+                nc.send_command_timing("quit", delay_factor=2)
+                reachable = True
+            elif "refused" in raw.lower():
+                reachable = False
+            else:
+                reachable = False
+        return {"reachable": reachable, "device": device, "destination": destination, "port": port, "output": raw[:300]}
+    except Exception as exc:
+        return {"reachable": False, "error": str(exc), "device": device, "destination": destination, "port": port}
+
+
+@tool
+def check_routing_on_hops(
+    devices: list[str], destination: str, vrf: str = ""
+) -> dict:
+    """
+    Check the routing table on each device in the path for a specific destination.
+    Returns per-device route info: found, vrf, protocol, next_hop, egress interface.
+    Use this to find where routing breaks when a ping fails.
+
+    Args:
+        devices:     List of device hostnames to check.
+        destination: Destination IP address to look up.
+        vrf:         VRF to look in. If empty, searches all VRFs and reports which one matched.
+    """
+    hops: dict[str, dict] = {}
+    for device in devices:
+        conn = _registry().get(device)
+        if not conn:
+            hops[device] = {"error": "Not in inventory"}
+            continue
+        try:
+            if vrf and vrf.lower() not in ("", "default", "global"):
+                cmd = f"show ip route vrf {vrf} {destination} | json"
+            else:
+                cmd = f"show ip route {destination} | json"
+            raw = _run_show(device, conn["host"], conn["port"], cmd)
+            data = json.loads(raw)
+
+            # Search the specified VRF, or scan all VRFs to find where the route lives
+            matched_vrf = None
+            route = None
+            search_vrfs = (
+                {vrf: data.get("vrfs", {}).get(vrf, {})}
+                if vrf and vrf.lower() not in ("", "default", "global")
+                else data.get("vrfs", {})
+            )
+            for vrf_name, vrf_data in search_vrfs.items():
+                routes = vrf_data.get("routes", {})
+                r = (
+                    routes.get(f"{destination}/32")
+                    or next((v for k, v in routes.items() if k.split("/")[0] == destination), None)
+                    or (next(iter(routes.values()), None) if routes else None)
+                )
+                if r:
+                    route = r
+                    matched_vrf = vrf_name
+                    break
+
+            if route:
+                via = (route.get("vias") or [{}])[0]
+                hops[device] = {
+                    "found":     True,
+                    "vrf":       matched_vrf or "default",
+                    "protocol":  route.get("routeType", "unknown"),
+                    "next_hop":  via.get("nexthopAddr"),
+                    "interface": via.get("interface"),
+                }
+            else:
+                hops[device] = {"found": False, "vrf": vrf or "all", "error": "No route to destination"}
+        except json.JSONDecodeError:
+            hops[device] = {"error": f"Non-JSON output: {raw[:80]!r}"}
+        except Exception as exc:
+            hops[device] = {"error": str(exc)}
+
+    return {"destination": destination, "vrf_requested": vrf or "all", "hops": hops}
+
+
 NORNIR_TOOLS = [
     get_gateway,
     find_device_for_ip,
@@ -491,6 +717,9 @@ NORNIR_TOOLS = [
     get_interface_counters,
     get_ospf_neighbors,
     list_devices,
+    ping_from_device,
+    test_tcp_port,
+    check_routing_on_hops,
 ]
 
 _SKILL_PATH = pathlib.Path(__file__).parent.parent / "skills" / "nornir_agent.md"
@@ -529,6 +758,58 @@ AGENT_CARD = {
         }
     ],
 }
+
+
+@app.post("/ping")
+async def handle_ping(request: Request) -> JSONResponse:
+    """Direct endpoint: {device, destination, source_interface?, vrf?} → ping result."""
+    body = await request.json()
+    device           = body.get("device", "")
+    destination      = body.get("destination", "")
+    source_interface = body.get("source_interface", "")
+    vrf              = body.get("vrf", "")
+    if not device or not destination:
+        return JSONResponse({"error": "device and destination required"}, status_code=400)
+    result = ping_from_device.invoke({
+        "device": device,
+        "destination": destination,
+        "source_interface": source_interface,
+        "vrf": vrf,
+    })
+    return JSONResponse(result)
+
+
+@app.post("/tcp-test")
+async def handle_tcp_test(request: Request) -> JSONResponse:
+    """Direct endpoint: {device, destination, port, vrf?} → TCP reachability result."""
+    body = await request.json()
+    device      = body.get("device", "")
+    destination = body.get("destination", "")
+    port        = body.get("port")
+    vrf         = body.get("vrf", "")
+    if not device or not destination or not port:
+        return JSONResponse({"error": "device, destination and port required"}, status_code=400)
+    result = test_tcp_port.invoke({
+        "device": device, "destination": destination, "port": int(port), "vrf": vrf,
+    })
+    return JSONResponse(result)
+
+
+@app.post("/routing-check")
+async def handle_routing_check(request: Request) -> JSONResponse:
+    """Direct endpoint: {devices: [str], destination, vrf?} → per-device routing result."""
+    body = await request.json()
+    devices     = body.get("devices", [])
+    destination = body.get("destination", "")
+    vrf         = body.get("vrf", "")
+    if not devices or not destination:
+        return JSONResponse({"error": "devices and destination required"}, status_code=400)
+    result = check_routing_on_hops.invoke({
+        "devices": devices,
+        "destination": destination,
+        "vrf": vrf,
+    })
+    return JSONResponse(result)
 
 
 @app.post("/interface-counters")

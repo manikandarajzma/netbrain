@@ -92,7 +92,7 @@ export default function AssistantMessage({ content, memories }) {
       : arrayKeys
 
     for (const key of tableOrder) {
-      if (!arrayKeys.includes(key) || key === 'path_hops') continue
+      if (!arrayKeys.includes(key) || key === 'path_hops' || key === 'reverse_path_hops') continue
       const arr = c[key]
       const heading = PANORAMA_TABLE_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
       const colOrder = PANORAMA_COLUMN_ORDER[key] || null
@@ -134,6 +134,12 @@ export default function AssistantMessage({ content, memories }) {
         <>
           <p className={styles.summaryHeading}>Path Summary</p>
           <PathVisualization content={content} />
+          {content.reverse_path_hops && content.reverse_path_hops.length > 0 && (
+            <>
+              <p className={styles.summaryHeading} style={{ marginTop: '1.25rem' }}>Return Path</p>
+              <PathVisualization content={{ ...content, path_hops: content.reverse_path_hops, source: content.destination, destination: content.source }} />
+            </>
+          )}
         </>
       )}
 

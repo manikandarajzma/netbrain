@@ -1,0 +1,80 @@
+name: performance_troubleshoot
+description: >
+  High latency / slow connectivity troubleshoot.
+  Focus: interface error rates, packet loss, RTT baseline.
+  Splunk traffic patterns included for volume analysis.
+
+steps:
+  - id: path_trace
+    tool: path_agent
+    input:
+      prompt: "{{prompt}}"
+
+  - id: gather_evidence
+    parallel:
+      - id: servicenow
+        tool: servicenow_agent
+        input:
+          device_names: "{{path_devices}}"
+          source_ip: "{{src_ip}}"
+          dest_ip: "{{dst_ip}}"
+          port: "{{port}}"
+          query_type: "incidents_and_changes"
+          hours_back: 48
+
+      - id: interface_counters
+        tool: interface_counters_agent
+        input:
+          devices_and_interfaces: "{{path_hops_for_counters}}"
+
+      - id: splunk
+        tool: splunk_agent
+        input:
+          task: "Check traffic volume, retransmits, and latency patterns for {{src_ip}} to {{dst_ip}} in the last 24 hours"
+
+  - id: active_test
+    if: first_hop_device
+    then:
+      - id: ping_test
+        tool: ping_agent
+        input:
+          device: "{{first_hop_device}}"
+          destination: "{{dst_ip}}"
+          source_interface: "{{first_hop_lan_interface}}"
+          vrf: "{{src_vrf}}"
+
+      # High packet loss means routing or interface issue — check hops
+      - id: loss_branch
+        if: ping_failed
+        then:
+          - id: routing_check
+            tool: routing_check_agent
+            input:
+              devices: "{{path_devices}}"
+              destination: "{{dst_ip}}"
+              vrf: "{{src_vrf}}"
+        else:
+          # Ping passed — test TCP port from last-hop device if port is known
+          - id: tcp_branch
+            if: port
+            then:
+              - id: tcp_test
+                tool: tcp_port_agent
+                input:
+                  device: "{{last_hop_device}}"
+                  destination: "{{dst_ip}}"
+                  port: "{{port}}"
+                  vrf: "{{src_vrf}}"
+
+      # Firewall policy check regardless of ping result (may be rate-limiting)
+      - id: firewall_check
+        if: has_firewalls
+        then:
+          - id: panorama
+            tool: panorama_agent
+            input:
+              source_ip: "{{src_ip}}"
+              dest_ip: "{{dst_ip}}"
+              firewall_hostnames: "{{firewall_hostnames}}"
+              port: "{{port}}"
+              protocol: "{{protocol}}"

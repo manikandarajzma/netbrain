@@ -297,6 +297,9 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     if state.get("discover_only"):
         if _forced_servicenow:
             effective_intent = "servicenow"
+        elif _pending_ts_exists(state.get("session_id") or "default"):
+            # Clarification answer in progress — label as troubleshoot, not whatever the LLM thinks
+            effective_intent = "troubleshoot"
         else:
             effective_intent = await _llm_classify_intent(prompt)
         display_map = {
@@ -654,25 +657,35 @@ _TS_CONTEXT_PROMPT = """\
 You are analysing a network troubleshooting query. Determine what context is present.
 
 Reply with ONLY a JSON object on one line, no explanation:
-{"has_issue_type": <true|false>, "has_port": <true|false>}
+{"has_issue_type": <true|false>, "has_port": <true|false>, "issue_type": "<type>"}
 
-- has_issue_type: true if the query describes ANY problem or investigation — connectivity failure, performance issue, device problem, policy check, security event, or general troubleshooting. This includes: "cannot connect", "blocked", "slow", "dropping packets", "high CPU", "not working", "troubleshoot", "check", "investigate", "diagnose". Only false if the query is so vague it has no context at all (e.g. just two IPs with no verb).
-- has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.). For device-based queries (no src/dst IPs), has_port is always true — port is not needed.
+- has_issue_type: true if the query describes ANY problem or investigation. Only false if the query is so vague it has no context (e.g. just two IPs with no verb).
+- has_port: true if the query mentions a port, protocol, or service (TCP, UDP, port 443, HTTPS, SSH, DNS, "any", etc.). For device-based queries (no src/dst IPs), has_port is always true.
+- issue_type: one of exactly: "blocked", "slow", "intermittent", "device", "path_changed", "general"
+  - "blocked"      — traffic denied, dropped, filtered, can't connect, firewall blocking
+  - "slow"         — high latency, slow, performance degraded, packet loss, high RTT
+  - "intermittent" — flapping, drops in and out, sometimes works, unstable
+  - "device"       — specific device problem: high CPU, memory, interface errors, device down
+  - "path_changed" — routing changed, unexpected path, traffic going different route
+  - "general"      — general connectivity troubleshoot or unknown
 
 Examples:
-"why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"traffic is blocked from 10.0.0.1 to 11.0.0.1 on TCP 443" → {"has_issue_type": true, "has_port": true}
-"troubleshoot connectivity between 10.0.0.1 and 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"PA-FW-01 is dropping packets" → {"has_issue_type": true, "has_port": true}
-"why is CORE-SW-01 having high CPU?" → {"has_issue_type": true, "has_port": true}
-"users in building A can't reach the internet" → {"has_issue_type": true, "has_port": false}
-"check connectivity from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false}
-"10.0.0.1 11.0.0.1" → {"has_issue_type": false, "has_port": false}\
+"why can I not connect from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false, "issue_type": "blocked"}
+"traffic is blocked from 10.0.0.1 to 11.0.0.1 on TCP 443" → {"has_issue_type": true, "has_port": true, "issue_type": "blocked"}
+"troubleshoot connectivity between 10.0.0.1 and 11.0.0.1" → {"has_issue_type": true, "has_port": false, "issue_type": "general"}
+"latency is high from 10.0.0.1 to 11.0.0.1" → {"has_issue_type": true, "has_port": false, "issue_type": "slow"}
+"connection drops intermittently" → {"has_issue_type": true, "has_port": false, "issue_type": "intermittent"}
+"PA-FW-01 is dropping packets" → {"has_issue_type": true, "has_port": true, "issue_type": "device"}
+"why is CORE-SW-01 having high CPU?" → {"has_issue_type": true, "has_port": true, "issue_type": "device"}
+"traffic seems to be taking a different path" → {"has_issue_type": true, "has_port": false, "issue_type": "path_changed"}
+"10.0.0.1 11.0.0.1" → {"has_issue_type": false, "has_port": false, "issue_type": "general"}\
 """
 
+_VALID_ISSUE_TYPES = {"blocked", "slow", "intermittent", "device", "path_changed", "general"}
 
-async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool]:
-    """Return (has_issue_type, has_port) for a troubleshoot prompt."""
+
+async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool, str]:
+    """Return (has_issue_type, has_port, issue_type) for a troubleshoot prompt."""
     try:
         from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
     except ImportError:
@@ -686,7 +699,7 @@ async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool]:
         base_url=OLLAMA_BASE_URL,
         temperature=0.0,
         api_key="docker",
-        max_tokens=30,
+        max_tokens=50,
     )
     try:
         response = await llm.ainvoke([
@@ -695,10 +708,13 @@ async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool]:
         ])
         import json as _json
         data = _json.loads(response.content.strip())
-        return bool(data.get("has_issue_type")), bool(data.get("has_port"))
+        issue_type = data.get("issue_type", "general")
+        if issue_type not in _VALID_ISSUE_TYPES:
+            issue_type = "general"
+        return bool(data.get("has_issue_type")), bool(data.get("has_port")), issue_type
     except Exception as exc:
         logger.warning("_llm_check_ts_context failed: %s — assuming context missing", exc)
-        return False, False
+        return False, False, "general"
 
 
 # Pending clarification prompts keyed by session_id.
@@ -708,25 +724,38 @@ _pending_ts_mem: dict[str, str] = {}
 _PENDING_TS_TTL = 600  # 10 minutes
 
 
-def _pending_ts_set(session_id: str, prompt: str) -> None:
+def _pending_ts_set(session_id: str, prompt: str, issue_type: str = "general") -> None:
+    import json as _json
+    payload = _json.dumps({"prompt": prompt, "issue_type": issue_type})
     try:
         import os, redis as _redis
         r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-        r.setex(f"atlas:pending_ts:{session_id}", _PENDING_TS_TTL, prompt)
+        r.setex(f"atlas:pending_ts:{session_id}", _PENDING_TS_TTL, payload)
         return
     except Exception:
         pass
-    _pending_ts_mem[session_id] = prompt
+    _pending_ts_mem[session_id] = payload
 
 
-def _pending_ts_get(session_id: str) -> str | None:
+def _pending_ts_get(session_id: str) -> tuple[str, str] | tuple[None, None]:
+    """Return (prompt, issue_type) or (None, None) if not found."""
+    import json as _json
     try:
         import os, redis as _redis
         r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
-        return r.get(f"atlas:pending_ts:{session_id}")
+        raw = r.get(f"atlas:pending_ts:{session_id}")
     except Exception:
-        pass
-    return _pending_ts_mem.get(session_id)
+        raw = _pending_ts_mem.get(session_id)
+    if not raw:
+        return None, None
+    try:
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            return data.get("prompt", ""), data.get("issue_type", "general")
+        # Legacy: plain string stored before this change
+        return str(data), "general"
+    except Exception:
+        return str(raw), "general"
 
 
 def _pending_ts_exists(session_id: str) -> bool:
@@ -774,7 +803,7 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
 
     # If a previous turn asked for clarification, combine with the original prompt.
     # Primary: Redis-backed store (survives reloads). Fallback: conversation history scan.
-    pending = _pending_ts_get(session_id)
+    pending, pending_issue_type = _pending_ts_get(session_id)
     if pending:
         _pending_ts_delete(session_id)
     if not pending:
@@ -797,10 +826,14 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
             )
             if is_clarification_reply and _IP_OR_CIDR_RE.findall(last_user_before):
                 pending = last_user_before
+                pending_issue_type = "general"
                 logger.info("Recovered pending troubleshoot prompt from conversation history")
+
+    issue_type = "general"
 
     if pending:
         full_prompt = f"{pending}\n\nUser clarification: {prompt}"
+        issue_type = pending_issue_type or "general"
     else:
         # For connectivity queries (2 IPs), check if we have enough context.
         # For device-based queries (device name, single IP), proceed directly — no IP count gate.
@@ -822,8 +855,14 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
         )
         is_path_trace = bool(_PATH_TRACE_RE.search(prompt))
 
-        issue_clear, port_clear = (True, True) if is_path_trace else await _llm_check_ts_context(prompt)
-        logger.info("Troubleshoot context check: has_issue_type=%s has_port=%s is_path_trace=%s", issue_clear, port_clear, is_path_trace)
+        if is_path_trace:
+            issue_clear, port_clear, issue_type = True, True, "general"
+        else:
+            issue_clear, port_clear, issue_type = await _llm_check_ts_context(prompt)
+        logger.info(
+            "Troubleshoot context check: has_issue_type=%s has_port=%s issue_type=%s is_path_trace=%s",
+            issue_clear, port_clear, issue_type, is_path_trace,
+        )
 
         if not issue_clear or (is_connectivity_query and not port_clear):
             parts = []
@@ -842,8 +881,8 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
                     "e.g. TCP 443, UDP 53, TCP 22 — or 'any' if protocol-agnostic"
                 )
             question = "\n\n".join(parts)
-            _pending_ts_set(session_id, prompt)
-            logger.info("Troubleshoot clarification requested for session %s", session_id)
+            _pending_ts_set(session_id, prompt, issue_type)
+            logger.info("Troubleshoot clarification requested for session %s (issue_type=%s)", session_id, issue_type)
             return {"final_response": {"role": "assistant", "content": question}}
 
         full_prompt = prompt
@@ -853,6 +892,7 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
             full_prompt,
             username=state.get("username"),
             session_id=session_id,
+            issue_type=issue_type,
         )
     except Exception as exc:
         logger.exception("Troubleshoot orchestrator failed: %s", exc)

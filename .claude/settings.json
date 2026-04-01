@@ -27,7 +27,9 @@
       "Bash(psql atlas:*)",
       "Bash(grep -rn \"no relevant\\\\|No relevant\\\\|from memory\\\\|incidents from\" /Users/manig/Documents/coding/atlas/ --include=*.py --include=*.jsx --include=*.js --include=*.md)",
       "Bash(grep -r \"NETBOX\" /Users/manig/Documents/coding/atlas/.env*)",
-      "Bash(redis-cli KEYS \"atlas:*\")"
+      "Bash(head -20 grep -n \"aiohttp\\\\|ClientSession\\\\|requests\\\\.\" /Users/manig/Documents/coding/atlas/tools/servicenow_tools.py)",
+      "Bash(grep -r \"port.*800[0-9]\\\\|uvicorn\\\\|8001\\\\|8002\\\\|8003\\\\|8004\\\\|8005\\\\|8006\\\\|8007\\\\|8008\" /Users/manig/Documents/coding/atlas/agents/*.py)",
+      "Bash(grep -rn \"nornir_agent\\\\|8006\\\\|subprocess.Popen\" /Users/manig/Documents/coding/atlas/*.py /Users/manig/Documents/coding/atlas/agents/orchestrator.py)"
     ]
   }
 }

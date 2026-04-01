@@ -45,7 +45,17 @@ async def run_agent_loop(
     last_response = None
 
     for i in range(max_iterations):
-        response = await llm_with_tools.ainvoke(messages)
+        try:
+            response = await llm_with_tools.ainvoke(messages)
+        except Exception as parse_exc:
+            # Local LLMs sometimes output multiple tool calls separated by semicolons,
+            # producing invalid JSON. Inject a correction and retry once.
+            logger.warning("Agent loop: tool call parse error on iter %d: %s — retrying with single-tool instruction", i, parse_exc)
+            messages.append({"role": "user", "content": "Call only ONE tool at a time. Do not combine multiple tool calls in a single response."})
+            try:
+                response = await llm_with_tools.ainvoke(messages)
+            except Exception:
+                break
         messages.append(response)
         last_response = response
 

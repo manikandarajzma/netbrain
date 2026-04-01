@@ -1,0 +1,54 @@
+name: device_health
+description: >
+  Device health troubleshoot: interface errors, open incidents, routing state.
+  No ping (device-focused, not end-to-end). Routing check always runs.
+
+steps:
+  - id: path_trace
+    tool: path_agent
+    input:
+      prompt: "{{prompt}}"
+
+  - id: gather_evidence
+    parallel:
+      - id: servicenow
+        tool: servicenow_agent
+        input:
+          device_names: "{{path_devices}}"
+          source_ip: "{{src_ip}}"
+          dest_ip: "{{dst_ip}}"
+          port: "{{port}}"
+          query_type: "incidents_and_changes"
+          hours_back: 48
+
+      - id: interface_counters
+        tool: interface_counters_agent
+        input:
+          devices_and_interfaces: "{{path_hops_for_counters}}"
+
+  # Routing check always runs for device health — looking for blackholes/misconfigs
+  - id: routing_branch
+    if: path_devices
+    then:
+      - id: routing_check
+        tool: routing_check_agent
+        input:
+          devices: "{{path_devices}}"
+          destination: "{{dst_ip}}"
+          vrf: "{{src_vrf}}"
+
+      # If routing check finds a firewall device in path, policy may be relevant
+      - id: firewall_check
+        if: has_firewalls
+        then:
+          - id: panorama
+            tool: panorama_agent
+            input:
+              source_ip: "{{src_ip}}"
+              dest_ip: "{{dst_ip}}"
+              firewall_hostnames: "{{firewall_hostnames}}"
+              port: "{{port}}"
+              protocol: "{{protocol}}"
+    else:
+      - id: no_devices_note
+        message: "No devices found in path. Verify device inventory contains {{src_ip}} and {{dst_ip}} subnets."

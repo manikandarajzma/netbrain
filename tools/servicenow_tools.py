@@ -12,6 +12,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from tools.shared import mcp, setup_logging
+from tools.resilience import retry_async, CircuitBreaker, CircuitOpenError
 import servicenowauth
 
 logger = setup_logging(__name__)
@@ -84,21 +85,29 @@ def _auth() -> aiohttp.BasicAuth:
     return aiohttp.BasicAuth(servicenowauth.SERVICENOW_USER, servicenowauth.SERVICENOW_PASSWORD)
 
 
+_snow_cb = CircuitBreaker.for_endpoint("servicenow")
+
+
 async def _get(path: str, params: dict = None) -> Dict[str, Any]:
     """GET request to ServiceNow REST API. Returns parsed JSON or {'error': ...}."""
     url = f"{_base_url()}{path}"
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    # sysparm_display_value=true returns human-readable labels instead of sys_ids
     if params is None:
         params = {}
     params.setdefault("sysparm_display_value", "true")
-    try:
+
+    async def _req():
         async with aiohttp.ClientSession(auth=_auth(), headers=headers) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 text = await resp.text()
                 return {"error": f"HTTP {resp.status}: {text[:300]}"}
+
+    try:
+        return await retry_async(_snow_cb, _req, retryable_exc=(aiohttp.ClientError,))
+    except CircuitOpenError as exc:
+        return {"error": f"ServiceNow circuit open: {exc}"}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -107,13 +116,19 @@ async def _post(path: str, payload: dict, params: dict = None) -> Dict[str, Any]
     """POST request to ServiceNow REST API."""
     url = f"{_base_url()}{path}"
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    try:
+
+    async def _req():
         async with aiohttp.ClientSession(auth=_auth(), headers=headers) as session:
             async with session.post(url, json=payload, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 body = await resp.json()
                 if resp.status in (200, 201):
                     return body
                 return {"error": f"HTTP {resp.status}: {body}"}
+
+    try:
+        return await retry_async(_snow_cb, _req, retryable_exc=(aiohttp.ClientError,))
+    except CircuitOpenError as exc:
+        return {"error": f"ServiceNow circuit open: {exc}"}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -122,13 +137,19 @@ async def _patch(path: str, payload: dict) -> Dict[str, Any]:
     """PATCH request to ServiceNow REST API."""
     url = f"{_base_url()}{path}"
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    try:
+
+    async def _req():
         async with aiohttp.ClientSession(auth=_auth(), headers=headers) as session:
             async with session.patch(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 body = await resp.json()
                 if resp.status == 200:
                     return body
                 return {"error": f"HTTP {resp.status}: {body}"}
+
+    try:
+        return await retry_async(_snow_cb, _req, retryable_exc=(aiohttp.ClientError,))
+    except CircuitOpenError as exc:
+        return {"error": f"ServiceNow circuit open: {exc}"}
     except Exception as exc:
         return {"error": str(exc)}
 

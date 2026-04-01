@@ -13,6 +13,7 @@ import uuid
 
 import httpx
 from langchain_core.tools import tool
+from tools.resilience import retry_async, CircuitBreaker, CircuitOpenError
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
@@ -113,11 +114,13 @@ def _cache_set(agent: str, value: str, *parts: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _call_agent(url: str, task: str, timeout: float = 10.0) -> str:
-    payload = {
-        "id": str(uuid.uuid4()),
-        "message": {"role": "user", "parts": [{"type": "text", "text": task}]},
-    }
-    try:
+    cb = CircuitBreaker.for_endpoint(url)
+
+    async def _do_call() -> str:
+        payload = {
+            "id": str(uuid.uuid4()),
+            "message": {"role": "user", "parts": [{"type": "text", "text": task}]},
+        }
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
@@ -130,7 +133,16 @@ async def _call_agent(url: str, task: str, timeout: float = 10.0) -> str:
                 )
                 if text:
                     return text
-        return "Agent returned no data."
+            return "Agent returned no data."
+
+    try:
+        return await retry_async(
+            cb, _do_call,
+            retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError),
+        )
+    except CircuitOpenError as e:
+        logger.warning("Agent call to %s blocked by circuit breaker: %s", url, e)
+        return f"Agent unavailable: {e}"
     except Exception as e:
         logger.warning("Agent call to %s failed: %s", url, e)
         return f"Agent unavailable: {e}"
@@ -143,6 +155,7 @@ async def _call_agent(url: str, task: str, timeout: float = 10.0) -> str:
 _session_id: str | None = None
 _llm = None  # set by orchestrate_troubleshoot before agent runs
 _session_path_hops: list | None = None          # structured path hops from DB trace, injected into final response
+_session_reverse_path_hops: list | None = None  # return path hops (dst → src)
 _session_path_devices: list[str] = []           # device names in path — used to force SNOW call if LLM skips it
 _session_interface_counters: list[dict] = []    # interface counter results, injected into final response
 
@@ -219,6 +232,7 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
 
     # Step 1: find first-hop gateway — prefer NetBox, fall back to routing DB
     gw_info = get_gateway_for_prefix.fn(src_ip)
+    logger.info("_db_path_trace(%s→%s): gw_info=%r", src_ip, dst_ip, gw_info)
     if "error" not in gw_info:
         gw_ip = gw_info["gateway"]
         row = await fetchrow(
@@ -226,6 +240,7 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
         )
         if not row:
             msg = f"Gateway {gw_ip} not found in interface_ips table — run collect_devices.py first."
+            logger.warning("_db_path_trace: %s", msg)
             return msg, []
         current_device = row["device"]
         gw_interface = row["interface"]
@@ -246,6 +261,7 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
         )
         if not row:
             msg = f"Cannot determine gateway for {src_ip}: NetBox offline and no directly-connected route in DB."
+            logger.warning("_db_path_trace: %s", msg)
             return msg, []
         current_device = row["device"]
         gw_interface = row["egress_interface"]
@@ -523,6 +539,8 @@ async def call_servicenow_agent(
     source_ip: str = "",
     dest_ip: str = "",
     port: str = "",
+    query_type: str = "incidents_and_changes",
+    hours_back: int = 24,
 ) -> str:
     """
     Search ServiceNow for incidents AND change requests related to devices in the network path.
@@ -578,11 +596,28 @@ async def call_servicenow_agent(
 
         query = " OR ".join(terms)
 
-        # Run incident and change request searches in parallel (both must use the same scoped query)
-        inc_result, chg_result = await _asyncio.gather(
-            call_mcp_tool("search_servicenow_incidents", {"query": query, "limit": 10, "updated_within_hours": 24}, timeout=30.0),
-            call_mcp_tool("list_servicenow_change_requests", {"query": query, "limit": 20, "updated_within_hours": 1}, timeout=30.0),
-        )
+        # Run incident and/or change request searches based on query_type
+        # Change requests use a wider window (at least 7 days) since changes often predate incidents.
+        chg_hours = max(hours_back * 7, 168)
+        if query_type == "changes_only":
+            inc_result = {"result": []}
+            chg_result = await call_mcp_tool(
+                "list_servicenow_change_requests",
+                {"query": query, "limit": 20, "updated_within_hours": hours_back},
+                timeout=30.0,
+            )
+        elif query_type == "incidents_only":
+            inc_result = await call_mcp_tool(
+                "search_servicenow_incidents",
+                {"query": query, "limit": 10, "updated_within_hours": hours_back},
+                timeout=30.0,
+            )
+            chg_result = {"result": []}
+        else:  # incidents_and_changes (default) or anything else
+            inc_result, chg_result = await _asyncio.gather(
+                call_mcp_tool("search_servicenow_incidents", {"query": query, "limit": 10, "updated_within_hours": hours_back}, timeout=30.0),
+                call_mcp_tool("list_servicenow_change_requests", {"query": query, "limit": 20, "updated_within_hours": chg_hours}, timeout=30.0),
+            )
 
         def _dedup(records: list[dict]) -> list[dict]:
             """Deduplicate records by number."""
@@ -982,6 +1017,343 @@ async def _execute_plan(
 
 
 # ---------------------------------------------------------------------------
+# Runbook infrastructure
+# ---------------------------------------------------------------------------
+
+async def _ping_via_nornir(
+    device: str, destination: str, source_interface: str = "", vrf: str = ""
+) -> dict:
+    """POST to nornir agent /ping and return the result dict."""
+    cb = CircuitBreaker.for_endpoint(NORNIR_AGENT_URL + "/ping")
+    async def _do():
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{NORNIR_AGENT_URL}/ping",
+                json={
+                    "device": device,
+                    "destination": destination,
+                    "source_interface": source_interface,
+                    "vrf": vrf,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
+    try:
+        return await retry_async(cb, _do, retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError))
+    except CircuitOpenError as exc:
+        return {"success": False, "error": str(exc), "device": device, "destination": destination}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "device": device, "destination": destination}
+
+
+async def _routing_check_via_nornir(devices: list[str], destination: str, vrf: str = "") -> dict:
+    """POST to nornir agent /routing-check and return the result dict."""
+    cb = CircuitBreaker.for_endpoint(NORNIR_AGENT_URL + "/routing-check")
+    async def _do():
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{NORNIR_AGENT_URL}/routing-check",
+                json={"devices": devices, "destination": destination, "vrf": vrf},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    try:
+        return await retry_async(cb, _do, retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError))
+    except Exception as exc:
+        return {"error": str(exc), "destination": destination, "hops": {}}
+
+
+async def _nornir_diagnose(task: str) -> str:
+    """Send a free-form diagnostic task to the nornir agent's ReAct loop."""
+    import uuid
+    cb = CircuitBreaker.for_endpoint(NORNIR_AGENT_URL)
+    async def _do():
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{NORNIR_AGENT_URL}/",
+                json={
+                    "id": str(uuid.uuid4()),
+                    "message": {"parts": [{"type": "text", "text": task}]},
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            # A2A response: artifacts[0].parts[0].text
+            if data.get("status", {}).get("state") == "failed":
+                return ""
+            try:
+                return data["artifacts"][0]["parts"][0]["text"]
+            except (KeyError, IndexError, TypeError):
+                return ""
+    try:
+        return await retry_async(cb, _do, retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError))
+    except Exception as exc:
+        return f"Follow-up investigation unavailable: {exc}"
+
+
+async def _infer_src_vrf(src_ip: str, first_hop_device: str) -> str:
+    """Query the DB to find which VRF contains src_ip on first_hop_device.
+
+    Strategy: longest-prefix-match in routing_table; fall back to interface_ips.
+    Returns 'default' if nothing is found or DB is unavailable.
+    """
+    if not src_ip or not first_hop_device:
+        return "default"
+    try:
+        try:
+            from atlas.db import fetchrow
+        except ImportError:
+            from db import fetchrow
+
+        # 1. Try routing table — longest-prefix match toward src_ip on the first hop
+        row = await fetchrow(
+            """
+            SELECT vrf FROM routing_table
+            WHERE device = $1 AND $2::inet << prefix
+            ORDER BY masklen(prefix) DESC LIMIT 1
+            """,
+            first_hop_device, src_ip,
+        )
+        if row and row["vrf"]:
+            return row["vrf"]
+
+        # 2. Try interface_ips — maybe src_ip is directly connected to the device
+        row = await fetchrow(
+            "SELECT vrf FROM interface_ips WHERE device = $1 AND $2::inet << (ip::text || '/' || prefix_len)::cidr LIMIT 1",
+            first_hop_device, src_ip,
+        )
+        if row and row["vrf"]:
+            return row["vrf"]
+    except Exception as exc:
+        logger.warning("_infer_src_vrf: DB query failed: %s", exc)
+
+    return "default"
+
+
+async def _post_path_trace(result: str, ctx: dict) -> None:
+    """Extract structured fields from path agent output into the runbook context."""
+    import re as _re
+
+    devices   = _extract_devices_from_netbrain(result)
+    firewalls = _extract_firewalls_from_netbrain(result)
+
+    ctx["path_devices"]       = devices
+    ctx["has_firewalls"]      = bool(firewalls)
+    ctx["firewall_hostnames"] = firewalls
+
+    # Extract first hop device + interfaces from path text or structured hops.
+    # first_hop_lan_interface  = interface on the first device facing the SOURCE (used for ping source)
+    # first_hop_egress_interface = interface on the first device facing the DESTINATION
+    if _session_path_hops:
+        # First hop: from_device=src_ip, to_device=first_router, in_interface=LAN interface
+        first_h = _session_path_hops[0]
+        ctx["first_hop_device"]            = first_h.get("to_device", "") or (devices[0] if devices else "")
+        ctx["first_hop_lan_interface"]     = first_h.get("in_interface", "") or ""
+        # Egress interface: out_interface of the hop where from_device == first_hop_device
+        ctx["first_hop_egress_interface"]  = ""
+        first_dev = ctx["first_hop_device"]
+        for h in _session_path_hops:
+            if h.get("from_device") == first_dev and h.get("out_interface"):
+                ctx["first_hop_egress_interface"] = h["out_interface"]
+                break
+        # Last-hop device: the network device directly connected to the destination
+        # = from_device of the last hop where to_device is an IP (not a hostname)
+        import re as _re2
+        ctx["last_hop_device"] = ""
+        for h in reversed(_session_path_hops):
+            to_d   = h.get("to_device", "")
+            from_d = h.get("from_device", "")
+            if _re2.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", to_d) and from_d and not _re2.match(r"^\d", from_d):
+                ctx["last_hop_device"] = from_d
+                break
+    else:
+        # Stub/NetBrain format: "Hop 1: EDGE-RTR-01  | ... | Egress: Gi0/0 → Gi0/1"
+        m = _re.search(
+            r"Hop\s+1:\s+(\S+).*?Egress:\s+(\S+)",
+            result,
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        if m:
+            ctx["first_hop_device"]           = m.group(1).rstrip(",|:()")
+            egress = m.group(2)
+            ctx["first_hop_egress_interface"] = egress.split("→")[0].strip().rstrip(",|:()")
+        elif devices:
+            ctx["first_hop_device"]           = devices[0]
+            ctx["first_hop_egress_interface"] = ""
+        else:
+            ctx["first_hop_device"]           = ""
+            ctx["first_hop_egress_interface"] = ""
+        # No structured hops — LAN interface unknown from text alone
+        ctx["first_hop_lan_interface"] = ctx.get("first_hop_egress_interface", "")
+
+    # Build devices+interfaces list for counter polling.
+    # Use structured hops from DB trace if available; fall back to device list only.
+    if _session_path_hops:
+        dev_intfs: dict[str, set] = {}
+        for hop in _session_path_hops:
+            for dev_key, intf_key in [("from_device", "out_interface"), ("to_device", "in_interface")]:
+                dev  = hop.get(dev_key, "")
+                intf = hop.get(intf_key, "")
+                if dev and not _re.match(r"^\d", dev):
+                    dev_intfs.setdefault(dev, set())
+                    if intf:
+                        dev_intfs[dev].add(intf)
+        ctx["path_hops_for_counters"] = [
+            {"device": d, "interfaces": sorted(intfs)}
+            for d, intfs in dev_intfs.items()
+            if intfs
+        ]
+    else:
+        ctx["path_hops_for_counters"] = [{"device": d, "interfaces": []} for d in devices]
+
+    # VRF inference: determine which VRF the src_ip lives in on the first hop device.
+    # This propagates into routing checks and pings so they query the correct VRF.
+    src_vrf = await _infer_src_vrf(ctx.get("src_ip", ""), ctx.get("first_hop_device", ""))
+    ctx["src_vrf"] = src_vrf
+    logger.info(
+        "_post_path_trace: src_vrf=%r for src_ip=%r on first_hop=%r",
+        src_vrf, ctx.get("src_ip"), ctx.get("first_hop_device"),
+    )
+
+
+def _post_ping_test(result: dict, ctx: dict) -> None:
+    """Populate ping_failed / ping_loss_pct into runbook context."""
+    if isinstance(result, dict):
+        success  = result.get("success", False)
+        loss_pct = result.get("loss_pct", 100 if not success else 0)
+    else:
+        success, loss_pct = False, 100
+    ctx["ping_failed"]   = not success
+    ctx["ping_loss_pct"] = loss_pct
+
+
+def _post_tcp_test(result: dict, ctx: dict) -> None:
+    """Populate tcp_reachable into runbook context."""
+    if isinstance(result, dict):
+        ctx["tcp_reachable"] = result.get("reachable", False)
+    else:
+        ctx["tcp_reachable"] = False
+
+
+_RUNBOOK_MAP = {
+    "blocked":      "connectivity.yaml",
+    "slow":         "performance.yaml",
+    "intermittent": "intermittent.yaml",
+    "device":       "device_health.yaml",
+    "path_changed": "path_change.yaml",
+    "general":      "connectivity.yaml",
+}
+_RUNBOOKS_DIR = pathlib.Path(__file__).parent.parent / "runbooks"
+
+
+def _select_runbook(issue_type: str) -> pathlib.Path:
+    name = _RUNBOOK_MAP.get(issue_type, "connectivity.yaml")
+    path = _RUNBOOKS_DIR / name
+    if not path.exists():
+        logger.warning("Runbook %s not found — falling back to connectivity.yaml", name)
+        path = _RUNBOOKS_DIR / "connectivity.yaml"
+    logger.info("Selected runbook: %s (issue_type=%s)", path.name, issue_type)
+    return path
+
+
+def _build_runbook_tools(prompt: str) -> dict:
+    """Return the tool registry for the connectivity runbook."""
+
+    async def _path_agent(prompt: str) -> str:
+        return await call_nornir_path_agent.ainvoke({"task": prompt})
+
+    async def _servicenow_agent(
+        device_names, source_ip="", dest_ip="", port="",
+        query_type="incidents_and_changes", hours_back=24,
+    ) -> str:
+        return await call_servicenow_agent.ainvoke({
+            "device_names": device_names if isinstance(device_names, list) else [],
+            "source_ip": source_ip,
+            "dest_ip": dest_ip,
+            "port": port,
+            "query_type": query_type,
+            "hours_back": int(hours_back) if hours_back else 24,
+        })
+
+    async def _counters_agent(devices_and_interfaces) -> str:
+        if not isinstance(devices_and_interfaces, list):
+            return "No interface data."
+        # Filter out entries without interface names — counter polling needs at least one intf
+        valid = [e for e in devices_and_interfaces if e.get("interfaces")]
+        if not valid:
+            return "No interface data available for counter polling."
+        return await call_interface_counters_agent.ainvoke({"devices_and_interfaces": valid})
+
+    async def _ping_agent(
+        device: str, destination: str, source_interface: str = "", vrf: str = ""
+    ) -> dict:
+        return await _ping_via_nornir(device, destination, source_interface, vrf)
+
+    async def _routing_agent(devices, destination: str, vrf: str = "") -> dict:
+        devs = devices if isinstance(devices, list) else []
+        return await _routing_check_via_nornir(devs, destination, vrf)
+
+    async def _reverse_path_agent(prompt: str) -> str:
+        """Trace the return path (dst → src), storing hops for visualization."""
+        global _session_reverse_path_hops
+        src_ip, dst_ip = _extract_ips(prompt)
+        logger.info("_reverse_path_agent: src_ip=%r dst_ip=%r (will trace %r → %r)", src_ip, dst_ip, dst_ip, src_ip)
+        if not src_ip or not dst_ip:
+            return "Could not extract IPs for reverse path trace."
+        try:
+            text, hops = await _db_path_trace(dst_ip, src_ip)  # swapped
+            logger.info("_reverse_path_agent: got %d hops, text=%r", len(hops), text[:120])
+            if hops:
+                _session_reverse_path_hops = hops
+            return text
+        except Exception as exc:
+            logger.exception("_reverse_path_agent: error")
+            return f"Reverse path trace error: {exc}"
+
+    async def _tcp_port_agent(device: str, destination: str, port, vrf: str = "") -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{NORNIR_AGENT_URL}/tcp-test",
+                    json={"device": device, "destination": destination,
+                          "port": int(port), "vrf": vrf},
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            return {"reachable": False, "error": str(exc), "device": device,
+                    "destination": destination, "port": port}
+
+    async def _panorama_agent(
+        source_ip: str, dest_ip: str, firewall_hostnames,
+        port: str = "", protocol: str = "tcp",
+    ) -> str:
+        fws = firewall_hostnames if isinstance(firewall_hostnames, list) else []
+        return await call_panorama_agent.ainvoke({
+            "source_ip": source_ip,
+            "dest_ip": dest_ip,
+            "firewall_hostnames": fws,
+            "port": port,
+            "protocol": protocol,
+        })
+
+    async def _splunk_agent(task: str) -> str:
+        return await call_splunk_agent.ainvoke({"task": task})
+
+    return {
+        "path_agent":               _path_agent,
+        "reverse_path_agent":       _reverse_path_agent,
+        "servicenow_agent":         _servicenow_agent,
+        "interface_counters_agent": _counters_agent,
+        "ping_agent":               _ping_agent,
+        "tcp_port_agent":           _tcp_port_agent,
+        "routing_check_agent":      _routing_agent,
+        "panorama_agent":           _panorama_agent,
+        "splunk_agent":             _splunk_agent,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -989,10 +1361,12 @@ async def orchestrate_troubleshoot(
     prompt: str,
     username: str | None = None,
     session_id: str | None = None,
+    issue_type: str = "general",
 ) -> dict:
-    global _session_id, _llm, _session_path_hops, _session_path_devices, _session_interface_counters
+    global _session_id, _llm, _session_path_hops, _session_path_devices, _session_interface_counters, _session_reverse_path_hops
     _session_id = session_id
-    _session_path_hops = None  # reset for each new invocation
+    _session_path_hops = None
+    _session_reverse_path_hops = None
     _session_path_devices = []
     _session_interface_counters = []
     """
@@ -1029,14 +1403,44 @@ async def orchestrate_troubleshoot(
 
     tool_outputs: list[str] = []
     _plan_used = False
+    _rb_ctx: dict = {}  # structured runbook context — used for deterministic section building
+
+    # --- Runbook executor: use when both source and destination IPs are present ---
+    _rb_src_ip, _rb_dst_ip = _extract_ips(prompt)
+    if _rb_src_ip and _rb_dst_ip and not _NORNIR_PATTERNS.search(prompt) and not _NETBRAIN_PATTERNS.search(prompt):
+        try:
+            try:
+                from atlas.runbook_executor import RunbookExecutor
+            except ImportError:
+                from runbook_executor import RunbookExecutor
+
+            _rb_path = _select_runbook(issue_type)
+            _rb_executor = RunbookExecutor(
+                _rb_path,
+                tools=_build_runbook_tools(prompt),
+                post_processors={"path_trace": _post_path_trace, "ping_test": _post_ping_test, "tcp_test": _post_tcp_test},
+                session_id=session_id or "default",
+            )
+            tool_outputs = await _rb_executor.run({
+                "prompt":   prompt,
+                "src_ip":   _rb_src_ip,
+                "dst_ip":   _rb_dst_ip,
+                "port":     _extract_port(prompt),
+                "protocol": "tcp",
+            })
+            _rb_ctx = _rb_executor.ctx  # capture structured context for section builders
+            _plan_used = True
+            logger.info("Runbook executor completed — %d outputs collected", len(tool_outputs))
+        except Exception as _rb_exc:
+            logger.warning("Runbook executor failed (%s) — falling back to deterministic plan", _rb_exc)
 
     # Deterministic plan for explicit routing queries — skip cache and ReAct loop entirely
-    if _NORNIR_PATTERNS.search(prompt):
+    if not _plan_used and _NORNIR_PATTERNS.search(prompt):
         _deterministic_plan = ["call_nornir_path_agent", "call_panorama_agent", "call_splunk_agent", "call_servicenow_agent"]
         logger.info("Deterministic plan (no-NetBrain): %s", _deterministic_plan)
         tool_outputs = await _execute_plan(_deterministic_plan, prompt)
         _plan_used = True
-    elif _NETBRAIN_PATTERNS.search(prompt):
+    elif not _plan_used and _NETBRAIN_PATTERNS.search(prompt):
         _deterministic_plan = ["call_netbrain_agent", "call_panorama_agent", "call_splunk_agent", "call_servicenow_agent"]
         logger.info("Deterministic plan (NetBrain): %s", _deterministic_plan)
         tool_outputs = await _execute_plan(_deterministic_plan, prompt)
@@ -1091,12 +1495,13 @@ async def orchestrate_troubleshoot(
         except Exception as _store_exc:
             logger.warning("Tool plan store failed: %s", _store_exc)
 
-    # Force ServiceNow call if path devices are known but SNOW wasn't called
+    # Force ServiceNow / interface counters only when the runbook did NOT already run them.
+    # When _plan_used via runbook executor, these were already called as runbook steps — skip.
     _snow_already_called = any(
         o.startswith("INCIDENTS:") or o.startswith("ServiceNow unavailable")
         for o in tool_outputs
     )
-    if _session_path_devices and not _snow_already_called:
+    if not _plan_used and _session_path_devices and not _snow_already_called:
         try:
             src_ip_forced, dst_ip_forced = _extract_ips(prompt)
             snow_out = await call_servicenow_agent.ainvoke({
@@ -1110,9 +1515,7 @@ async def orchestrate_troubleshoot(
         except Exception as _snow_exc:
             logger.warning("Forced SNOW call failed: %s", _snow_exc)
 
-    # Force interface counters call if path is known but LLM skipped it
-    if not _session_interface_counters and (_session_path_hops or _session_path_devices):
-        # Build device → interfaces mapping from structured path hops (DB trace)
+    if not _plan_used and not _session_interface_counters and (_session_path_hops or _session_path_devices):
         _dev_intfs: dict[str, set] = {}
         if _session_path_hops:
             _IP_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}')
@@ -1123,17 +1526,12 @@ async def orchestrate_troubleshoot(
                 ):
                     if _dev and not _IP_RE.match(_dev) and _intf:
                         _dev_intfs.setdefault(_dev, set()).add(_intf)
-        # Fall back to device names only if hops gave us nothing (NetBrain path)
         if not _dev_intfs and _session_path_devices:
-            # Parse raw tool outputs for "Hop N: DEVICE ... Egress: INTF" lines
             _HOP_RE = re.compile(r'Hop\s+\d+:\s+(\S+).*?Egress:\s*(\S+)', re.IGNORECASE)
             for _out in tool_outputs:
                 for _m in _HOP_RE.finditer(_out):
                     _dev_intfs.setdefault(_m.group(1), set()).add(_m.group(2))
-
         _forced_entries = [{"device": d, "interfaces": sorted(i)} for d, i in _dev_intfs.items() if i]
-        logger.info("Forced interface counters: path_hops=%s path_devices=%s entries=%s",
-                    bool(_session_path_hops), _session_path_devices, _forced_entries)
         if _forced_entries:
             try:
                 await call_interface_counters_agent.ainvoke({"devices_and_interfaces": _forced_entries})
@@ -1144,8 +1542,9 @@ async def orchestrate_troubleshoot(
     past_incidents: list[dict] = []
 
     if tool_outputs:
-        # Strip internal reasoning tags from tool outputs before passing to synthesis
         import re as _re
+
+        # Strip internal reasoning tags
         cleaned_outputs = []
         for out in tool_outputs:
             out = _re.sub(r"<plan>.*?</plan>", "", out, flags=_re.DOTALL)
@@ -1156,43 +1555,7 @@ async def orchestrate_troubleshoot(
             if out:
                 cleaned_outputs.append(out)
 
-        def _fmt_path_table(raw: str) -> str:
-            """Convert raw NetBrain hop text into a markdown table."""
-            lines = [
-                "| Hop | Device | Type | Egress Interface |",
-                "|-----|--------|------|-----------------|",
-            ]
-            for line in raw.splitlines():
-                m = _re.match(r'Hop\s+(\d+):\s+(\S+)\s*\|?\s*Type:\s*([^|]+?)\s*\|?\s*Egress:\s*(.+)', line)
-                if m:
-                    hop, device, dtype, egress = m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
-                    lines.append(f"| {hop} | {device} | {dtype} | {egress} |")
-                elif _re.match(r'Hop\s+\d+.*Destination reached', line):
-                    dm = _re.match(r'Hop\s+(\d+):\s+(\S+)', line)
-                    if dm:
-                        lines.append(f"| {dm.group(1)} | {dm.group(2)} | — | Destination reached |")
-            return "\n".join(lines) if len(lines) > 2 else raw
-
-        def _fmt_firewall_table(raw: str) -> str:
-            """Convert raw Panorama policy text into a markdown table."""
-            lines = [
-                "| Firewall | Device Group | Rule | Action | Zones |",
-                "|----------|-------------|------|--------|-------|",
-            ]
-            for line in raw.splitlines():
-                m = _re.search(
-                    r'(\S+)\s*\(device_group:\s*([^)]+)\).*?rule=\'([^\']+)\'.*?action=(\w+).*?zones=([^\s.]+)',
-                    line
-                )
-                if m:
-                    fw, dg, rule, action, zones = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
-                    action_fmt = f"✅ {action}" if action.lower() == "allow" else f"🚫 {action}"
-                    lines.append(f"| {fw} | {dg} | {rule} | {action_fmt} | {zones} |")
-            return "\n".join(lines) if len(lines) > 2 else raw
-
-        # Separate ServiceNow output from the rest — we inject it directly
-        # so the synthesis LLM never has to copy tables verbatim.
-        # Also normalise Splunk unavailable messages so synthesis LLM sees clean text.
+        # Separate ServiceNow output — injected directly, not passed to synthesis LLM
         snow_raw = None
         non_snow_outputs = []
         for out in cleaned_outputs:
@@ -1203,23 +1566,226 @@ async def orchestrate_troubleshoot(
             else:
                 non_snow_outputs.append(out)
 
-        verbatim_block = "\n\n---\n\n".join(non_snow_outputs) if non_snow_outputs else "(no data)"
+        # Prefer post-processor result; fall back to text extraction
+        _path_has_firewalls = _rb_ctx.get("has_firewalls") or bool(
+            _extract_firewalls_from_netbrain("\n".join(cleaned_outputs))
+        )
 
-        # Determine whether any Palo Alto firewalls are in the path — used to tailor the synthesis prompt
-        _path_has_firewalls = bool(_extract_firewalls_from_netbrain("\n".join(cleaned_outputs)))
+        path_devices: list[str] = (
+            list(_session_path_devices) if _session_path_devices
+            else (_rb_ctx.get("path_devices") or [])
+        )
 
-        # Extract device names for device-based memory recall.
-        # Prefer the already-parsed list set by the path agent tool; fall back to text extraction.
-        path_devices: list[str] = list(_session_path_devices) if _session_path_devices else []
-        if not path_devices:
-            for out in cleaned_outputs:
-                found = _extract_devices_from_netbrain(out)
-                if found:
-                    path_devices = found
-                    break
+        # ── Deterministic section builders ──────────────────────────────────
 
-        logger.info("Memory recall prep: path_devices=%s session_path_devices=%s", path_devices, _session_path_devices)
-        # Recall semantically similar past cases (agent sessions + closed ServiceNow incidents)
+        def _build_path_section() -> str:
+            if _session_path_hops:
+                rows = [
+                    "| Hop | From | To | Egress | Ingress |",
+                    "|-----|------|----|--------|---------|",
+                ]
+                for i, h in enumerate(_session_path_hops, 1):
+                    rows.append(
+                        f"| {i} | {h.get('from_device','—')} | {h.get('to_device','—')} "
+                        f"| {h.get('out_interface','—')} | {h.get('in_interface','—')} |"
+                    )
+                return "## Path Summary\n\n" + "\n".join(rows)
+            raw = str(_rb_ctx.get("path_trace", ""))
+            if not raw:
+                return ""
+            lines = ["| Hop | Device | Egress Interface |", "|-----|--------|-----------------|"]
+            for line in raw.splitlines():
+                m = _re.match(r'Hop\s+(\d+):\s+(\S+).*?Egress:\s*(\S+)', line, _re.IGNORECASE)
+                if m:
+                    lines.append(f"| {m.group(1)} | {m.group(2)} | {m.group(3)} |")
+            if len(lines) > 2:
+                return "## Path Summary\n\n" + "\n".join(lines)
+            return f"## Path Summary\n\n{raw[:400]}"
+
+        def _build_reverse_path_section() -> str:
+            raw = str(_rb_ctx.get("reverse_path_trace", ""))
+            if not raw or "error" in raw.lower():
+                return ""
+            lines = ["| Hop | Device | Egress Interface |", "|-----|--------|-----------------|"]
+            for line in raw.splitlines():
+                m = _re.match(r'Hop\s+(\d+):\s+(\S+).*?Egress:\s*(\S+)', line, _re.IGNORECASE)
+                if m:
+                    lines.append(f"| {m.group(1)} | {m.group(2)} | {m.group(3)} |")
+            if len(lines) > 2:
+                return "## Reverse Path\n\n" + "\n".join(lines)
+            if raw.strip():
+                return f"## Reverse Path\n\n{raw[:400]}"
+            return ""
+
+        def _build_ping_section() -> str:
+            r = _rb_ctx.get("ping_test")
+            if not r:
+                return "## Ping Test\n\nPing test not performed — no first-hop device in inventory."
+            if isinstance(r, dict):
+                device = r.get("device", "unknown")
+                dest   = r.get("destination", _rb_ctx.get("dst_ip", ""))
+                vrf    = r.get("vrf", "default")
+                loss   = r.get("loss_pct", 0 if r.get("success") else 100)
+                rtt    = r.get("rtt_avg_ms")
+                if r.get("success"):
+                    rtt_str = f", RTT avg {rtt}ms" if rtt else ""
+                    return (f"## Ping Test\n\n"
+                            f"✓ Ping from **{device}** to **{dest}** (VRF: {vrf}): "
+                            f"success, 0% loss{rtt_str}.")
+                else:
+                    return (f"## Ping Test\n\n"
+                            f"✗ Ping from **{device}** to **{dest}** (VRF: {vrf}): "
+                            f"**{loss}% packet loss**.")
+            return f"## Ping Test\n\n{str(r)[:300]}"
+
+        def _build_interface_section() -> str:
+            if not _session_interface_counters:
+                return "## Interface Errors\n\nInterface counter data not available."
+            rows = []
+            any_errors = False
+            for entry in _session_interface_counters:
+                device = entry.get("device", "?")
+                active = entry.get("active", [])
+                clean  = entry.get("clean", [])
+                window = entry.get("window_s", "?")
+                err    = entry.get("ssh_error", "")
+                if err:
+                    rows.append(f"**{device}**: unreachable — {err}")
+                    continue
+                if active:
+                    any_errors = True
+                    for c in active:
+                        intf = c.get("interface", "?")
+                        if "error" in c:
+                            rows.append(f"**{device}** {intf}: SSH error — {c['error']}")
+                        else:
+                            d = c.get("delta_9s", {})
+                            parts = [f"{k}+{v}" for k, v in d.items() if v > 0]
+                            last  = c.get("last_clear", "never")
+                            rows.append(
+                                f"**{device}** {intf}: {', '.join(parts) or 'errors'} "
+                                f"over {window}s (cleared: {last})"
+                            )
+                else:
+                    clean_str = ", ".join(clean) if clean else "all polled interfaces"
+                    rows.append(f"**{device}**: clean — no incrementing errors ({clean_str})")
+            if not any_errors:
+                return "## Interface Errors\n\nNo incrementing errors detected on path interfaces."
+            return "## Interface Errors\n\n" + "\n".join(rows)
+
+        def _build_tcp_section() -> str:
+            r = _rb_ctx.get("tcp_test")
+            if not r:
+                return ""
+            if isinstance(r, dict):
+                device = r.get("device", "unknown")
+                dest   = r.get("destination", _rb_ctx.get("dst_ip", ""))
+                port   = r.get("port", _rb_ctx.get("port", ""))
+                if "error" in r:
+                    return f"## TCP Port Test\n\n{device} → {dest}:{port} — error: {r['error']}"
+                if r.get("reachable"):
+                    return (f"## TCP Port Test\n\n"
+                            f"✓ TCP {dest}:{port} reachable from **{device}** — "
+                            "service is accepting connections.")
+                else:
+                    return (f"## TCP Port Test\n\n"
+                            f"✗ TCP {dest}:{port} unreachable from **{device}** — "
+                            "service is not accepting connections (port closed or filtered).")
+            return ""
+
+        def _build_routing_section() -> str:
+            r = _rb_ctx.get("routing_check")
+            if not r:
+                ping_r = _rb_ctx.get("ping_test")
+                if isinstance(ping_r, dict) and ping_r.get("success"):
+                    return "## Routing Analysis\n\nRouting check skipped — ping successful."
+                return "## Routing Analysis\n\nRouting check not performed."
+            if isinstance(r, dict):
+                dest = r.get("destination", _rb_ctx.get("dst_ip", ""))
+                hops = r.get("hops", {})
+                if not hops:
+                    return f"## Routing Analysis\n\nNo routing data returned for {dest}."
+                lines = [
+                    f"Destination: **{dest}**", "",
+                    "| Device | VRF | Next Hop | Interface | Status |",
+                    "|--------|-----|----------|-----------|--------|",
+                ]
+                for device, info in hops.items():
+                    if not info.get("found") and "error" in info:
+                        lines.append(f"| {device} | — | — | — | {info['error']} |")
+                    else:
+                        vrf_  = info.get("vrf", "default")
+                        nh    = info.get("next_hop") or "—"
+                        iface = info.get("interface") or "—"
+                        proto = info.get("protocol", "")
+                        status = f"✓ {proto}".strip() if info.get("found") else "✗ no route"
+                        lines.append(f"| {device} | {vrf_} | {nh} | {iface} | {status} |")
+                return "## Routing Analysis\n\n" + "\n".join(lines)
+            return f"## Routing Analysis\n\n{str(r)[:400]}"
+
+        def _build_firewall_section() -> str:
+            if not _path_has_firewalls:
+                return ""
+            panorama_raw = next(
+                (o for o in non_snow_outputs if "matching rule=" in o or "action=" in o), None
+            )
+            if not panorama_raw:
+                return "## Firewall Policy Check\n\nPanorama policy data not available."
+            lines = [
+                "| Firewall | Device Group | Rule | Action | Zones |",
+                "|----------|-------------|------|--------|-------|",
+            ]
+            for line in panorama_raw.splitlines():
+                m = _re.search(
+                    r'(\S+)\s*\(device_group:\s*([^)]+)\).*?rule=\'([^\']+)\'.*?action=(\w+).*?zones=([^\s.]+)',
+                    line,
+                )
+                if m:
+                    fw, dg, rule, action, zones = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+                    action_fmt = f"✅ {action}" if action.lower() == "allow" else f"🚫 {action}"
+                    lines.append(f"| {fw} | {dg} | {rule} | {action_fmt} | {zones} |")
+            if len(lines) > 2:
+                return "## Firewall Policy Check\n\n" + "\n".join(lines)
+            return f"## Firewall Policy Check\n\n{panorama_raw}"
+
+        def _build_splunk_section() -> str:
+            if not _path_has_firewalls:
+                return ""
+            splunk_raw = next((o for o in non_snow_outputs if "splunk" in o.lower()), None)
+            if not splunk_raw:
+                return ""
+            if "no log data" in splunk_raw.lower() or "agent unreachable" in splunk_raw.lower():
+                return "## Splunk Traffic Analysis\n\nNo log data available — Splunk agent unreachable. Log correlation skipped."
+            return f"## Splunk Traffic Analysis\n\n{splunk_raw}"
+
+        # Build all sections
+        report_sections: list[str] = []
+        path_sec = _build_path_section()
+        if path_sec:
+            report_sections.append(path_sec)
+        if not _path_has_firewalls:
+            for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section()):
+                if sec:
+                    report_sections.append(sec)
+        else:
+            for sec in (_build_firewall_section(), _build_splunk_section()):
+                if sec:
+                    report_sections.append(sec)
+
+        # Parse ServiceNow change block
+        chg_block = ""
+        if snow_raw and snow_raw.startswith("INCIDENTS:"):
+            parts = _re.split(r'\n\nCHANGE REQUESTS:', snow_raw, maxsplit=1)
+            chg_block = parts[1].strip() if len(parts) == 2 else ""
+
+        chg_section = (
+            "\n\n## Recent Changes\n\n" + chg_block
+            if chg_block and chg_block != "No change requests found."
+            else "\n\n## Recent Changes\nNo related changes found for devices in the path."
+        )
+
+        # ── Memory recall ────────────────────────────────────────────────────
+        logger.info("Memory recall prep: path_devices=%s", path_devices)
         memory_context = ""
         try:
             import atlas.status_bus as status_bus
@@ -1233,7 +1799,6 @@ async def orchestrate_troubleshoot(
                 recall_memory(prompt, agent_type="incident", top_k=5, min_similarity=0.40),
                 recall_incidents_by_devices(path_devices, query=prompt),
             )
-            # Merge semantic + device incidents, deduplicate by incident number in result_summary
             seen_keys: set[str] = set()
             past_incidents: list[dict] = []
             for inc in semantic_incidents + device_incidents:
@@ -1243,149 +1808,53 @@ async def orchestrate_troubleshoot(
                     past_incidents.append(inc)
             all_memories = past_memories + past_incidents
             memory_context = format_memory_context(all_memories) if all_memories else ""
-            logger.info("Memory recall: path_devices=%s atlas=%d incidents=%d (semantic=%d device=%d)",
-                        path_devices, len(past_memories), len(past_incidents),
-                        len(semantic_incidents), len(device_incidents))
+            logger.info("Memory recall: atlas=%d incidents=%d", len(past_memories), len(past_incidents))
         except Exception as _mem_exc:
             logger.warning("Memory recall failed: %s", _mem_exc)
             memory_context = ""
 
-        if _path_has_firewalls:
-            _conclusion_rules = (
-                "CRITICAL CONCLUSION RULES:\n"
-                "- If Panorama action is 'allow' for the firewalls in the path: the firewall is NOT blocking the traffic. "
-                "Root Cause MUST say the firewall permits this traffic and the issue lies elsewhere "
-                "(application layer, routing, or endpoint). Do NOT write 'Unable to determine root cause'.\n"
-                "- If Panorama action is 'deny'/'drop' for any firewall: that firewall IS the likely cause — name the rule.\n"
-                "- If Splunk data is unavailable but Panorama shows 'allow': still conclude the firewall "
-                "is not the cause — Splunk absence does not change the Panorama result.\n"
-                "- Only write 'Unable to determine root cause' if every agent returned no data at all.\n\n"
-                "REPORT SECTIONS (the Recent Changes section will be added separately):\n"
-                "1. ## Path Summary — list hops from the path trace\n"
-                "2. ## Firewall Policy Check — Panorama rule name, action, zones per firewall\n"
-                "3. ## Splunk Traffic Analysis — deny counts and traffic patterns. "
-                "If the Splunk data says 'No log data available — agent unreachable', write exactly: "
-                "'No log data available — Splunk agent unreachable. Log correlation skipped.'\n"
-                "4. ## Root Cause and ## Recommendation — synthesise all findings\n\n"
-            )
-        else:
-            _conclusion_rules = (
-                "CRITICAL CONCLUSION RULES:\n"
-                "- There are NO Palo Alto firewalls in this path. Do NOT mention firewalls, Panorama, or Splunk.\n"
-                "- Read the path data carefully and report what it actually shows — do NOT assume a problem exists.\n"
-                "- If the path trace shows successful ARP resolution or 'Destination reachable': "
-                "Root Cause MUST say the destination is reachable and the path is healthy. "
-                "Recommendation should focus on verifying application/service layer, not routing.\n"
-                "- If the path trace shows a routing gap, missing route, or loop: Root Cause should name that specific issue.\n"
-                "- Do NOT write 'Unable to determine root cause' — the path data is always sufficient to draw a conclusion.\n"
-                "- Do NOT suggest checking OSPF or interfaces unless the path data shows an actual error on those.\n\n"
-                "REPORT SECTIONS (the Recent Changes section will be added separately):\n"
-                "1. ## Path Summary — list hops from the path trace\n"
-                "2. ## Root Cause — one or two sentences based strictly on what the path data shows\n"
-                "3. ## Recommendation — specific actionable steps matching the root cause\n\n"
-            )
-
+        # ── LLM: Root Cause + Recommendation only ────────────────────────────
+        sections_text = "\n\n".join(report_sections)
         synthesis_system = (
-            (memory_context + "\n\n") if memory_context else ""
-        ) + (
-            "You are writing the final troubleshooting report. "
-            "Below is the VERBATIM DATA returned by each specialist agent. "
-            "You MUST use ONLY the information in this data block — do NOT invent, guess, or paraphrase "
-            "any device names, policy names, IP addresses, hop counts, deny counts, or zone names. "
-            "If a value is not present in the data block, say it was not available.\n\n"
-            + _conclusion_rules
-            + "VERBATIM AGENT DATA:\n"
-            f"{verbatim_block}"
+            ((memory_context + "\n\n") if memory_context else "") +
+            "You are writing the final section of a network troubleshooting report.\n"
+            "The diagnostic sections above have already been built from structured data.\n"
+            "Your ONLY job is to write:\n\n"
+            "  ## Root Cause\n  (one or two sentences based strictly on the diagnostic data)\n\n"
+            "  ## Recommendation\n  (specific, actionable steps that match the root cause)\n\n"
+            "Rules:\n"
+            "- Do NOT repeat or summarise the diagnostic sections.\n"
+            "- Do NOT mention firewalls, Panorama, or Splunk if there are no firewalls in the path.\n"
+            "- Do NOT write 'Unable to determine root cause' — always draw a conclusion.\n"
+            "- If ping succeeded and interfaces are clean: say the path is healthy and the issue is likely "
+            "at the application or service layer.\n"
+            "- If ping failed: name the specific hop or device where routing breaks.\n"
+            "- If a firewall denied traffic: name the rule and device.\n\n"
+            "DIAGNOSTIC DATA:\n" + sections_text
         )
         synthesis_messages = [
             SystemMessage(content=_load_skill()),
             HumanMessage(content=prompt),
             SystemMessage(content=synthesis_system),
-            HumanMessage(content="Now write the final report using ONLY the verbatim data above. Do not invent any values."),
+            HumanMessage(content="Write ONLY ## Root Cause and ## Recommendation based on the diagnostic data above."),
         ]
         synthesis_response = await _llm.ainvoke(synthesis_messages)
-        final = synthesis_response.content or "Investigation complete — no summary generated."
+        rc_text = synthesis_response.content or ""
 
-        # Inject ServiceNow sections directly — parse from raw tool output
-        chg_block = ""
-        if snow_raw and snow_raw.startswith("INCIDENTS:"):
-            parts = _re.split(r'\n\nCHANGE REQUESTS:', snow_raw, maxsplit=1)
-            chg_block = parts[1].strip() if len(parts) == 2 else ""
+        # Strip any preamble before ## Root Cause
+        rc_match = _re.search(r'## Root Cause', rc_text)
+        if rc_match:
+            rc_text = rc_text[rc_match.start():]
 
-        chg_section = (
-            "\n\n## Recent Changes\n\n" + chg_block
-            if chg_block and chg_block != "No change requests found."
-            else "\n\n## Recent Changes\nNo related changes found for devices in the path."
-        )
-
-        # --- Inject Path Summary from raw NetBrain output ---
-        netbrain_raw = next((o for o in cleaned_outputs if "Hop " in o or "path trace" in o.lower()), None)
-        if netbrain_raw:
-            path_table = _fmt_path_table(netbrain_raw)
-            final = _re.sub(
-                r'## Path Summary.*?(?=## Firewall Policy Check|## Splunk|## Root Cause|$)',
-                f'## Path Summary\n\n{path_table}\n\n', final, flags=_re.DOTALL
-            )
-
-        # --- Inject Firewall Policy Check from raw Panorama output ---
-        panorama_raw = next((o for o in cleaned_outputs if "matching rule=" in o or "action=" in o), None)
-        if panorama_raw and _path_has_firewalls:
-            fw_table = _fmt_firewall_table(panorama_raw)
-            final = _re.sub(
-                r'## Firewall Policy Check.*?(?=## Splunk|## Recent Incidents|## Root Cause|$)',
-                f'## Firewall Policy Check\n\n{fw_table}\n\n', final, flags=_re.DOTALL
-            )
-        elif not _path_has_firewalls:
-            # No firewalls in path — strip the section entirely
-            final = _re.sub(
-                r'## Firewall Policy Check.*?(?=## Splunk|## Recent Incidents|## Root Cause|$)',
-                '', final, flags=_re.DOTALL
-            ).strip()
-
-        # --- Inject Splunk section (only when firewalls are in the path) ---
-        splunk_raw = next((o for o in non_snow_outputs if "splunk" in o.lower()), None)
-        if splunk_raw and _path_has_firewalls:
-            if "no log data" in splunk_raw.lower() or "agent unreachable" in splunk_raw.lower():
-                splunk_section = "## Splunk Traffic Analysis\n\nNo log data available — Splunk agent unreachable. Log correlation skipped.\n\n"
-            else:
-                splunk_section = f"## Splunk Traffic Analysis\n\n{splunk_raw}\n\n"
-            final = _re.sub(
-                r'## Splunk Traffic Analysis.*?(?=## Recent Incidents|## Root Cause|## Recommendation|$)',
-                splunk_section, final, flags=_re.DOTALL
-            )
-        elif not _path_has_firewalls:
-            # No firewalls — strip Splunk section (data would be misleading)
-            final = _re.sub(
-                r'## Splunk Traffic Analysis.*?(?=## Recent Incidents|## Root Cause|## Recommendation|$)',
-                '', final, flags=_re.DOTALL
-            ).strip()
-
-        # Strip any synthesis-generated Recent Incidents/Changes sections, inject correct ones
-        final = _re.sub(
-            r'## Recent Incidents.*?(?=## Recent Changes|## Root Cause|## Recommendation|$)',
-            '', final, flags=_re.DOTALL
-        ).strip()
-        final = _re.sub(
-            r'## Recent Changes.*?(?=## Root Cause|## Recommendation|$)',
-            '', final, flags=_re.DOTALL
-        ).strip()
-
-        root_cause_match = _re.search(r'## Root Cause', final)
-        if root_cause_match:
-            insert_pos = root_cause_match.start()
-            final = final[:insert_pos].rstrip() + chg_section + "\n\n" + final[insert_pos:]
-        else:
-            final = final.rstrip() + chg_section
-
-        # --- Append change context to Recommendation ---
+        # Append change context addendum to Recommendation if changes were found
         has_changes = chg_block and chg_block != "No change requests found."
-        if has_changes:
-            addendum = "- Recent changes were made to path devices — correlate these with the onset of the issue."
-            final = _re.sub(
-                r'(## Recommendation.*?)$',
-                lambda m: m.group(1).rstrip() + "\n" + addendum,
-                final, flags=_re.DOTALL
+        if has_changes and "## Recommendation" in rc_text:
+            rc_text = rc_text.rstrip() + (
+                "\n- Recent changes were made to path devices — correlate these with the onset of the issue."
             )
+
+        final = sections_text + chg_section + "\n\n" + rc_text
+
     else:
         # No tool results — fall back to whatever the agent produced
         final = next(
@@ -1397,18 +1866,11 @@ async def orchestrate_troubleshoot(
     final = re.sub(r"<plan>.*?</plan>", "", final, flags=re.DOTALL).strip()
     final = re.sub(r"<reflection>.*?</reflection>", "", final, flags=re.DOTALL).strip()
 
-    # Ensure known section headers are on their own paragraph line.
-    # The LLM sometimes writes "## Section content" inline; split to "## Section\n\ncontent".
-    final = re.sub(
-        r'(## (?:Path Summary|Firewall Policy Check|Splunk Traffic Analysis|Root Cause|Recommendation|Recent Incidents|Recent Changes))[ \t]+(?=\S)',
-        lambda m: f'{m.group(1)}\n\n',
-        final,
-    )
-
     # When DB path hops are available the visual diagram replaces the text Path Summary
     if _session_path_hops:
         final = re.sub(
-            r'## Path Summary.*?(?=## Firewall Policy Check|## Splunk|## Recent Incidents|## Root Cause|$)',
+            r'## Path Summary.*?(?=## Ping Test|## Interface Errors|## Routing Analysis'
+            r'|## Firewall Policy Check|## Splunk|## Recent Incidents|## Recent Changes|## Root Cause|$)',
             '', final, flags=re.DOTALL
         ).strip()
 
@@ -1455,9 +1917,16 @@ async def orchestrate_troubleshoot(
         content["path_hops"] = _session_path_hops
         content["source"] = src_ip if (src_ip := _extract_ips(prompt)[0]) else ""
         content["destination"] = dst_ip if (dst_ip := _extract_ips(prompt)[1]) else ""
+    if _session_reverse_path_hops:
+        content["reverse_path_hops"] = _session_reverse_path_hops
     if _session_interface_counters:
         content["interface_counters"] = _session_interface_counters
 
+    logger.info("Final content keys: %s | path_hops=%s | reverse_path_hops=%s",
+        list(content.keys()),
+        len(content.get("path_hops") or []),
+        len(content.get("reverse_path_hops") or []),
+    )
     return {
         "role": "assistant",
         "content": content,

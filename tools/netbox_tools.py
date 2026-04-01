@@ -18,6 +18,7 @@ from typing import Optional
 import requests
 
 from tools.shared import mcp, setup_logging
+from tools.resilience import retry_sync, CircuitBreaker
 
 logger = setup_logging(__name__)
 
@@ -70,21 +71,28 @@ def _get_session() -> requests.Session:
         return _session
 
 
+_nb_cb = CircuitBreaker.for_endpoint("netbox")
+
+
 def _api_get(path: str, **params) -> dict:
-    """GET /api/<path> with automatic session refresh on 403."""
+    """GET /api/<path> with automatic session refresh on 403, with retry."""
     global _session
-    s = _get_session()
     url = f"{NETBOX_URL}/api/{path.lstrip('/')}"
-    resp = s.get(url, params=params, timeout=10)
-    if resp.status_code == 403:
-        # Session expired — reset and retry once
-        logger.warning("netbox: session expired, re-authenticating")
-        with _session_lock:
-            _session = None
+
+    def _req() -> dict:
+        global _session
         s = _get_session()
         resp = s.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+        if resp.status_code == 403:
+            logger.warning("netbox: session expired, re-authenticating")
+            with _session_lock:
+                _session = None
+            s = _get_session()
+            resp = s.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    return retry_sync(_nb_cb, _req, retryable_exc=(requests.RequestException,))
 
 
 # ---------------------------------------------------------------------------

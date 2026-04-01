@@ -12,8 +12,11 @@ from typing import Dict, Any, List
 
 from tools.shared import mcp, SPLUNK_HOST, SPLUNK_PORT, SPLUNK_USER, SPLUNK_PASSWORD
 from tools.shared import setup_logging
+from tools.resilience import CircuitBreaker, CircuitOpenError
 
 logger = setup_logging(__name__)
+
+_splunk_cb = CircuitBreaker.for_endpoint("splunk")
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +24,21 @@ logger = setup_logging(__name__)
 # ---------------------------------------------------------------------------
 
 async def _run_spl(spl: str, ip_address: str) -> Dict[str, Any]:
+    if not _splunk_cb.allow_request():
+        return {"error": "Splunk circuit open — service temporarily unavailable"}
+    try:
+        result = await _run_spl_inner(spl, ip_address)
+        if "error" not in result:
+            _splunk_cb.record_success()
+        else:
+            _splunk_cb.record_failure()
+        return result
+    except Exception as exc:
+        _splunk_cb.record_failure()
+        return {"error": str(exc)}
+
+
+async def _run_spl_inner(spl: str, ip_address: str) -> Dict[str, Any]:
     """
     Run arbitrary SPL against Splunk REST API.
     Returns {'results': [list of raw dicts]} or {'error': str}.
