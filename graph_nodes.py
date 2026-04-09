@@ -1,5 +1,8 @@
 """
-Atlas LangGraph nodes — troubleshooting flow only.
+Atlas LangGraph nodes.
+
+Graph shape:
+  classify_intent → call_troubleshoot_agent → build_final_response
 """
 import json
 import logging
@@ -10,14 +13,14 @@ try:
     from atlas.graph_state import AtlasState
     from atlas.chat_service import _IP_OR_CIDR_RE
 except ImportError:
-    from graph_state import AtlasState  # type: ignore[assignment]
+    from graph_state import AtlasState        # type: ignore[assignment]
     from chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
 
 logger = logging.getLogger("atlas.graph_nodes")
 
 
 # ---------------------------------------------------------------------------
-# Pending clarification state (Redis-backed, 10-min TTL)
+# Pending clarification state (Redis-backed with in-memory fallback)
 # ---------------------------------------------------------------------------
 
 _pending_ts_mem: dict[str, str] = {}
@@ -76,95 +79,43 @@ def _pending_ts_delete(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Context checker — decides if a troubleshoot query has enough info
-# ---------------------------------------------------------------------------
-
-_ISSUE_WORDS = re.compile(
-    r"\b(troubleshoot|help|why|cannot|can.?t|not|unable|fail|issue|problem|error|"
-    r"block|drop|deny|denied|slow|latency|down|unreachable|intermittent|flap|"
-    r"investigate|debug|diagnose|check|what.?s wrong|broken|outage|incident)\b",
-    re.IGNORECASE,
-)
-_PORT_WORDS = re.compile(
-    r"\b(port\s*\d+|tcp|udp|icmp|https?|ssh|dns|smtp|snmp|bgp|ospf|any)\b",
-    re.IGNORECASE,
-)
-_ISSUE_TYPE_MAP = [
-    (re.compile(r"\b(block|drop|deny|denied|reject|filter)\b", re.IGNORECASE), "blocked"),
-    (re.compile(r"\b(slow|latency|lag|delay|degraded|performance)\b", re.IGNORECASE), "slow"),
-    (re.compile(r"\b(intermittent|flap|unstable|sporadic|random)\b", re.IGNORECASE), "intermittent"),
-    (re.compile(r"\b(device|router|switch|firewall|fw|pa-|arista|cisco)\b", re.IGNORECASE), "device"),
-    (re.compile(r"\b(path.?change|route.?change|reroute|asymmetric)\b", re.IGNORECASE), "path_changed"),
-]
-
-
-def _regex_check_ts_context(prompt: str) -> tuple[bool, bool, str]:
-    """Fast regex-based context check. Returns (has_issue_type, has_port, issue_type)."""
-    has_issue = bool(_ISSUE_WORDS.search(prompt))
-    has_port = bool(_PORT_WORDS.search(prompt))
-    issue_type = "general"
-    for pattern, itype in _ISSUE_TYPE_MAP:
-        if pattern.search(prompt):
-            issue_type = itype
-            break
-    return has_issue, has_port, issue_type
-
-
-async def _llm_check_ts_context(prompt: str) -> tuple[bool, bool, str]:
-    """Return (has_issue_type, has_port, issue_type).
-
-    Uses regex first — only calls the LLM when the regex result is ambiguous
-    (no clear issue words found in a short prompt with no IPs).
-    """
-    has_issue, has_port, issue_type = _regex_check_ts_context(prompt)
-
-    # Regex was confident — skip the LLM call entirely
-    if has_issue or has_port or len(prompt.split()) > 6:
-        return has_issue, has_port, issue_type
-
-    # Only fall back to LLM for very short ambiguous prompts (< 6 words, no
-    # recognisable issue or port keywords) where we genuinely can't tell.
-    try:
-        from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
-    except ImportError:
-        from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
-
-    _TS_CONTEXT_PROMPT = (
-        'Analyse this network query. Reply with ONLY JSON, no explanation:\n'
-        '{"has_issue_type": <true|false>, "has_port": <true|false>, "issue_type": "<blocked|slow|intermittent|device|path_changed|general>"}\n'
-        '- has_issue_type: true if ANY problem is described\n'
-        '- has_port: true if a port, protocol, or service is mentioned'
-    )
-
-    from langchain_openai import ChatOpenAI
-    from langchain_core.messages import SystemMessage, HumanMessage
-
-    llm = ChatOpenAI(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL,
-                     temperature=0.0, api_key="docker", max_tokens=50)
-    try:
-        resp = await llm.ainvoke([SystemMessage(content=_TS_CONTEXT_PROMPT),
-                                  HumanMessage(content=prompt)])
-        data = json.loads(resp.content.strip())
-        itype = data.get("issue_type", "general")
-        valid = {"blocked", "slow", "intermittent", "device", "path_changed", "general"}
-        return bool(data.get("has_issue_type")), bool(data.get("has_port")), (itype if itype in valid else "general")
-    except Exception as exc:
-        logger.warning("_llm_check_ts_context failed: %s", exc)
-        return True, True, "general"
-
-
-# ---------------------------------------------------------------------------
 # Node 1: classify_intent
 # ---------------------------------------------------------------------------
 
-_DISMISSALS = {"no", "nope", "nah", "no thanks", "never mind", "nevermind", "skip",
-               "not now", "no need", "i'm good", "im good", "all good"}
+_DISMISSALS      = {"no", "nope", "nah", "no thanks", "never mind", "nevermind", "skip",
+                    "not now", "no need", "i'm good", "im good", "all good"}
 _ACKNOWLEDGEMENTS = {"yes", "yeah", "sure", "ok", "okay", "great", "thanks",
                      "thank you", "cool", "got it", "noted", "perfect", "sounds good"}
 
+# Signals a network-ops / document-generation workflow rather than troubleshooting.
+# Matched BEFORE the troubleshooting keywords so explicit ops requests don't get
+# misclassified as "why is X broken" investigations.
+_NETWORK_OPS_RE = re.compile(
+    r"\b(firewall\s+request|change\s+request|spreadsheet|policy\s+review|"
+    r"open\s+port|allow\s+traffic|create\s+(a\s+)?rule|new\s+rule|"
+    r"request\s+access|access\s+request|fw\s+request|security\s+review)\b",
+    re.IGNORECASE,
+)
+
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
-    prompt = state["prompt"]
+    """
+    Classify the user's prompt and set state["intent"].
+
+    Possible values
+    ---------------
+    "troubleshoot"
+        Layered connectivity / device-health investigation.
+        → routed to call_troubleshoot_agent
+    "network_ops"
+        Operational workflow: firewall change request, policy review,
+        spreadsheet generation, etc.
+        → routed to call_network_ops_agent
+    "dismiss"
+        Bare acknowledgement with nothing pending — skip LLM entirely.
+        → short-circuits to build_final_response
+    """
+    prompt     = state["prompt"]
     session_id = state.get("session_id") or "default"
 
     try:
@@ -175,43 +126,47 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     prompt_lower = prompt.lower().strip().rstrip("!.")
 
-    # Acknowledgement with nothing pending → dismiss
-    if prompt_lower in _ACKNOWLEDGEMENTS | _DISMISSALS:
+    # Plain acknowledgement / dismissal with nothing pending → dismiss
+    if prompt_lower in (_ACKNOWLEDGEMENTS | _DISMISSALS):
         if not _pending_ts_exists(session_id):
-            return {"intent": "dismiss",
-                    "final_response": {"role": "assistant",
-                                       "content": "Sure, let me know if you need anything else."}}
+            return {
+                "intent":         "dismiss",
+                "final_response": {"role": "assistant",
+                                   "content": "Sure, let me know if you need anything else."},
+            }
 
-    # Pending clarification reply (short, no IPs) → continue troubleshoot
+    # Reply to a pending clarification (short, no IPs) → continue whichever flow is pending
     if _pending_ts_exists(session_id):
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
-            return {"intent": "troubleshoot"}
-        else:
-            _pending_ts_delete(session_id)
+            # Preserve the original intent stored in the pending payload
+            _, pending_issue_type = _pending_ts_get(session_id)
+            intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
+            return {"intent": intent}
+        _pending_ts_delete(session_id)
 
+    # Network-ops workflow detection (checked before generic troubleshooting keywords)
+    if _NETWORK_OPS_RE.search(prompt):
+        return {"intent": "network_ops"}
+
+    # Everything else is a troubleshooting query
     return {"intent": "troubleshoot"}
 
 
 # ---------------------------------------------------------------------------
-# Node 2: troubleshoot_orchestrator
+# Node 2: call_troubleshoot_agent
 # ---------------------------------------------------------------------------
 
-async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
+async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
+    """Invoke the troubleshoot ReAct agent and return its structured result."""
     try:
-        from atlas.agents.orchestrator import orchestrate_troubleshoot
+        from atlas.agents.troubleshoot_agent import orchestrate_troubleshoot
     except ImportError:
-        from agents.orchestrator import orchestrate_troubleshoot
+        from agents.troubleshoot_agent import orchestrate_troubleshoot  # type: ignore
 
     session_id = state.get("session_id") or "default"
-    prompt = state["prompt"]
+    prompt     = state["prompt"]
 
-    try:
-        import atlas.status_bus as sb
-        await sb.push(session_id, "Investigating...")
-    except Exception:
-        pass
-
-    # Recover pending clarification context
+    # Recover clarification context if pending
     pending, pending_issue_type = _pending_ts_get(session_id)
     if pending:
         _pending_ts_delete(session_id)
@@ -232,7 +187,7 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
                 and len(prompt.split()) <= 6
             )
             if is_clarification_reply and _IP_OR_CIDR_RE.findall(last_user_before):
-                pending = last_user_before
+                pending           = last_user_before
                 pending_issue_type = "general"
 
     issue_type = pending_issue_type or "general"
@@ -241,45 +196,15 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
         full_prompt = f"{pending}\n\nUser clarification: {prompt}"
     else:
         ip_matches = _IP_OR_CIDR_RE.findall(prompt)
-        is_connectivity = len(ip_matches) >= 2
 
-        # Minimal context check — only ask if very vague
+        # Require at minimum some device/IP context for very short prompts
         words = prompt.lower().split()
         has_device_context = any(c.isdigit() or "-" in w for w in words for c in w)
         if not has_device_context and len(ip_matches) == 0 and len(prompt.split()) < 4:
             return {"final_response": {"role": "assistant", "content": (
                 "Please describe the problem — include device names, IP addresses, or what is failing.\n"
-                "Example: \"Why can't 10.0.0.1 connect to 11.0.0.1?\" or \"arista1 is unreachable\""
+                'Example: "Why can\'t 10.0.0.1 connect to 11.0.0.1?" or "arista1 is unreachable"'
             )}}
-
-        _PATH_TRACE_RE = re.compile(
-            r"\b(trace\s+path|show\s+(me\s+)?the\s+route|find\s+(the\s+)?path|traceroute)\b",
-            re.IGNORECASE,
-        )
-
-        if _PATH_TRACE_RE.search(prompt):
-            issue_type = "general"
-        else:
-            issue_clear, port_clear, issue_type = await _llm_check_ts_context(prompt)
-
-            if not issue_clear or (is_connectivity and not port_clear):
-                parts = []
-                if not issue_clear:
-                    parts.append(
-                        "**What type of issue are you seeing?**\n"
-                        "- Blocked / denied — traffic is being dropped\n"
-                        "- Slow / high latency — performance degraded\n"
-                        "- Intermittent — drops in and out unpredictably\n"
-                        "- Device issue — specific device misbehaving\n"
-                        "- Path changed — routing different from expected"
-                    )
-                if is_connectivity and not port_clear:
-                    parts.append(
-                        "**Which port or protocol is affected?**\n"
-                        "e.g. TCP 443, UDP 53 — or 'any' if protocol-agnostic"
-                    )
-                _pending_ts_set(session_id, prompt, issue_type)
-                return {"final_response": {"role": "assistant", "content": "\n\n".join(parts)}}
 
         full_prompt = prompt
 
@@ -292,15 +217,49 @@ async def troubleshoot_orchestrator(state: AtlasState) -> dict[str, Any]:
         )
     except Exception as exc:
         import traceback as _tb
-        full_tb = _tb.format_exc()
-        logger.error("Troubleshoot orchestrator failed: %s\nFULL TRACEBACK:\n%s", exc, full_tb)
+        logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
         result = {"role": "assistant", "content": f"Troubleshooting failed: {exc}"}
 
     return {"final_response": result}
 
 
 # ---------------------------------------------------------------------------
-# Node 3: build_final_response
+# Node 3: call_network_ops_agent
+# ---------------------------------------------------------------------------
+
+async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
+    """
+    Route network-ops workflows (firewall change requests, spreadsheet generation,
+    policy reviews, etc.) to the dedicated network_ops_agent.
+
+    This agent shares ALL_TOOLS with troubleshoot_agent but runs a different
+    system prompt focused on structured output and document generation rather
+    than step-by-step diagnostic investigation.
+    """
+    try:
+        from atlas.agents.network_ops_agent import handle as network_ops_handle
+    except ImportError:
+        from agents.network_ops_agent import handle as network_ops_handle  # type: ignore
+
+    session_id = state.get("session_id") or "default"
+    prompt     = state["prompt"]
+
+    try:
+        result = await network_ops_handle(
+            prompt,
+            username=state.get("username"),
+            session_id=session_id,
+        )
+    except Exception as exc:
+        import traceback as _tb
+        logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
+        result = {"role": "assistant", "content": f"Network ops agent failed: {exc}"}
+
+    return {"final_response": result}
+
+
+# ---------------------------------------------------------------------------
+# Node 4: build_final_response
 # ---------------------------------------------------------------------------
 
 async def build_final_response(state: AtlasState) -> dict[str, Any]:
