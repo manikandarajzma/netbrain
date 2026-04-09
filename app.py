@@ -56,7 +56,7 @@ async def _midnight_sync_loop():
             sleep_secs = (next_midnight - now).total_seconds()
             _sse_log.info("servicenow_memory_sync: next run in %.0fs (at midnight)", sleep_secs)
             await asyncio.sleep(sleep_secs)
-            from agents.servicenow_memory_sync import sync_closed_incidents
+            from servicenow_memory_sync import sync_closed_incidents
             await sync_closed_incidents()
         except asyncio.CancelledError:
             break
@@ -71,7 +71,7 @@ from contextlib import asynccontextmanager
 async def lifespan(app):
     # Run an initial sync on startup so memory is populated immediately
     try:
-        from agents.servicenow_memory_sync import sync_closed_incidents
+        from servicenow_memory_sync import sync_closed_incidents
         asyncio.create_task(sync_closed_incidents())
     except Exception as exc:
         _sse_log.warning("servicenow_memory_sync: startup sync failed: %s", exc)

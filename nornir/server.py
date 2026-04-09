@@ -11,11 +11,9 @@ import asyncio
 import json
 import logging
 import os
-import pathlib
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 
 _repo_root = Path(__file__).resolve().parent.parent
@@ -711,58 +709,6 @@ def check_routing_on_hops(
     return {"destination": destination, "vrf_requested": vrf or "all", "hops": hops}
 
 
-NORNIR_TOOLS = [
-    find_device_for_ip,
-    get_route,
-    get_arp,
-    get_arp_table,
-    get_routing_table,
-    get_mac_table,
-    get_interfaces,
-    get_interface_counters,
-    get_ospf_neighbors,
-    list_devices,
-    ping_from_device,
-    test_tcp_port,
-    check_routing_on_hops,
-]
-
-_SKILL_PATH = pathlib.Path(__file__).parent.parent / "skills" / "nornir_agent.md"
-
-
-def _load_skill() -> str:
-    return _SKILL_PATH.read_text(encoding="utf-8").strip() if _SKILL_PATH.exists() else ""
-
-
-# ---------------------------------------------------------------------------
-# Agent Card
-# ---------------------------------------------------------------------------
-
-AGENT_CARD = {
-    "name": "Atlas Nornir Agent",
-    "description": (
-        "Queries live network devices via SSH using Nornir. "
-        "Supports path tracing, ARP tables, routing tables, MAC tables, "
-        "interface status, and OSPF neighbors. "
-        "Use when the user wants live data directly from a device."
-    ),
-    "url": "http://localhost:8006",
-    "version": "1.0.0",
-    "capabilities": {"streaming": False},
-    "skills": [
-        {
-            "id": "live_path_trace",
-            "name": "Live Path Trace",
-            "description": "Trace network path by querying live devices via SSH using Nornir.",
-            "inputModes": ["text"],
-            "outputModes": ["text"],
-            "examples": [
-                "Trace path from 10.0.100.100 to 10.0.200.200 without NetBrain",
-                "Find the route from 10.0.100.55 to 10.0.200.200",
-            ],
-        }
-    ],
-}
 
 
 @app.post("/ping")
@@ -1069,63 +1015,6 @@ async def handle_interface_counters(request: Request) -> JSONResponse:
         return JSONResponse({"error": "device and interfaces required"}, status_code=400)
     result = get_interface_counters.invoke({"device": device, "interfaces": interfaces})
     return JSONResponse(result)
-
-
-@app.get("/.well-known/agent.json")
-async def agent_card():
-    return JSONResponse(AGENT_CARD)
-
-
-# ---------------------------------------------------------------------------
-# A2A Task endpoint
-# ---------------------------------------------------------------------------
-
-@app.post("/")
-async def handle_task(request: Request) -> JSONResponse:
-    body = await request.json()
-    task_id = body.get("id") or str(uuid.uuid4())
-    message = body.get("message", {})
-    parts = message.get("parts", [])
-    text = next((p.get("text", "") for p in parts if p.get("type") == "text"), "")
-
-    if not text:
-        return _error_response(task_id, "No task text provided.")
-
-    logger.info("Nornir path agent task: %s", text)
-
-    try:
-        from atlas.agents.agent_loop import run_agent_loop
-    except ImportError:
-        from agent_loop import run_agent_loop
-
-    try:
-        result = await run_agent_loop(
-            task=text,
-            system_prompt=_load_skill(),
-            tools=NORNIR_TOOLS,
-            max_iterations=20,
-        )
-    except Exception as e:
-        logger.exception("Nornir path agent loop error")
-        return _error_response(task_id, f"Agent error: {e}")
-
-    return _success_response(task_id, result)
-
-
-def _success_response(task_id: str, text: str) -> JSONResponse:
-    return JSONResponse({
-        "id": task_id,
-        "status": {"state": "completed"},
-        "artifacts": [{"parts": [{"type": "text", "text": text}]}],
-    })
-
-
-def _error_response(task_id: str, message: str) -> JSONResponse:
-    return JSONResponse({
-        "id": task_id,
-        "status": {"state": "failed", "message": message},
-        "artifacts": [],
-    }, status_code=200)
 
 
 if __name__ == "__main__":
