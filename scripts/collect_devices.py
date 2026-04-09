@@ -13,11 +13,21 @@ for reliable parsing without TextFSM.
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Load .env from repo root so DATABASE_URL is available when run directly
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +117,34 @@ def _parse_arista_interfaces(hostname: str, raw_json: str) -> list[dict]:
     return rows
 
 
+def _parse_arista_ospf(hostname: str, raw_json: str) -> list[dict]:
+    """Parse 'show ip ospf neighbor | json' into OSPF neighbor rows."""
+    rows = []
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as e:
+        logger.warning("%s: failed to parse OSPF neighbor JSON: %s", hostname, e)
+        return rows
+
+    for vrf_name, vrf_data in data.get("vrfs", {}).items():
+        for inst_id, inst_data in vrf_data.get("instList", {}).items():
+            for nbr in inst_data.get("ospfNeighborEntries", []):
+                router_id = nbr.get("routerId")
+                if not router_id:
+                    continue
+                rows.append({
+                    "device":      hostname,
+                    "vrf":         vrf_name,
+                    "instance_id": inst_id,
+                    "router_id":   router_id,
+                    "neighbor_ip": nbr.get("interfaceAddress"),
+                    "interface":   nbr.get("interfaceName"),
+                    "state":       nbr.get("adjacencyState"),
+                    "area":        nbr.get("details", {}).get("areaId"),
+                })
+    return rows
+
+
 def _parse_arista_mac(hostname: str, raw_json: str) -> list[dict]:
     """Parse 'show mac address-table | json' into MAC table rows."""
     rows = []
@@ -191,6 +229,7 @@ def _collect_device(task):
         ("arp",        "show ip arp vrf all | json",       _parse_arista_arp),
         ("interfaces", "show interfaces | json",           _parse_arista_interfaces),
         ("mac",        "show mac address-table | json",    _parse_arista_mac),
+        ("ospf",       "show ip ospf neighbor | json",     _parse_arista_ospf),
     ]
 
     for key, cmd, parser in commands:
@@ -341,6 +380,43 @@ async def _insert_routing_history(rows: list[dict]) -> None:
     )
 
 
+async def _upsert_ospf(device: str, rows: list[dict]) -> None:
+    from db import execute, executemany
+    await execute("DELETE FROM ospf_neighbors WHERE device = $1", device)
+    if not rows:
+        return
+    await executemany(
+        """
+        INSERT INTO ospf_neighbors
+            (device, vrf, instance_id, router_id, neighbor_ip, interface, state, area)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (device, vrf, instance_id, router_id) DO UPDATE SET
+            neighbor_ip  = EXCLUDED.neighbor_ip,
+            interface    = EXCLUDED.interface,
+            state        = EXCLUDED.state,
+            area         = EXCLUDED.area,
+            collected_at = now()
+        """,
+        [(r["device"], r["vrf"], r["instance_id"], r["router_id"],
+          r["neighbor_ip"], r["interface"], r["state"], r["area"]) for r in rows],
+    )
+
+
+async def _insert_ospf_history(rows: list[dict]) -> None:
+    if not rows:
+        return
+    from db import executemany
+    await executemany(
+        """
+        INSERT INTO ospf_history
+            (device, vrf, instance_id, router_id, neighbor_ip, interface, state, area)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+        [(r["device"], r["vrf"], r["instance_id"], r["router_id"],
+          r["neighbor_ip"], r["interface"], r["state"], r["area"]) for r in rows],
+    )
+
+
 async def _insert_mac_history(rows: list[dict]) -> None:
     if not rows:
         return
@@ -386,6 +462,7 @@ async def run_collection():
 
         interfaces = device_result.get("interfaces", [])
         mac        = device_result.get("mac", [])
+        ospf       = device_result.get("ospf", [])
 
         dev_info = next(d for d in DEVICES if d["hostname"] == hostname)
         tasks.append(_upsert_device(dev_info))
@@ -393,10 +470,12 @@ async def run_collection():
         tasks.append(_upsert_arp(hostname, arp))
         tasks.append(_upsert_interfaces(hostname, interfaces))
         tasks.append(_upsert_mac(hostname, mac))
+        tasks.append(_upsert_ospf(hostname, ospf))
         # History snapshots — append without overwriting
         tasks.append(_insert_arp_history(arp))
         tasks.append(_insert_routing_history(routes))
         tasks.append(_insert_mac_history(mac))
+        tasks.append(_insert_ospf_history(ospf))
         tasks.append(_log_run(
             hostname, "full",
             "success" if not errors else "partial",

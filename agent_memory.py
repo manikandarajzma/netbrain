@@ -312,9 +312,228 @@ def format_memory_context(memories: list[dict]) -> str:
         age_days = max(0, int((time.time() - ts) / 86400))
         age_str = f"{age_days}d ago" if age_days > 0 else "today"
         similarity_pct = int(float(m.get("similarity", 0)) * 100)
-        lines.append(
+        entry = (
             f"- [{age_str}, {similarity_pct}% similar] Query: {m.get('query', '')}\n"
             f"  Findings: {m.get('result_summary', '')}"
+        )
+        resolution = (m.get("resolution") or "").strip()
+        if resolution:
+            entry += f"\n  Known fix: {resolution[:200]}"
+        lines.append(entry)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Device health baselines — long-term counter trend tracking
+# ---------------------------------------------------------------------------
+
+def store_device_health_snapshot(snapshots: list[dict]) -> None:
+    """
+    Persist one counter snapshot per interface for baseline trend tracking.
+    Uses synchronous Redis client (fire-and-forget from async context).
+
+    snapshots: list of structured dicts from call_interface_counters_agent,
+               shape: {"device": str, "active": [...], "clean": [...], ...}
+    """
+    r = _get_redis()
+    if not r:
+        return
+    _HEALTH_TTL = 8 * 86400   # 8 days
+    _MAX_SNAPSHOTS = 336       # 7d × 48 polls/day
+    ts = int(time.time())
+    try:
+        pipe = r.pipeline(transaction=False)
+        for snap in snapshots:
+            dev = snap.get("device", "")
+            if not dev:
+                continue
+            for c in snap.get("active", []):
+                intf = c.get("interface")
+                if not intf or "error" in c:
+                    continue
+                entry = json.dumps({"ts": ts, "deltas": c.get("delta_9s", {})})
+                key = f"atlas:health:{dev}:{intf}"
+                pipe.lpush(key, entry)
+                pipe.ltrim(key, 0, _MAX_SNAPSHOTS - 1)
+                pipe.expire(key, _HEALTH_TTL)
+            for intf in snap.get("clean", []):
+                entry = json.dumps({"ts": ts, "deltas": {}})
+                key = f"atlas:health:{dev}:{intf}"
+                pipe.lpush(key, entry)
+                pipe.ltrim(key, 0, _MAX_SNAPSHOTS - 1)
+                pipe.expire(key, _HEALTH_TTL)
+        pipe.execute()
+    except Exception as exc:
+        logger.warning("agent_memory: store_device_health_snapshot failed: %s", exc)
+
+
+def get_health_trend(device: str, interface: str, current_deltas: dict) -> str:
+    """
+    Compare current counter deltas against 7-day history for this interface.
+    Returns a human-readable trend string, or "" if no history or no anomaly.
+
+    current_deltas: the delta_9s dict from an active-error entry,
+                    e.g. {"crc_errors": 3, "input_errors": 0, "output_drops": 0}
+    """
+    r = _get_redis()
+    if not r:
+        return ""
+    try:
+        key = f"atlas:health:{device}:{interface}"
+        raw_list = r.lrange(key, 1, -1)   # skip index 0 = the entry just written
+        if len(raw_list) < 6:             # need at least a few data points
+            return ""
+
+        # Only use history older than 24 h for the baseline
+        cutoff = int(time.time()) - 86400
+        historical = []
+        for raw in raw_list:
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            if e.get("ts", 0) < cutoff:
+                historical.append(e.get("deltas", {}))
+
+        if len(historical) < 4:
+            return ""
+
+        # Compute per-counter averages from historical clean+active snapshots
+        all_keys = set()
+        for h in historical:
+            all_keys.update(h.keys())
+
+        trends = []
+        for counter in sorted(all_keys):
+            hist_vals = [h.get(counter, 0) for h in historical]
+            avg = sum(hist_vals) / len(hist_vals)
+            cur = current_deltas.get(counter, 0)
+            if avg < 0.5 and cur > 0:
+                trends.append(f"normally 0 {counter.replace('_', ' ')} — currently {cur} (new today)")
+            elif avg > 0 and cur > avg * 3 and cur > 2:
+                trends.append(f"{counter.replace('_', ' ')}: 7d avg {avg:.1f} → currently {cur} ({cur/avg:.1f}× spike)")
+
+        if not trends:
+            return ""
+        return f"{interface} on {device}: " + "; ".join(trends)
+    except Exception as exc:
+        logger.warning("agent_memory: get_health_trend failed: %s", exc)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Device reputation — tracks how many times each device was a failure point
+# ---------------------------------------------------------------------------
+
+def record_device_incident(device: str, category: str, session_id: str) -> None:
+    """Record that a device was involved in an incident (as failure point or path member)."""
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        key = f"atlas:device_rep:{device.lower()}"
+        ts = int(time.time())
+        member = f"{category}:{session_id}"
+        r.zadd(key, {member: ts})
+        r.zremrangebyrank(key, 0, -201)   # keep latest 200
+        r.expire(key, 14 * 86400)
+    except Exception as exc:
+        logger.warning("agent_memory: record_device_incident failed: %s", exc)
+
+
+def get_device_reputation(device: str, window_days: int = 7) -> dict:
+    """Return incident counts for a device over the last window_days."""
+    r = _get_redis()
+    result = {"incident_count": 0, "failure_count": 0, "categories": {}}
+    if not r:
+        return result
+    try:
+        key = f"atlas:device_rep:{device.lower()}"
+        min_ts = int(time.time()) - window_days * 86400
+        members = r.zrangebyscore(key, min_ts, "+inf")
+        from collections import Counter
+        cats: Counter = Counter()
+        failure_count = 0
+        for m in members:
+            cat = m.split(":")[0] if ":" in m else m
+            cats[cat] += 1
+            if cat not in ("was_in_path",):
+                failure_count += 1
+        result["incident_count"] = len(members)
+        result["failure_count"] = failure_count
+        result["categories"] = dict(cats)
+    except Exception as exc:
+        logger.warning("agent_memory: get_device_reputation failed: %s", exc)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Confirmed resolution store — operator-verified fixes from closed SNOW tickets
+# ---------------------------------------------------------------------------
+
+def store_confirmed_resolution(
+    device: str,
+    incident_number: str,
+    symptom: str,
+    fix: str,
+) -> None:
+    """Store a confirmed fix for a device from a closed ServiceNow incident."""
+    if not device or not fix or len(fix) < 30:
+        return
+    r = _get_redis()
+    if not r:
+        return
+    try:
+        key = f"atlas:resolution:{device.lower()}"
+        entry = json.dumps({
+            "incident_number": incident_number,
+            "symptom":         symptom[:200],
+            "fix":             fix[:400],
+            "ts":              int(time.time()),
+        })
+        ts = int(time.time())
+        r.zadd(key, {entry: ts})
+        r.zremrangebyrank(key, 0, -51)  # keep latest 50
+        r.expire(key, 90 * 86400)
+        logger.debug("agent_memory: stored confirmed resolution for %s (%s)", device, incident_number)
+    except Exception as exc:
+        logger.warning("agent_memory: store_confirmed_resolution failed: %s", exc)
+
+
+def get_confirmed_resolutions(devices: list, max_per_device: int = 3) -> list[dict]:
+    """Retrieve the most recent confirmed fixes for a list of devices."""
+    r = _get_redis()
+    if not r or not devices:
+        return []
+    results = []
+    try:
+        for device in devices:
+            key = f"atlas:resolution:{device.lower()}"
+            members = r.zrevrange(key, 0, max_per_device - 1)
+            for m in members:
+                try:
+                    entry = json.loads(m)
+                    entry["device"] = device
+                    results.append(entry)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("agent_memory: get_confirmed_resolutions failed: %s", exc)
+    return results
+
+
+def format_confirmed_resolutions(resolutions: list[dict]) -> str:
+    """Format confirmed resolutions as a context block for injection into LLM prompts."""
+    if not resolutions:
+        return ""
+    lines = ["**Confirmed fixes from closed tickets (operator-verified — high confidence):**"]
+    for r in resolutions:
+        age_days = max(0, int((time.time() - r.get("ts", 0)) / 86400))
+        age_str = f"{age_days}d ago" if age_days > 0 else "today"
+        lines.append(
+            f"- [{r['device']}, {age_str}, {r['incident_number']}] "
+            f"Symptom: {r['symptom']}\n"
+            f"  Fix: {r['fix']}"
         )
     return "\n".join(lines)
 

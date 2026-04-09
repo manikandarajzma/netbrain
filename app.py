@@ -423,6 +423,65 @@ def _strip_l2_noise(d: dict) -> dict:
     return d
 
 
+@app.get("/api/topology")
+async def api_topology(request: Request):
+    """Return network topology: devices, links (derived from /31 subnets), and per-device stats."""
+    username = get_current_username(request)
+    if not username:
+        return response_401_clear_session(request)
+    from db import fetch
+    devices_rows = await fetch(
+        "SELECT hostname, host(mgmt_ip) AS mgmt_ip, platform, site, role FROM devices ORDER BY hostname"
+    )
+    links_rows = await fetch(
+        """
+        SELECT a.device AS device_a, a.interface AS iface_a, host(a.ip) AS ip_a,
+               b.device AS device_b, b.interface AS iface_b, host(b.ip) AS ip_b
+        FROM interface_ips a
+        JOIN interface_ips b ON
+          a.prefix_len = 31 AND b.prefix_len = 31
+          AND a.device < b.device
+          AND network(set_masklen(a.ip, 31)) = network(set_masklen(b.ip, 31))
+        """
+    )
+    stats_rows = await fetch(
+        """
+        SELECT r.device,
+               COUNT(r.prefix) AS route_count,
+               (SELECT COUNT(*) FROM ospf_neighbors n WHERE n.device = r.device) AS ospf_neighbor_count,
+               (SELECT COUNT(*) FROM ospf_neighbors n WHERE n.device = r.device AND n.state = 'full') AS ospf_full_count,
+               (SELECT array_agg(n.router_id) FROM ospf_neighbors n WHERE n.device = r.device AND n.state = 'full') AS ospf_neighbors
+        FROM routing_table r
+        GROUP BY r.device
+        """
+    )
+    # Also include devices with no routes in stats
+    stat_map = {r["device"]: dict(r) for r in stats_rows}
+    devices = []
+    for d in devices_rows:
+        hostname = d["hostname"]
+        stat = stat_map.get(hostname, {})
+        devices.append({
+            "hostname": hostname,
+            "mgmt_ip": d["mgmt_ip"],
+            "platform": d["platform"],
+            "site": d["site"],
+            "role": d["role"],
+            "route_count": stat.get("route_count", 0),
+            "ospf_neighbor_count": stat.get("ospf_neighbor_count", 0),
+            "ospf_full_count": stat.get("ospf_full_count", 0),
+            "ospf_neighbors": stat.get("ospf_neighbors") or [],
+        })
+    links = [
+        {
+            "device_a": r["device_a"], "iface_a": r["iface_a"], "ip_a": r["ip_a"],
+            "device_b": r["device_b"], "iface_b": r["iface_b"], "ip_b": r["ip_b"],
+        }
+        for r in links_rows
+    ]
+    return {"devices": devices, "links": links}
+
+
 @app.post("/api/discover")
 async def api_discover(request: Request, body: ChatRequest):
     """Lightweight tool discovery — returns tool name without executing."""

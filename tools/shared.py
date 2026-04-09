@@ -78,8 +78,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate  # re-exported for convenience
 
 # LLM configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:12434/engines/llama.cpp/v1")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "hf.co/bartowski/Phi-4-GGUF:Q4_K_M")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4")
 
 
 def _get_llm():

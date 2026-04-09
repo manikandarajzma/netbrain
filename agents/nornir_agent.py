@@ -7,11 +7,14 @@ Uses NetBox IPAM to identify the first-hop gateway for a given source IP.
 
 Used as a NetBrain alternative when the user explicitly requests it.
 """
+import asyncio
 import json
 import logging
 import os
 import pathlib
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -85,25 +88,59 @@ def _run_privileged(hostname: str, host: str, port: int, command: str) -> str:
         return conn.send_command(command, read_timeout=30)
 
 
+_SSH_BANNER_ERROR = "Error reading SSH protocol banner"
+_SSH_MAX_RETRIES = 3
+_SSH_RETRY_DELAY = 2.0  # seconds between retries on banner error
+
+
 def _run_show(hostname: str, host: str, port: int, command: str) -> str:
-    """SSH into a device and run a single show command. Returns raw output."""
+    """SSH into a device and run a single show command. Returns raw output.
+
+    Serialized per device (threading.Semaphore) and retried on SSH banner errors,
+    which occur when the cEOS SSH daemon drops connections under rapid successive access.
+    """
     from nornir_netmiko.tasks import netmiko_send_command
 
-    nr = _build_nornir(hostname, host, port)
-    result = nr.run(task=netmiko_send_command, command_string=command)
-    for _, multi in result.items():
-        task_result = multi[0]
-        # Raise if nornir captured an exception (avoids returning traceback as output)
-        if task_result.failed or task_result.exception:
-            exc = task_result.exception
-            raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
-        r = task_result.result
-        logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
-        if r and not r.strip().startswith("Traceback"):
-            return r
-        if r and r.strip().startswith("Traceback"):
-            raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
-    raise RuntimeError(f"Empty output from {hostname} for '{command}'")
+    last_exc: Exception | None = None
+    for attempt in range(_SSH_MAX_RETRIES):
+        if attempt > 0:
+            time.sleep(_SSH_RETRY_DELAY * attempt)
+            logger.info("_run_show %s: retry %d/%d after banner error", hostname, attempt, _SSH_MAX_RETRIES - 1)
+        try:
+            with _device_semaphore(hostname):
+                nr = _build_nornir(hostname, host, port)
+                try:
+                    result = nr.run(task=netmiko_send_command, command_string=command)
+                finally:
+                    nr.close_connections()  # always release SSH connections — prevents socket leak
+        except Exception as exc:
+            if _SSH_BANNER_ERROR in str(exc):
+                last_exc = exc
+                continue
+            raise
+
+        for _, multi in result.items():
+            task_result = multi[0]
+            if task_result.failed or task_result.exception:
+                exc = task_result.exception
+                if exc and _SSH_BANNER_ERROR in str(exc):
+                    last_exc = exc
+                    break  # retry outer loop
+                raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
+            r = task_result.result
+            logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
+            if r and not r.strip().startswith("Traceback"):
+                return r
+            if r and r.strip().startswith("Traceback"):
+                raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
+        else:
+            raise RuntimeError(f"Empty output from {hostname} for '{command}'")
+        # banner error — retry outer loop
+        continue
+
+    raise last_exc if last_exc else RuntimeError(f"SSH failed on {hostname} after {_SSH_MAX_RETRIES} attempts")
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +174,20 @@ def _load_device_registry() -> dict[str, dict]:
 
 
 _DEVICE_REGISTRY: dict[str, dict] | None = None
+
+# Limit concurrent SSH sessions per device to avoid banner/connection errors.
+# Uses threading.Semaphore so it works across thread-pool executor threads
+# (asyncio.Semaphore only works within the async event loop).
+_SSH_SEMAPHORES: dict[str, threading.Semaphore] = {}
+_SSH_SEMAPHORES_LOCK = threading.Lock()
+_SSH_MAX_CONCURRENT = 1  # serialize SSH connections per device — cEOS drops concurrent connections
+
+
+def _device_semaphore(device: str) -> threading.Semaphore:
+    with _SSH_SEMAPHORES_LOCK:
+        if device not in _SSH_SEMAPHORES:
+            _SSH_SEMAPHORES[device] = threading.Semaphore(_SSH_MAX_CONCURRENT)
+        return _SSH_SEMAPHORES[device]
 
 
 def _registry() -> dict[str, dict]:
@@ -409,14 +460,16 @@ def get_ospf_neighbors(device: str) -> dict:
         raw = _run_show(device, conn["host"], conn["port"], "show ip ospf neighbor | json")
         data = json.loads(raw)
         neighbors = []
-        for instance in data.get("vrfs", {}).values():
-            for iface in instance.get("instList", {}).values():
-                for nbr_id, nbr in iface.get("ospfNeighborEntries", {}).items():
+        for vrf_data in data.get("vrfs", {}).values():
+            for inst_data in vrf_data.get("instList", {}).values():
+                for nbr in inst_data.get("ospfNeighborEntries", []):
                     neighbors.append({
-                        "neighbor_id": nbr_id,
-                        "interface": nbr.get("interfaceAddress"),
+                        "router_id": nbr.get("routerId"),
+                        "interface": nbr.get("interfaceName"),
+                        "neighbor_ip": nbr.get("interfaceAddress"),
                         "state": nbr.get("adjacencyState"),
-                        "priority": nbr.get("routerPriority"),
+                        "area": nbr.get("details", {}).get("areaId"),
+                        "state_changes": nbr.get("details", {}).get("numberOfStateChanges"),
                     })
         return {"device": device, "count": len(neighbors), "neighbors": neighbors}
     except Exception as e:
@@ -471,31 +524,34 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
     COUNTER_KEYS  = ("inErrors", "outErrors", "inDiscards", "outDiscards",
                      "fcsErrors", "runtFrames", "giantFrames")
 
-    # Open ONE SSH connection for all iterations — avoids rapid reconnect banner errors
-    netmiko_conn = ConnectHandler(
-        device_type="arista_eos",
-        host=conn_info["host"],
-        port=conn_info["port"],
-        username=SSH_USER,
-        password=SSH_PASSWORD,
-        timeout=30,
-    )
-
-    # Collect snapshots: snapshots[iteration][intf] = counter dict
+    # Open ONE SSH connection for all iterations — avoids rapid reconnect banner errors.
+    # Acquire the per-device semaphore for the full duration so routing-check / path-trace
+    # calls via _run_show don't race with this connection and trigger cEOS MaxStartups drops.
     snapshots: list[dict] = []
-    try:
-        for i in range(ITERATIONS):
-            if i > 0:
-                time.sleep(POLL_INTERVAL)
-            snap = {}
-            for intf in interfaces:
-                try:
-                    snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
-                except Exception as exc:
-                    snap[intf] = {"error": str(exc)}
-            snapshots.append(snap)
-    finally:
-        netmiko_conn.disconnect()
+    with _device_semaphore(device):
+        netmiko_conn = ConnectHandler(
+            device_type="arista_eos",
+            host=conn_info["host"],
+            port=conn_info["port"],
+            username=SSH_USER,
+            password=SSH_PASSWORD,
+            timeout=30,
+        )
+
+        # Collect snapshots: snapshots[iteration][intf] = counter dict
+        try:
+            for i in range(ITERATIONS):
+                if i > 0:
+                    time.sleep(POLL_INTERVAL)
+                snap = {}
+                for intf in interfaces:
+                    try:
+                        snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
+                    except Exception as exc:
+                        snap[intf] = {"error": str(exc)}
+                snapshots.append(snap)
+        finally:
+            netmiko_conn.disconnect()
 
     # Report only interfaces with at least one incrementing counter
     active = []
@@ -795,6 +851,36 @@ async def handle_tcp_test(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/route")
+async def handle_route(request: Request) -> JSONResponse:
+    """Direct endpoint: {device, destination} → best route entry via live SSH."""
+    body = await request.json()
+    device = body.get("device", "")
+    destination = body.get("destination", "")
+    if not device or not destination:
+        return JSONResponse({"error": "device and destination required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: get_route.invoke({"device": device, "destination_ip": destination})
+    )
+    return JSONResponse(result)
+
+
+@app.post("/arp")
+async def handle_arp(request: Request) -> JSONResponse:
+    """Direct endpoint: {device, ip} → ARP entry via live SSH."""
+    body = await request.json()
+    device = body.get("device", "")
+    ip = body.get("ip", "")
+    if not device or not ip:
+        return JSONResponse({"error": "device and ip required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: get_arp.invoke({"device": device, "ip": ip})
+    )
+    return JSONResponse(result)
+
+
 @app.post("/routing-check")
 async def handle_routing_check(request: Request) -> JSONResponse:
     """Direct endpoint: {devices: [str], destination, vrf?} → per-device routing result."""
@@ -804,11 +890,223 @@ async def handle_routing_check(request: Request) -> JSONResponse:
     vrf         = body.get("vrf", "")
     if not devices or not destination:
         return JSONResponse({"error": "devices and destination required"}, status_code=400)
-    result = check_routing_on_hops.invoke({
-        "devices": devices,
-        "destination": destination,
-        "vrf": vrf,
-    })
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: check_routing_on_hops.invoke({
+            "devices": devices,
+            "destination": destination,
+            "vrf": vrf,
+        })
+    )
+    return JSONResponse(result)
+
+
+@app.post("/interface-status")
+async def handle_interface_status(request: Request) -> JSONResponse:
+    """Check if a specific interface is up. {device, interface} → {up: bool, line_protocol, oper_status}"""
+    body = await request.json()
+    device = body.get("device", "")
+    interface = body.get("interface", "")
+    if not device or not interface:
+        return JSONResponse({"error": "device and interface required"}, status_code=400)
+    conn = _registry().get(device)
+    if not conn:
+        return JSONResponse({"error": f"Device '{device}' not in inventory"}, status_code=404)
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: _run_show(device, conn["host"], conn["port"], f"show interfaces {interface} | json")
+        )
+        data = json.loads(raw)
+        intf_data = data.get("interfaces", {}).get(interface, {})
+        line_proto = intf_data.get("lineProtocolStatus", "unknown")
+        oper = intf_data.get("interfaceStatus", "unknown")
+        return JSONResponse({
+            "device": device,
+            "interface": interface,
+            "up": line_proto == "up",
+            "line_protocol": line_proto,
+            "oper_status": oper,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/all-interfaces-status")
+async def handle_all_interfaces_status(request: Request) -> JSONResponse:
+    """Return status of all non-management interfaces on a device. {device} → [{interface, up, line_protocol}]"""
+    body = await request.json()
+    device = body.get("device", "")
+    if not device:
+        return JSONResponse({"error": "device required"}, status_code=400)
+    conn = _registry().get(device)
+    if not conn:
+        return JSONResponse({"error": f"Device '{device}' not in inventory"}, status_code=404)
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: _run_show(device, conn["host"], conn["port"], "show interfaces | json")
+        )
+        data = json.loads(raw)
+        results = []
+        for intf_name, intf_data in data.get("interfaces", {}).items():
+            if intf_name.lower().startswith("management"):
+                continue
+            results.append({
+                "interface":    intf_name,
+                "up":           intf_data.get("lineProtocolStatus") == "up",
+                "line_protocol": intf_data.get("lineProtocolStatus", "unknown"),
+                "oper_status":  intf_data.get("interfaceStatus", "unknown"),
+                "description":  intf_data.get("description", ""),
+            })
+        return JSONResponse({"device": device, "interfaces": results})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/interface-detail")
+async def handle_interface_detail(request: Request) -> JSONResponse:
+    """Full interface stats for a single interface. {device, interface} → counters, errors, last flap."""
+    body = await request.json()
+    device = body.get("device", "")
+    interface = body.get("interface", "")
+    if not device or not interface:
+        return JSONResponse({"error": "device and interface required"}, status_code=400)
+    conn = _registry().get(device)
+    if not conn:
+        return JSONResponse({"error": f"Device '{device}' not in inventory"}, status_code=404)
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: _run_show(device, conn["host"], conn["port"], f"show interfaces {interface} | json")
+        )
+        data = json.loads(raw)
+        intf = data.get("interfaces", {}).get(interface, {})
+        counters = intf.get("interfaceCounters", {})
+        return JSONResponse({
+            "device": device,
+            "interface": interface,
+            "line_protocol": intf.get("lineProtocolStatus", "unknown"),
+            "oper_status": intf.get("interfaceStatus", "unknown"),
+            "last_status_change": intf.get("lastStatusChangeTimestamp"),
+            "description": intf.get("description", ""),
+            "input_errors": counters.get("inputErrorsDetail", {}).get("totalIn", counters.get("totalInErrors", 0)),
+            "output_errors": counters.get("outputErrorsDetail", {}).get("totalOut", counters.get("totalOutErrors", 0)),
+            "input_discards": counters.get("inDiscards", 0),
+            "output_discards": counters.get("outDiscards", 0),
+            "link_status_changes": intf.get("interfaceStatistics", {}).get("updateInterval", None),
+            "raw": intf,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/show-logging")
+async def handle_show_logging(request: Request) -> JSONResponse:
+    """Fetch recent syslog entries from a device. {device, lines?} → {device, logs: [str]}"""
+    body = await request.json()
+    device = body.get("device", "")
+    lines = int(body.get("lines", 50))
+    if not device:
+        return JSONResponse({"error": "device required"}, status_code=400)
+    conn = _registry().get(device)
+    if not conn:
+        return JSONResponse({"error": f"Device '{device}' not in inventory"}, status_code=404)
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: _run_show(device, conn["host"], conn["port"], "show logging")
+        )
+        # Strip the logging config header — actual messages start after the blank line
+        # following the facility table. Take the last `lines` non-empty lines.
+        all_lines = [l.rstrip() for l in raw.splitlines()]
+        # Find where the actual log messages start (after the facility table separator)
+        msg_start = 0
+        for i, l in enumerate(all_lines):
+            if l.startswith("----") or (i > 0 and all_lines[i-1].startswith("----")):
+                msg_start = i + 1
+        log_lines = [l for l in all_lines[msg_start:] if l.strip()]
+        log_lines = log_lines[-lines:]  # keep last N
+        return JSONResponse({"device": device, "logs": log_lines})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/devices")
+async def handle_list_devices() -> JSONResponse:
+    """Return list of device hostnames from the inventory."""
+    return JSONResponse({"devices": list(_registry().keys())})
+
+
+@app.post("/ospf-neighbors")
+async def handle_ospf_neighbors(request: Request) -> JSONResponse:
+    """Check OSPF neighbor state on one or more devices. {devices: [str]} → per-device neighbor list."""
+    body = await request.json()
+    devices = body.get("devices", [])
+    if not devices:
+        return JSONResponse({"error": "devices required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    results = {}
+    for device in devices:
+        result = await loop.run_in_executor(
+            None, lambda d=device: get_ospf_neighbors.invoke({"device": d})
+        )
+        results[device] = result
+    return JSONResponse({"ospf_neighbors": results})
+
+
+@app.post("/ospf-interfaces")
+async def handle_ospf_interfaces(request: Request) -> JSONResponse:
+    """Check which interfaces are participating in OSPF on one or more devices.
+    Empty interfaces = OSPF process exists but no network commands configured.
+    {devices: [str]} → per-device {ospf_enabled_interfaces: [...]}"""
+    body = await request.json()
+    devices = body.get("devices", [])
+    if not devices:
+        return JSONResponse({"error": "devices required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+
+    def _get_ospf_interfaces(device: str) -> dict:
+        conn = _registry().get(device)
+        if not conn:
+            return {"error": f"Device '{device}' not in inventory"}
+        try:
+            raw = _run_show(device, conn["host"], conn["port"], "show ip ospf interface brief | json")
+            data = json.loads(raw)
+            interfaces = []
+            for vrf_data in data.get("vrfs", {}).values():
+                for inst_data in vrf_data.get("instList", {}).values():
+                    for intf_name, intf_info in inst_data.get("interfaces", {}).items():
+                        interfaces.append({
+                            "interface": intf_name,
+                            "area":      intf_info.get("areaId"),
+                            "state":     intf_info.get("interfaceState"),
+                            "cost":      intf_info.get("cost"),
+                        })
+            return {
+                "device": device,
+                "ospf_enabled_interfaces": interfaces,
+                "ospf_interface_count": len(interfaces),
+            }
+        except Exception as exc:
+            return {"device": device, "error": str(exc)}
+
+    results = {}
+    for device in devices:
+        results[device] = await loop.run_in_executor(None, lambda d=device: _get_ospf_interfaces(d))
+    return JSONResponse({"ospf_interfaces": results})
+
+
+@app.post("/find-device")
+async def handle_find_device(request: Request) -> JSONResponse:
+    """Find which device in the inventory owns a given IP address via live SSH."""
+    body = await request.json()
+    ip = body.get("ip", "")
+    if not ip:
+        return JSONResponse({"error": "ip required"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    # find_device_for_ip polls all devices — semaphores are per-device so this is fine
+    result = await loop.run_in_executor(None, lambda: find_device_for_ip.invoke({"ip": ip}))
     return JSONResponse(result)
 
 
@@ -820,7 +1118,10 @@ async def handle_interface_counters(request: Request) -> JSONResponse:
     interfaces = body.get("interfaces", [])
     if not device or not interfaces:
         return JSONResponse({"error": "device and interfaces required"}, status_code=400)
-    result = get_interface_counters.invoke({"device": device, "interfaces": interfaces})
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None, lambda: get_interface_counters.invoke({"device": device, "interfaces": interfaces})
+    )
     return JSONResponse(result)
 
 

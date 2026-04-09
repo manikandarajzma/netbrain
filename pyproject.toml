@@ -56,3 +56,8 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 exclude = ["data*", "icons*", "static*", "frontend*", "templates*", "Documentation*"]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+]

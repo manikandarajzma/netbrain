@@ -68,6 +68,34 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+.nav {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-body);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+.navBtn {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.25rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.navBtn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.navBtnActive {
+  background: var(--bg-sidebar) !important;
+  color: var(--text-primary) !important;
+}
+
 .healthStatus {
   display: flex;
   align-items: center;

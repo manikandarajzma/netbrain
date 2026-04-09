@@ -1,0 +1,209 @@
+.dashboard {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  overflow-y: auto;
+  background: var(--bg-body);
+  min-height: 0;
+}
+
+.topRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.refreshBtn {
+  margin-left: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.375rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.refreshBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.state {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  padding: 3rem;
+  text-align: center;
+}
+.stateError {
+  color: var(--accent-red);
+  font-size: 0.9rem;
+  padding: 3rem;
+  text-align: center;
+}
+
+.content {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* ── SVG Diagram ── */
+.svgWrap {
+  flex: 1;
+  min-width: 360px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.link {
+  stroke: var(--border);
+  stroke-width: 2.5;
+  transition: stroke 0.2s;
+}
+.linkHighlighted {
+  stroke: var(--accent-blue, #60a5fa);
+  stroke-width: 3;
+}
+
+.ifaceLabel {
+  font-size: 10px;
+  fill: var(--text-dim);
+  text-anchor: middle;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.subnetLabel {
+  font-size: 10px;
+  fill: var(--text-muted);
+  text-anchor: middle;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.node {
+  transition: opacity 0.15s;
+}
+.node:hover { opacity: 0.85; }
+
+.nodeCircle {
+  fill: var(--bg-sidebar);
+  stroke-width: 2.5;
+  transition: stroke 0.2s, fill 0.2s;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25));
+}
+.nodeCircle.nodeHealthy { stroke: #10a37f; }
+.nodeCircle.nodeDegraded { stroke: #f5c542; }
+.nodeCircle.nodeWarn { stroke: #ef6b6b; }
+.nodeCircle.nodeSelected { stroke-width: 4; fill: var(--bg-input); }
+
+.nodeLabel {
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--text-primary);
+  text-anchor: middle;
+  font-family: inherit;
+}
+.nodeSub {
+  font-size: 9.5px;
+  fill: var(--text-muted);
+  text-anchor: middle;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* ── Device Cards ── */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 260px;
+  max-width: 340px;
+  flex-shrink: 0;
+}
+
+.card {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.card:hover {
+  background: var(--bg-input);
+  border-color: var(--accent-blue, #60a5fa);
+}
+.cardSelected {
+  border-color: var(--accent-blue, #60a5fa);
+  background: var(--bg-input);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.625rem;
+}
+
+.cardHostname {
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.ospfBadge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.ospfFull { background: rgba(16, 163, 127, 0.15); color: #10a37f; }
+.ospfPartial { background: rgba(245, 197, 66, 0.15); color: #f5c542; }
+.ospfNone { background: rgba(239, 107, 107, 0.12); color: #ef6b6b; }
+
+.cardStats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+.statLabel {
+  color: var(--text-dim);
+}
+.statValue {
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  text-align: right;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

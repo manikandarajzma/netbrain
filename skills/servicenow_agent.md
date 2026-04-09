@@ -36,6 +36,7 @@ RULES:
   - For change requests, ask for: short description, CI/device affected, justification, implementation plan, assignment group, and risk level.
   - For incidents, ask for: short description, CI/device affected, description of the issue, urgency, impact, and assignment group.
   - Only call the create tool once the user has provided these details.
+  - When the user provides field values (inline or as a bullet list), parse each one and pass them as SEPARATE parameters. The text AFTER the "—" or "-" separator is the VALUE. Example: "Short description — route map update • CI / Device affected — arista1 • Justification — route map update • Implementation plan — route map update • Assignment group - System Admin • Risk level — low" maps to: short_description="route map update", ci_name="arista1", justification="route map update", implementation_plan="route map update", assignment_group="System Admin", risk="3". Risk mapping: low→"3", moderate→"2", high→"1". NEVER pass empty strings — always use the extracted value text.
 - When listing records, default to limit=10 unless the user asks for more
 - Never invent record numbers, sys_ids, or user details
 

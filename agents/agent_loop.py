@@ -84,6 +84,23 @@ async def run_agent_loop(
     if not last_response:
         return "No response generated."
     content = last_response.content
+
+    # Local LLMs sometimes output a JSON tool call in message content instead of
+    # using the proper function-call format. Detect and execute it.
+    if content and not last_response.tool_calls:
+        stripped = content.strip()
+        if stripped.startswith('{"name":') or stripped.startswith("{'name':"):
+            try:
+                tc_data = json.loads(stripped)
+                name = tc_data.get("name") or tc_data.get("tool")
+                args = tc_data.get("parameters") or tc_data.get("arguments") or tc_data.get("args") or {}
+                if name and name in tool_map:
+                    logger.info("Agent loop: executing JSON-in-content tool call: %s", name)
+                    result = await tool_map[name].ainvoke(args)
+                    content = result if isinstance(result, str) else json.dumps(result)
+            except Exception:
+                pass
+
     # If the loop hit max_iterations while the LLM was still issuing tool calls,
     # last_response is a tool-call message with no text. Make one final call
     # without tools bound so the LLM synthesises from the accumulated context.

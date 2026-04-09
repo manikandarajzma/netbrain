@@ -158,6 +158,8 @@ _session_path_hops: list | None = None          # structured path hops from DB t
 _session_reverse_path_hops: list | None = None  # return path hops (dst → src)
 _session_path_devices: list[str] = []           # device names in path — used to force SNOW call if LLM skips it
 _session_interface_counters: list[dict] = []    # interface counter results, injected into final response
+_session_path_text: str = ""                    # raw path trace text — carries ⚠️ anomaly lines for synthesis
+_session_path_flags: dict = {}                  # anomaly flags set by _live_path_trace, merged into runbook ctx
 
 
 @tool
@@ -200,71 +202,63 @@ _PLATFORM_TO_TYPE = {
 }
 
 
-async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
+async def _live_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
     """
-    Inline hop-by-hop path trace using the collected DB and NetBox.
-    Returns (text_summary, path_hops) where path_hops is ready for PathVisualization.
+    Fully live hop-by-hop path trace via SSH — no database reads.
+    1. Find first-hop by querying all devices for a connected route to src_ip's subnet.
+       This works even when the gateway is a VIP not assigned to any device interface.
+    2. Per-hop: /route (live SSH) → next-hop IP, then /find-device → next device.
+    Returns (text_summary, path_hops) for PathVisualization.
     """
-    try:
-        from atlas.db import fetchrow, fetch
-    except ImportError:
-        from db import fetchrow, fetch
+    async def _find_device_live(ip: str) -> dict:
+        """Resolve a next-hop IP to a device by SSHing to all devices in inventory."""
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(f"{NORNIR_AGENT_URL}/find-device", json={"ip": ip})
+            return r.json()
 
-    try:
-        from atlas.tools.netbox_tools import get_gateway_for_prefix
-    except ImportError:
-        from tools.netbox_tools import get_gateway_for_prefix
+    async def _find_first_hop(src: str) -> tuple[str, str | None]:
+        """
+        Find the first-hop router for a source IP by querying each device for
+        a connected route to src's subnet. Returns (device_name, egress_interface).
+        This avoids the VIP problem: the gateway IP may not be a real interface address.
+        """
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            registry_resp = await client.get(f"{NORNIR_AGENT_URL}/devices")
+            devices = registry_resp.json().get("devices", []) if registry_resp.status_code == 200 else []
+
+        if not devices:
+            # fallback: try known devices from nornir inventory
+            try:
+                import yaml
+                from pathlib import Path as _Path
+                hosts_file = _Path(__file__).resolve().parent.parent / "nornir" / "inventory" / "hosts.yaml"
+                with open(hosts_file) as f:
+                    devices = list(yaml.safe_load(f).keys())
+            except Exception:
+                devices = []
+
+        for device in devices:
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    r = await client.post(f"{NORNIR_AGENT_URL}/route",
+                        json={"device": device, "destination": src})
+                    route = r.json()
+                if route.get("found") and route.get("protocol", "").lower() == "connected":
+                    return device, route.get("egress_interface")
+            except Exception:
+                continue
+        return "", None
 
     text_hops = []
     structured_hops = []
     seen_devices = set()
     MAX_HOPS = 15
 
-    # Cache device platforms to avoid repeated DB hits
-    _platform_cache: dict[str, str] = {}
-
-    async def _device_type(hostname: str) -> str:
-        if hostname not in _platform_cache:
-            row = await fetchrow("SELECT platform FROM devices WHERE hostname = $1", hostname)
-            platform = row["platform"] if row else ""
-            _platform_cache[hostname] = _PLATFORM_TO_TYPE.get(platform, "switch")
-        return _platform_cache[hostname]
-
-    # Step 1: find first-hop gateway — prefer NetBox, fall back to routing DB
-    gw_info = get_gateway_for_prefix.fn(src_ip)
-    logger.info("_db_path_trace(%s→%s): gw_info=%r", src_ip, dst_ip, gw_info)
-    if "error" not in gw_info:
-        gw_ip = gw_info["gateway"]
-        row = await fetchrow(
-            "SELECT device, interface FROM interface_ips WHERE ip = $1::inet LIMIT 1", gw_ip
-        )
-        if not row:
-            msg = f"Gateway {gw_ip} not found in interface_ips table — run collect_devices.py first."
-            logger.warning("_db_path_trace: %s", msg)
-            return msg, []
-        current_device = row["device"]
-        gw_interface = row["interface"]
-    else:
-        # NetBox unavailable — derive gateway from directly-connected route in DB
-        logger.info("NetBox unavailable (%s), falling back to DB gateway lookup", gw_info["error"][:80])
-        row = await fetchrow(
-            """
-            SELECT rt.device, rt.egress_interface, ii.ip::text AS gateway_ip
-            FROM routing_table rt
-            JOIN interface_ips ii
-              ON ii.device = rt.device AND ii.interface = rt.egress_interface
-            WHERE $1::inet << rt.prefix AND rt.next_hop IS NULL
-            ORDER BY masklen(rt.prefix) DESC
-            LIMIT 1
-            """,
-            src_ip,
-        )
-        if not row:
-            msg = f"Cannot determine gateway for {src_ip}: NetBox offline and no directly-connected route in DB."
-            logger.warning("_db_path_trace: %s", msg)
-            return msg, []
-        current_device = row["device"]
-        gw_interface = row["egress_interface"]
+    # Step 1: find the first-hop device — the one with a connected route to src subnet
+    current_device, gw_interface = await _find_first_hop(src_ip)
+    if not current_device:
+        return f"Could not find a network device with a connected route to {src_ip} — check inventory.", []
+    logger.info("_live_path_trace(%s→%s): first hop = %s via %s", src_ip, dst_ip, current_device, gw_interface)
 
     # Prepend source host → first router hop
     structured_hops.append({
@@ -274,7 +268,7 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
         "out_zone":         None,
         "device_group":     None,
         "to_device":        current_device,
-        "to_device_type":   await _device_type(current_device),
+        "to_device_type":   "switch",
         "in_interface":     gw_interface,
         "in_zone":          None,
     })
@@ -285,74 +279,134 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
             break
         seen_devices.add(current_device)
 
-        route = await fetchrow(
-            """
-            SELECT prefix, next_hop::text, egress_interface, protocol
-            FROM routing_table
-            WHERE device = $1 AND $2::inet << prefix
-            ORDER BY masklen(prefix) DESC LIMIT 1
-            """,
-            current_device, dst_ip,
-        )
-        if not route:
-            text_hops.append(f"  Hop {len(text_hops)+1}: {current_device} — no route to {dst_ip}")
+        # Live SSH route lookup
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/route",
+                    json={"device": current_device, "destination": dst_ip})
+                route = r.json()
+        except Exception as exc:
+            text_hops.append(f"  Hop {len(text_hops)+1}: {current_device} — SSH error: {exc}")
             break
 
-        egress = route["egress_interface"] or ""
-        next_hop = route["next_hop"]
-        protocol = route["protocol"] or ""
+        if not route.get("found"):
+            text_hops.append(f"  ⚠️  Hop {len(text_hops)+1}: {current_device} — no route to {dst_ip}")
+            _session_path_flags["no_route_device"] = current_device
+            break
+
+        egress   = route.get("egress_interface") or ""
+        next_hop = route.get("next_hop")
+        protocol = route.get("protocol") or ""
+        prefix   = route.get("prefix") or ""
+
+        # Check if routing via management (data-plane failure)
+        if egress and egress.lower().startswith("management"):
+            text_hops.append(
+                f"  ⚠️  Hop {len(text_hops)+1}: **{current_device}** is routing {dst_ip} via "
+                f"**{egress}** (default route 0.0.0.0/0) — data-plane interfaces are likely DOWN. "
+                f"Traffic is NOT taking the expected path."
+            )
+            structured_hops.append({
+                "from_device":      current_device,
+                "from_device_type": "switch",
+                "out_interface":    egress,
+                "out_zone":         None,
+                "device_group":     None,
+                "to_device":        f"⚠️ Mgmt fallback ({egress})",
+                "to_device_type":   "host",
+                "in_interface":     None,
+                "in_zone":          None,
+            })
+            _session_path_flags["mgmt_routing_detected"] = True
+            _session_path_flags["mgmt_routing_device"] = current_device
+            break
+
+        # Check if the egress interface is actually up
+        intf_up = True
+        if egress and not egress.lower().startswith("management"):
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    rs = await client.post(f"{NORNIR_AGENT_URL}/interface-status",
+                        json={"device": current_device, "interface": egress})
+                    intf_status = rs.json()
+                    if not intf_status.get("up", True):
+                        intf_up = False
+                        text_hops.append(
+                            f"  ⚠️  Hop {len(text_hops)+1}: {current_device} | Egress: {egress} "
+                            f"is DOWN (line-protocol: {intf_status.get('line_protocol', '?')}) — "
+                            f"traffic is likely following default route via management, not the data plane"
+                        )
+                        structured_hops.append({
+                            "from_device":      current_device,
+                            "from_device_type": "switch",
+                            "out_interface":    egress,
+                            "out_zone":         None,
+                            "device_group":     None,
+                            "to_device":        f"⚠️ {egress} DOWN",
+                            "to_device_type":   "host",
+                            "in_interface":     None,
+                            "in_zone":          None,
+                        })
+                        break
+            except Exception:
+                pass  # if status check fails, continue tracing
+
+        if not intf_up:
+            break
+
         text_hops.append(
             f"  Hop {len(text_hops)+1}: {current_device} | Egress: {egress} | Protocol: {protocol} "
-            f"| Next-hop: {next_hop or 'directly connected'}"
+            f"| Prefix: {prefix} | Next-hop: {next_hop or 'directly connected'}"
         )
 
         if not next_hop:
-            # Directly connected — resolve via ARP for last-hop in_interface
-            arp = await fetchrow(
-                "SELECT mac, interface FROM arp_table WHERE device = $1 AND ip = $2::inet LIMIT 1",
-                current_device, dst_ip,
-            )
-            in_iface = arp["interface"] if arp else None
-            if arp:
+            # Directly connected — live ARP lookup for in_interface
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.post(f"{NORNIR_AGENT_URL}/arp",
+                        json={"device": current_device, "ip": dst_ip})
+                    arp = r.json()
+            except Exception:
+                arp = {}
+            in_iface = arp.get("interface") if arp.get("found") else None
+            if arp.get("found"):
                 text_hops.append(
                     f"  Destination {dst_ip} reachable via ARP on {current_device} "
-                    f"port {arp['interface']} (MAC {arp['mac']})"
+                    f"port {arp['interface']} (MAC {arp.get('mac', '?')})"
                 )
             else:
                 text_hops.append(
-                    f"  Destination {dst_ip} directly connected on {current_device} (no ARP entry yet)"
+                    f"  Destination {dst_ip} directly connected on {current_device} (no ARP entry)"
                 )
             structured_hops.append({
                 "from_device":      current_device,
-                "from_device_type": await _device_type(current_device),
+                "from_device_type": "switch",
                 "out_interface":    egress,
                 "out_zone":         None,
                 "device_group":     None,
                 "to_device":        dst_ip,
                 "to_device_type":   "host",
-                "in_interface":     None,
+                "in_interface":     in_iface,
                 "in_zone":          None,
             })
             break
 
-        # Follow next-hop to next device
-        next_row = await fetchrow(
-            "SELECT device, interface FROM interface_ips WHERE ip = $1::inet LIMIT 1", next_hop
-        )
-        if not next_row:
-            text_hops.append(f"  Next-hop {next_hop} not found in inventory — path ends here")
+        # Map next-hop IP → device via live SSH (no DB)
+        next_dev = await _find_device_live(next_hop)
+        if not next_dev.get("found"):
+            text_hops.append(f"  Next-hop {next_hop} not found on any live device — path ends here")
             break
 
-        next_device = next_row["device"]
-        in_iface = next_row["interface"]
+        next_device = next_dev["device"]
+        in_iface = next_dev["interface"]
         structured_hops.append({
             "from_device":      current_device,
-            "from_device_type": await _device_type(current_device),
+            "from_device_type": "switch",
             "out_interface":    egress,
             "out_zone":         None,
             "device_group":     None,
             "to_device":        next_device,
-            "to_device_type":   await _device_type(next_device),
+            "to_device_type":   "switch",
             "in_interface":     in_iface,
             "in_zone":          None,
         })
@@ -360,7 +414,7 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
 
     devices_in_path = list(seen_devices)
     text = (
-        f"Path from {src_ip} to {dst_ip} (via collected DB):\n"
+        f"Path from {src_ip} to {dst_ip} (live):\n"
         + "\n".join(text_hops)
         + f"\n\nAll devices in path: {', '.join(devices_in_path)}"
         + "\nPalo Alto firewalls in path: none"
@@ -371,41 +425,35 @@ async def _db_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list]:
 @tool
 async def call_nornir_path_agent(task: str) -> str:
     """
-    Trace the hop-by-hop network path between two IP addresses using the collected
-    routing/ARP/MAC database and NetBox IPAM — WITHOUT NetBrain.
+    Trace the hop-by-hop network path between two IP addresses using live SSH
+    to each device — no database or cache. Always reflects current network state.
     Use this INSTEAD of call_netbrain_agent when the user explicitly says to avoid
-    NetBrain (e.g. "don't use NetBrain", "use Nornir", "use the database", "without NetBrain").
+    NetBrain (e.g. "don't use NetBrain", "use Nornir", "without NetBrain").
     Pass a natural language task with the source and destination IPs.
     """
     try:
         import atlas.status_bus as status_bus
-        await status_bus.push(_session_id or "default", "Tracing network path via device database...")
+        await status_bus.push(_session_id or "default", "Tracing network path via live SSH...")
     except Exception:
         pass
     global _session_path_devices
-    cached = _cache_get("netbox_path", task)
-    if cached:
-        logger.info("DB path cache hit")
-        if not _session_path_devices:
-            _session_path_devices = _extract_devices_from_netbrain(cached)
-        return cached
 
     src_ip, dst_ip = _extract_ips(task)
     if not src_ip or not dst_ip:
         return "Could not extract source and destination IPs from the task."
 
     try:
-        result, path_hops = await _db_path_trace(src_ip, dst_ip)
+        result, path_hops = await _live_path_trace(src_ip, dst_ip)
     except Exception as e:
-        logger.exception("DB path trace error")
+        logger.exception("Live path trace error")
         result, path_hops = f"Path trace error: {e}", []
 
-    global _session_path_hops
+    global _session_path_hops, _session_path_text
     if path_hops:
         _session_path_hops = path_hops
+    _session_path_text = result
     _session_path_devices = _extract_devices_from_netbrain(result)
 
-    _cache_set("netbox_path", result, task)
     return result
 
 
@@ -535,7 +583,7 @@ async def call_splunk_agent(task: str) -> str:
 
 @tool
 async def call_servicenow_agent(
-    device_names: list[str],
+    device_names: str,
     source_ip: str = "",
     dest_ip: str = "",
     port: str = "",
@@ -555,6 +603,18 @@ async def call_servicenow_agent(
     Example: device_names=["EDGE-RTR-01","CORE-SW-01","PA-FW-01","DIST-RTR-02"],
              source_ip="10.0.0.1", dest_ip="11.0.0.1", port="22"
     """
+    import json as _json, ast as _ast
+    if isinstance(device_names, str):
+        try:
+            device_names = _json.loads(device_names)
+        except Exception:
+            try:
+                device_names = _ast.literal_eval(device_names)
+            except Exception:
+                device_names = [d.strip().strip("'\"") for d in device_names.strip("[]").split(",") if d.strip()]
+    if not isinstance(device_names, list):
+        device_names = [str(device_names)]
+
     try:
         import atlas.status_bus as status_bus
         await status_bus.push(_session_id or "default", "Checking ServiceNow for related incidents and changes...")
@@ -787,22 +847,62 @@ async def call_servicenow_agent(
 
 
 @tool
-async def call_interface_counters_agent(devices_and_interfaces: list[dict]) -> str:
+async def get_incident_details(incident_number: str) -> str:
+    """
+    Look up a specific ServiceNow incident by number (e.g. INC0010035) and return its full details.
+    Use this when the user references a specific incident number and wants to know its details or troubleshoot it.
+
+    Args:
+        incident_number: The incident number, e.g. "INC0010035"
+    """
+    try:
+        from tools.servicenow_tools import get_servicenow_incident as _t
+        _fn = getattr(_t, 'fn', None) or _t
+        data = await _fn(incident_number.upper().strip())
+        if "error" in data:
+            return f"Incident not found: {data['error']}"
+        r = data.get("result", {})
+        lines = [
+            f"**{r.get('number')}** — {r.get('short_description', '')}",
+            f"State: {r.get('state', '?')} | Priority: {r.get('priority', '?')} | Impact: {r.get('impact', '?')}",
+            f"Opened: {r.get('opened_at', '?')} | Assigned to: {r.get('assigned_to', {}).get('display_value', 'Unassigned')}",
+            f"Assignment group: {r.get('assignment_group', {}).get('display_value', '?')}",
+        ]
+        desc = r.get('description') or r.get('short_description') or ''
+        if desc:
+            lines.append(f"Description: {desc}")
+        close_notes = r.get('close_notes') or ''
+        if close_notes:
+            lines.append(f"Resolution: {close_notes}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching incident: {e}"
+
+
+@tool
+async def call_interface_counters_agent(devices_and_interfaces: str) -> str:
     """
     Fetch interface error and discard counters for specific interfaces on path devices via SSH.
     Use after a path trace to check for CRC errors, input errors, output drops on each link.
 
     Args:
-        devices_and_interfaces: List of {device: str, interfaces: [str]} dicts.
+        devices_and_interfaces: JSON string of a list of {device: str, interfaces: [str]} dicts.
             Each entry specifies a device and which interfaces to check.
-            Example: [{"device": "arista1", "interfaces": ["Ethernet1", "Ethernet3"]},
-                      {"device": "arista2", "interfaces": ["Ethernet2"]}]
+            Example: '[{"device": "arista1", "interfaces": ["Ethernet1", "Ethernet3"]}, {"device": "arista2", "interfaces": ["Ethernet2"]}]'
 
     If you don't have the interface names, use the path trace output — look for
     out_interface / in_interface fields on each hop.
     """
     import asyncio as _asyncio
     import aiohttp
+    import json as _json
+
+    # Parse JSON string input
+    if isinstance(devices_and_interfaces, str):
+        try:
+            devices_and_interfaces = _json.loads(devices_and_interfaces)
+        except Exception:
+            return "Invalid devices_and_interfaces format — expected a JSON list of {device, interfaces} dicts."
 
     if not devices_and_interfaces:
         return "No devices/interfaces specified."
@@ -863,11 +963,36 @@ async def call_interface_counters_agent(devices_and_interfaces: list[dict]) -> s
 
     global _session_interface_counters
     lines = []
+    structured_list = []
     for text, structured in raw_results:
         if text:
             lines.append(text)
         if structured and structured.get("device"):
             _session_interface_counters.append(structured)
+            structured_list.append(structured)
+
+    # Health baseline: store snapshot (fire-and-forget), surface trends, and device reputation
+    try:
+        from agent_memory import store_device_health_snapshot, get_health_trend, get_device_reputation
+        import asyncio as _asyncio2
+        _asyncio2.get_event_loop().run_in_executor(
+            None, store_device_health_snapshot, structured_list
+        )
+        for snap in structured_list:
+            dev = snap.get("device", "")
+            for c in snap.get("active", []):
+                intf = c.get("interface", "")
+                if intf and "error" not in c:
+                    trend = get_health_trend(dev, intf, c.get("delta_9s", {}))
+                    if trend:
+                        lines.append(f"  ⚡ TREND: {trend}")
+            if dev:
+                rep = get_device_reputation(dev, window_days=7)
+                if rep["failure_count"] >= 3:
+                    cats = ", ".join(f"{k}×{v}" for k, v in rep["categories"].items() if k != "was_in_path")
+                    lines.append(f"  ⚠️ REPUTATION: {dev} was the diagnosed failure point {rep['failure_count']}x in the last 7 days ({cats})")
+    except Exception as _he:
+        logger.debug("Health baseline: %s", _he)
 
     return "Interface counters:\n" + "\n".join(lines) if lines else "No counter data returned."
 
@@ -998,8 +1123,9 @@ async def _execute_plan(
         if name == "call_splunk_agent":
             return await call_splunk_agent.ainvoke({"task": prompt})
         if name == "call_servicenow_agent":
+            import json as _j
             return await call_servicenow_agent.ainvoke({
-                "device_names": devices,
+                "device_names": _j.dumps(devices) if isinstance(devices, list) else devices,
                 "source_ip": src_ip,
                 "dest_ip": dst_ip,
                 "port": port,
@@ -1160,11 +1286,13 @@ async def _post_path_trace(result: str, ctx: dict) -> None:
         # = from_device of the last hop where to_device is an IP (not a hostname)
         import re as _re2
         ctx["last_hop_device"] = ""
+        ctx["last_hop_egress_interface"] = ""
         for h in reversed(_session_path_hops):
             to_d   = h.get("to_device", "")
             from_d = h.get("from_device", "")
             if _re2.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", to_d) and from_d and not _re2.match(r"^\d", from_d):
                 ctx["last_hop_device"] = from_d
+                ctx["last_hop_egress_interface"] = h.get("out_interface", "")
                 break
     else:
         # Stub/NetBrain format: "Hop 1: EDGE-RTR-01  | ... | Egress: Gi0/0 → Gi0/1"
@@ -1215,6 +1343,20 @@ async def _post_path_trace(result: str, ctx: dict) -> None:
         src_vrf, ctx.get("src_ip"), ctx.get("first_hop_device"),
     )
 
+    # Merge path anomaly flags set by _live_path_trace
+    ctx.update(_session_path_flags)
+    # Unified investigation_device: whichever device triggered an anomaly
+    ctx["investigation_device"] = (
+        _session_path_flags.get("mgmt_routing_device")
+        or _session_path_flags.get("no_route_device")
+        or ""
+    )
+    ctx["path_anomaly_detected"] = bool(ctx["investigation_device"])
+    logger.info(
+        "_post_path_trace: path_anomaly_detected=%r investigation_device=%r",
+        ctx["path_anomaly_detected"], ctx["investigation_device"],
+    )
+
 
 def _post_ping_test(result: dict, ctx: dict) -> None:
     """Populate ping_failed / ping_loss_pct into runbook context."""
@@ -1227,12 +1369,60 @@ def _post_ping_test(result: dict, ctx: dict) -> None:
     ctx["ping_loss_pct"] = loss_pct
 
 
+def _post_reverse_ping_test(result: dict, ctx: dict) -> None:
+    """Populate reverse_ping_failed into runbook context."""
+    if isinstance(result, dict):
+        ctx["reverse_ping_failed"] = not result.get("success", False)
+    else:
+        ctx["reverse_ping_failed"] = True
+
+
 def _post_tcp_test(result: dict, ctx: dict) -> None:
     """Populate tcp_reachable into runbook context."""
     if isinstance(result, dict):
         ctx["tcp_reachable"] = result.get("reachable", False)
     else:
         ctx["tcp_reachable"] = False
+
+
+def _post_historical_route(result: dict, ctx: dict) -> None:
+    """Store routing_history result and set historical_egress / historical_egress_found."""
+    if isinstance(result, dict) and result.get("found"):
+        ctx["historical_egress"]       = result.get("egress_interface", "")
+        ctx["historical_egress_found"] = bool(ctx["historical_egress"])
+        ctx["historical_route"]        = result
+    else:
+        ctx["historical_egress"]       = ""
+        ctx["historical_egress_found"] = False
+        ctx["historical_route"]        = {}
+
+
+def _post_interface_detail(result: dict, ctx: dict) -> None:
+    """Store interface detail result."""
+    if isinstance(result, dict) and "error" not in result:
+        ctx["investigation_intf_detail"] = result
+    else:
+        ctx["investigation_intf_detail"] = {}
+
+
+def _post_syslog(result: dict, ctx: dict) -> None:
+    """Store syslog result."""
+    if isinstance(result, dict):
+        ctx["investigation_syslog"] = result.get("logs", [])
+    else:
+        ctx["investigation_syslog"] = []
+
+
+def _post_all_interfaces(result: dict, ctx: dict) -> None:
+    """Store all-interfaces status; extract list of DOWN non-management interfaces."""
+    if isinstance(result, dict) and "interfaces" in result:
+        ctx["all_interfaces"] = result["interfaces"]
+        ctx["down_interfaces"] = [
+            i for i in result["interfaces"] if not i.get("up", True)
+        ]
+    else:
+        ctx["all_interfaces"] = []
+        ctx["down_interfaces"] = []
 
 
 _RUNBOOK_MAP = {
@@ -1266,8 +1456,10 @@ def _build_runbook_tools(prompt: str) -> dict:
         device_names, source_ip="", dest_ip="", port="",
         query_type="incidents_and_changes", hours_back=24,
     ) -> str:
+        import json as _j
+        _dn = device_names if isinstance(device_names, list) else []
         return await call_servicenow_agent.ainvoke({
-            "device_names": device_names if isinstance(device_names, list) else [],
+            "device_names": _j.dumps(_dn),
             "source_ip": source_ip,
             "dest_ip": dest_ip,
             "port": port,
@@ -1282,7 +1474,8 @@ def _build_runbook_tools(prompt: str) -> dict:
         valid = [e for e in devices_and_interfaces if e.get("interfaces")]
         if not valid:
             return "No interface data available for counter polling."
-        return await call_interface_counters_agent.ainvoke({"devices_and_interfaces": valid})
+        import json as _j
+        return await call_interface_counters_agent.ainvoke({"devices_and_interfaces": _j.dumps(valid)})
 
     async def _ping_agent(
         device: str, destination: str, source_interface: str = "", vrf: str = ""
@@ -1301,7 +1494,7 @@ def _build_runbook_tools(prompt: str) -> dict:
         if not src_ip or not dst_ip:
             return "Could not extract IPs for reverse path trace."
         try:
-            text, hops = await _db_path_trace(dst_ip, src_ip)  # swapped
+            text, hops = await _live_path_trace(dst_ip, src_ip)  # swapped
             logger.info("_reverse_path_agent: got %d hops, text=%r", len(hops), text[:120])
             if hops:
                 _session_reverse_path_hops = hops
@@ -1340,6 +1533,155 @@ def _build_runbook_tools(prompt: str) -> dict:
     async def _splunk_agent(task: str) -> str:
         return await call_splunk_agent.ainvoke({"task": task})
 
+    async def _routing_history_agent(device: str, destination: str) -> dict:
+        """Query routing_history DB for the last known data-plane route on device to destination."""
+        try:
+            from db import fetchrow as _frow
+            hist = await _frow(
+                """
+                SELECT egress_interface, next_hop::text, protocol, prefix::text, collected_at
+                FROM routing_history
+                WHERE device = $1
+                  AND $2::inet << prefix
+                  AND egress_interface IS NOT NULL
+                  AND egress_interface NOT ILIKE 'management%'
+                ORDER BY masklen(prefix) DESC, collected_at DESC
+                LIMIT 1
+                """,
+                device, destination,
+            )
+        except Exception as exc:
+            logger.warning("routing_history_agent: DB error: %s", exc)
+            return {"found": False, "device": device, "error": str(exc)}
+        if not hist:
+            return {"found": False, "device": device}
+        return {
+            "found":             True,
+            "device":            device,
+            "egress_interface":  hist["egress_interface"],
+            "next_hop":          hist["next_hop"],
+            "protocol":          hist["protocol"],
+            "prefix":            hist["prefix"],
+            "collected_at":      hist["collected_at"].isoformat(),
+        }
+
+    async def _interface_detail_agent(device: str, interface: str) -> dict:
+        """Fetch full interface stats (error counters, line-protocol) from a live device via SSH."""
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/interface-detail",
+                    json={"device": device, "interface": interface})
+                return r.json()
+        except Exception as exc:
+            return {"error": str(exc), "device": device, "interface": interface}
+
+    async def _syslog_agent(device: str, interface: str = "") -> dict:
+        """Fetch recent syslog from a device, filtered to lines relevant to the given interface (or all link events if interface is empty)."""
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/show-logging",
+                    json={"device": device, "lines": 100})
+                data = r.json()
+                logs = data.get("logs", [])
+                if interface:
+                    intf_short = interface.replace("Ethernet", "Et").replace("GigabitEthernet", "Gi")
+                    relevant = [
+                        l for l in logs
+                        if interface.lower() in l.lower()
+                        or intf_short.lower() in l.lower()
+                        or any(kw in l.lower() for kw in ["link", "down", "flap", "err-disable"])
+                    ][-20:]
+                else:
+                    # No specific interface — return all link/down events
+                    relevant = [
+                        l for l in logs
+                        if any(kw in l.lower() for kw in ["link", "down", "flap", "err-disable", "lineproto"])
+                    ][-30:]
+                return {"device": device, "interface": interface, "logs": relevant}
+        except Exception as exc:
+            return {"error": str(exc), "device": device, "interface": interface, "logs": []}
+
+    async def _all_interfaces_agent(device: str) -> dict:
+        """Get status of all non-management interfaces on a device via live SSH."""
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/all-interfaces-status",
+                    json={"device": device})
+                return r.json()
+        except Exception as exc:
+            return {"error": str(exc), "device": device, "interfaces": []}
+
+    async def _ospf_interfaces_agent(devices) -> dict:
+        """Check which interfaces are OSPF-enabled on each device. Empty = no network commands configured."""
+        devs = devices if isinstance(devices, list) else []
+        if not devs:
+            return {"ospf_interfaces": {}}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/ospf-interfaces",
+                    json={"devices": devs})
+                return r.json()
+        except Exception as exc:
+            return {"error": str(exc), "ospf_interfaces": {}}
+
+    async def _ospf_agent(devices) -> dict:
+        """Check OSPF neighbor state on each device in the path."""
+        devs = devices if isinstance(devices, list) else []
+        if not devs:
+            return {"ospf_neighbors": {}}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(f"{NORNIR_AGENT_URL}/ospf-neighbors",
+                    json={"devices": devs})
+                return r.json()
+        except Exception as exc:
+            return {"error": str(exc), "ospf_neighbors": {}}
+
+    async def _ospf_history_agent(devices) -> dict:
+        """Compare each device's current OSPF neighbor count against its own historical snapshots."""
+        devs = devices if isinstance(devices, list) else []
+        if not devs:
+            return {"ospf_history": {}}
+        try:
+            from db import fetch as _fetch
+            results = {}
+            for device in devs:
+                # Pull the last 10 collection snapshots for this device, grouped by time bucket
+                snapshots = await _fetch(
+                    """
+                    SELECT
+                        date_trunc('minute', collected_at) AS snapshot_time,
+                        count(*) AS neighbor_count,
+                        array_agg(state) AS states
+                    FROM ospf_history
+                    WHERE device = $1
+                    GROUP BY date_trunc('minute', collected_at)
+                    ORDER BY snapshot_time DESC
+                    LIMIT 10
+                    """,
+                    device,
+                )
+                # Current state from latest collection
+                current = await _fetch(
+                    "SELECT router_id, interface, state FROM ospf_neighbors WHERE device = $1",
+                    device,
+                )
+                results[device] = {
+                    "current_neighbor_count": len(current),
+                    "history": [
+                        {
+                            "snapshot_time": r["snapshot_time"].isoformat(),
+                            "neighbor_count": r["neighbor_count"],
+                            "states": r["states"],
+                        }
+                        for r in snapshots
+                    ],
+                }
+            return {"ospf_history": results}
+        except Exception as exc:
+            logger.warning("ospf_history_agent: %s", exc)
+            return {"error": str(exc), "ospf_history": {}}
+
     return {
         "path_agent":               _path_agent,
         "reverse_path_agent":       _reverse_path_agent,
@@ -1348,13 +1690,120 @@ def _build_runbook_tools(prompt: str) -> dict:
         "ping_agent":               _ping_agent,
         "tcp_port_agent":           _tcp_port_agent,
         "routing_check_agent":      _routing_agent,
+        "ospf_agent":               _ospf_agent,
+        "ospf_interfaces_agent":    _ospf_interfaces_agent,
+        "ospf_history_agent":       _ospf_history_agent,
         "panorama_agent":           _panorama_agent,
         "splunk_agent":             _splunk_agent,
+        "routing_history_agent":    _routing_history_agent,
+        "interface_detail_agent":   _interface_detail_agent,
+        "syslog_agent":             _syslog_agent,
+        "all_interfaces_agent":     _all_interfaces_agent,
     }
 
 
 # ---------------------------------------------------------------------------
 # Main entry point
+# ---------------------------------------------------------------------------
+
+
+def _build_deterministic_root_cause(ctx: dict, src_ip: str, dst_ip: str) -> str:
+    """
+    Build a deterministic Root Cause + Recommendation when we have definitive findings.
+    Returns empty string to fall through to LLM synthesis when findings are ambiguous.
+    """
+    # ── OSPF misconfiguration: device has OSPF process but zero enabled interfaces ──
+    ospf_interfaces = ctx.get("ospf_interfaces", {}).get("ospf_interfaces", {})
+    ospf_history    = ctx.get("ospf_history", {}).get("ospf_history", {})
+    ospf_neighbors  = ctx.get("ospf_neighbors", {}).get("ospf_neighbors", {})
+    if ospf_interfaces:
+        for device, intf_data in ospf_interfaces.items():
+            if intf_data.get("ospf_interface_count", -1) == 0:
+                hist_snaps = ospf_history.get(device, {}).get("history", [])
+                had_neighbors = any(s.get("neighbor_count", 0) > 0 for s in hist_snaps)
+                if had_neighbors:
+                    max_hist = max(s["neighbor_count"] for s in hist_snaps)
+                    syslog_r = ctx.get("syslog", {})
+                    syslog_block = ""
+                    if syslog_r and syslog_r.get("logs"):
+                        syslog_block = "\n\nSyslog events on {}:\n".format(device) + "\n".join(
+                            f"  - {l}" for l in syslog_r["logs"][-10:]
+                        )
+                    return (
+                        f"## Root Cause\n\n"
+                        f"**OSPF misconfiguration on {device}** — the OSPF process is running "
+                        f"(router-ID exists) but **no interfaces are participating in OSPF** "
+                        f"(`ospf_interface_count: 0`). This means no `network` command or "
+                        f"`ip ospf area` is configured on any interface. "
+                        f"Historically {device} had **{max_hist} OSPF neighbor(s)**; loss of "
+                        f"OSPF routes caused traffic to fall back to a static default via "
+                        f"Management0 ({src_ip} → {dst_ip} blackholed)."
+                        f"{syslog_block}\n\n"
+                        f"## Recommendation\n\n"
+                        f"- Re-add the OSPF `network` statement (or `ip ospf area <id>` on the "
+                        f"relevant interfaces) on **{device}**\n"
+                        f"- Verify OSPF adjacencies reconverge with `show ip ospf neighbor`\n"
+                        f"- Confirm the route to {dst_ip} is learned via OSPF (not Management0)\n"
+                        f"- Validate end-to-end connectivity from {src_ip} to {dst_ip}"
+                    )
+
+    device  = ctx.get("investigation_device", "")
+    detail  = ctx.get("investigation_intf_detail", {})
+    syslog  = ctx.get("investigation_syslog", [])
+    hist    = ctx.get("historical_route", {})
+
+    if not device or not detail or "error" in detail:
+        return ""
+
+    intf     = detail.get("interface", "")
+    oper     = detail.get("oper_status", "")
+    lp       = detail.get("line_protocol", "")
+    admin_dn = oper in ("disabled", "adminDown")
+    link_dn  = lp == "down" and not admin_dn
+
+    if not admin_dn and not link_dn:
+        return ""
+
+    # Build syslog evidence block
+    syslog_lines = []
+    for l in syslog:
+        syslog_lines.append(f"  - {l}")
+    syslog_block = "\n".join(syslog_lines) if syslog_lines else "  - No syslog events captured."
+
+    # Historical route context
+    hist_line = ""
+    if hist and hist.get("found"):
+        hist_line = (
+            f" The last known data-plane route to {dst_ip} used **{hist['egress_interface']}** "
+            f"({hist['protocol']}, {hist['prefix']})."
+        )
+
+    if admin_dn:
+        rc = (
+            f"## Root Cause\n\n"
+            f"**{intf}** on **{device}** is **administratively shut down** (`shutdown` applied).{hist_line} "
+            f"With no data-plane egress, {device} is forwarding via its management interface, "
+            f"blackholing traffic between {src_ip} and {dst_ip}.\n\n"
+            f"Syslog events on {device}:\n{syslog_block}\n\n"
+            f"## Recommendation\n\n"
+            f"- Run `no shutdown` on `interface {intf}` on **{device}**\n"
+            f"- Verify OSPF adjacency reconverges after the interface comes up\n"
+            f"- Confirm end-to-end connectivity from {src_ip} to {dst_ip}"
+        )
+    else:
+        rc = (
+            f"## Root Cause\n\n"
+            f"**{intf}** on **{device}** has lost its physical link (line-protocol: down).{hist_line} "
+            f"This has taken down the data-plane path between {src_ip} and {dst_ip}.\n\n"
+            f"Syslog events on {device}:\n{syslog_block}\n\n"
+            f"## Recommendation\n\n"
+            f"- Check the physical cable and SFP on `{intf}` on **{device}** and its peer port\n"
+            f"- Review syslog above for the exact time and cause of the link-down event\n"
+            f"- Confirm OSPF adjacency reconverges once the link is restored"
+        )
+    return rc
+
+
 # ---------------------------------------------------------------------------
 
 async def orchestrate_troubleshoot(
@@ -1363,12 +1812,14 @@ async def orchestrate_troubleshoot(
     session_id: str | None = None,
     issue_type: str = "general",
 ) -> dict:
-    global _session_id, _llm, _session_path_hops, _session_path_devices, _session_interface_counters, _session_reverse_path_hops
+    global _session_id, _llm, _session_path_hops, _session_path_devices, _session_interface_counters, _session_reverse_path_hops, _session_path_text, _session_path_flags
     _session_id = session_id
     _session_path_hops = None
     _session_reverse_path_hops = None
     _session_path_devices = []
     _session_interface_counters = []
+    _session_path_text = ""
+    _session_path_flags = {}
     """
     Run the troubleshoot ReAct agent.
     The LLM reasons at each step before deciding which specialist agent to call next.
@@ -1405,6 +1856,38 @@ async def orchestrate_troubleshoot(
     _plan_used = False
     _rb_ctx: dict = {}  # structured runbook context — used for deterministic section building
 
+    # --- Resolve INC number → IPs when prompt references an incident but has no IPs ---
+    _INC_RE = re.compile(r'\bINC\d+\b', re.IGNORECASE)
+    _inc_match = _INC_RE.search(prompt)
+    _inc_summary: dict | None = None  # populated below if INC resolves
+    if _inc_match and not _extract_ips(prompt)[0]:
+        try:
+            from tools.servicenow_tools import get_servicenow_incident as _get_inc_tool
+            # FastMCP wraps the function in a FunctionTool — use .fn to get the raw coroutine
+            _get_inc_fn = getattr(_get_inc_tool, 'fn', None) or _get_inc_tool
+            _inc_data = await _get_inc_fn(_inc_match.group(0).upper())
+            _inc_desc = ""
+            if "result" in _inc_data:
+                _r = _inc_data["result"]
+                _inc_desc = _r.get("description") or _r.get("short_description") or ""
+                _inc_summary = {
+                    "number": _r.get("number", _inc_match.group(0).upper()),
+                    "short_description": _r.get("short_description", ""),
+                    "state": _r.get("state", ""),
+                    "priority": _r.get("priority", ""),
+                    "opened_at": _r.get("opened_at", ""),
+                    "assigned_to": (_r.get("assigned_to") or {}).get("display_value") or "Unassigned",
+                    "assignment_group": (_r.get("assignment_group") or {}).get("display_value") or "",
+                }
+            _inc_ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', _inc_desc)
+            if len(_inc_ips) >= 2:
+                _port_hint = re.search(r'\bport\s+(\d+)\b', _inc_desc, re.IGNORECASE)
+                _port_str = f" port {_port_hint.group(1)}" if _port_hint else ""
+                prompt = f"{prompt} (source: {_inc_ips[0]}, destination: {_inc_ips[1]}{_port_str})"
+                logger.info("INC→IP resolved: %s → %s → %s", _inc_match.group(0), _inc_desc[:80], prompt[-60:])
+        except Exception as _inc_exc:
+            logger.warning("INC→IP resolution failed: %s", _inc_exc)
+
     # --- Runbook executor: use when both source and destination IPs are present ---
     _rb_src_ip, _rb_dst_ip = _extract_ips(prompt)
     if _rb_src_ip and _rb_dst_ip and not _NORNIR_PATTERNS.search(prompt) and not _NETBRAIN_PATTERNS.search(prompt):
@@ -1418,7 +1901,17 @@ async def orchestrate_troubleshoot(
             _rb_executor = RunbookExecutor(
                 _rb_path,
                 tools=_build_runbook_tools(prompt),
-                post_processors={"path_trace": _post_path_trace, "ping_test": _post_ping_test, "tcp_test": _post_tcp_test},
+                post_processors={
+                    "path_trace":        _post_path_trace,
+                    "ping_test":         _post_ping_test,
+                    "reverse_ping_test": _post_reverse_ping_test,
+                    "tcp_test":          _post_tcp_test,
+                    "historical_route":    _post_historical_route,
+                    "interface_detail":    _post_interface_detail,
+                    "device_syslog":       _post_syslog,
+                    "all_interfaces":      _post_all_interfaces,
+                    "device_syslog_all":   _post_syslog,
+                },
                 session_id=session_id or "default",
             )
             tool_outputs = await _rb_executor.run({
@@ -1463,37 +1956,23 @@ async def orchestrate_troubleshoot(
             logger.warning("Tool plan cache check failed: %s", _plan_exc)
 
     if not _plan_used:
-        agent = create_react_agent(
-            model=_llm,
-            tools=TROUBLESHOOT_TOOLS,
-            prompt=SystemMessage(content=_load_skill()),
-        )
-
-        result = await agent.ainvoke(
-            {"messages": [("user", prompt)]},
-            config={"recursion_limit": 25},
-        )
-
-        messages = result.get("messages", [])
-        _PATH_AGENTS = {"call_netbrain_agent", "call_nornir_path_agent", "call_netbox_path_agent"}
-        _path_agent_seen = False
-        for m in messages:
-            if isinstance(m, ToolMessage) and m.content:
-                # Deduplicate: only keep the first path agent output
-                tool_name = getattr(m, "name", "") or ""
-                if tool_name in _PATH_AGENTS:
-                    if _path_agent_seen:
-                        continue
-                    _path_agent_seen = True
-                tool_outputs.append(str(m.content))
-
-        # Store the tool sequence for future cache hits (skip for explicit tool-routing queries)
         try:
-            plan = _extract_plan_from_messages(messages)
-            if plan and not _skip_cache:
-                await store_tool_plan(prompt, plan, _TOOL_FINGERPRINT)
-        except Exception as _store_exc:
-            logger.warning("Tool plan store failed: %s", _store_exc)
+            from atlas.agents.agent_team import run_agent_team
+        except ImportError:
+            from agent_team import run_agent_team
+
+        _team_tools: dict[str, list] = {
+            "path_agent":     [call_nornir_path_agent, call_netbrain_agent],
+            "evidence_agent": [call_servicenow_agent, get_incident_details],
+            "device_agent":   [call_interface_counters_agent],
+            "security_agent": [call_panorama_agent],
+        }
+        tool_outputs = await run_agent_team(
+            query=prompt,
+            llm=_llm,
+            tools_by_agent=_team_tools,
+            session_id=session_id or "default",
+        )
 
     # Force ServiceNow / interface counters only when the runbook did NOT already run them.
     # When _plan_used via runbook executor, these were already called as runbook steps — skip.
@@ -1504,8 +1983,9 @@ async def orchestrate_troubleshoot(
     if not _plan_used and _session_path_devices and not _snow_already_called:
         try:
             src_ip_forced, dst_ip_forced = _extract_ips(prompt)
+            import json as _j
             snow_out = await call_servicenow_agent.ainvoke({
-                "device_names": _session_path_devices,
+                "device_names": _j.dumps(list(_session_path_devices)),
                 "source_ip": src_ip_forced or "",
                 "dest_ip": dst_ip_forced or "",
                 "port": _extract_port(prompt),
@@ -1534,12 +2014,14 @@ async def orchestrate_troubleshoot(
         _forced_entries = [{"device": d, "interfaces": sorted(i)} for d, i in _dev_intfs.items() if i]
         if _forced_entries:
             try:
-                await call_interface_counters_agent.ainvoke({"devices_and_interfaces": _forced_entries})
+                import json as _j
+                await call_interface_counters_agent.ainvoke({"devices_and_interfaces": _j.dumps(_forced_entries)})
             except Exception as _intf_exc:
                 logger.warning("Forced interface counters call failed: %s", _intf_exc)
 
     past_memories: list[dict] = []
     past_incidents: list[dict] = []
+    confirmed_context = ""
 
     if tool_outputs:
         import re as _re
@@ -1617,26 +2099,32 @@ async def orchestrate_troubleshoot(
                 return f"## Reverse Path\n\n{raw[:400]}"
             return ""
 
+        def _fmt_ping(r) -> str:
+            """Format a single ping result dict into one line."""
+            if not isinstance(r, dict):
+                return str(r)[:200]
+            device = r.get("device", "unknown")
+            dest   = r.get("destination", "")
+            vrf    = r.get("vrf", "default")
+            loss   = r.get("loss_pct", 0 if r.get("success") else 100)
+            rtt    = r.get("rtt_avg_ms")
+            if r.get("success"):
+                rtt_str = f", RTT avg {rtt}ms" if rtt else ""
+                return f"✓ **{device}** → **{dest}** (VRF: {vrf}): success, 0% loss{rtt_str}"
+            else:
+                return f"✗ **{device}** → **{dest}** (VRF: {vrf}): **{loss}% packet loss**"
+
         def _build_ping_section() -> str:
-            r = _rb_ctx.get("ping_test")
-            if not r:
+            r  = _rb_ctx.get("ping_test")
+            rr = _rb_ctx.get("reverse_ping_test")
+            if not r and not rr:
                 return "## Ping Test\n\nPing test not performed — no first-hop device in inventory."
-            if isinstance(r, dict):
-                device = r.get("device", "unknown")
-                dest   = r.get("destination", _rb_ctx.get("dst_ip", ""))
-                vrf    = r.get("vrf", "default")
-                loss   = r.get("loss_pct", 0 if r.get("success") else 100)
-                rtt    = r.get("rtt_avg_ms")
-                if r.get("success"):
-                    rtt_str = f", RTT avg {rtt}ms" if rtt else ""
-                    return (f"## Ping Test\n\n"
-                            f"✓ Ping from **{device}** to **{dest}** (VRF: {vrf}): "
-                            f"success, 0% loss{rtt_str}.")
-                else:
-                    return (f"## Ping Test\n\n"
-                            f"✗ Ping from **{device}** to **{dest}** (VRF: {vrf}): "
-                            f"**{loss}% packet loss**.")
-            return f"## Ping Test\n\n{str(r)[:300]}"
+            lines = ["## Ping Test"]
+            if r:
+                lines.append(_fmt_ping(r))
+            if rr:
+                lines.append(_fmt_ping(rr))
+            return "\n\n".join(lines)
 
         def _build_interface_section() -> str:
             if not _session_interface_counters:
@@ -1758,19 +2246,178 @@ async def orchestrate_troubleshoot(
                 return "## Splunk Traffic Analysis\n\nNo log data available — Splunk agent unreachable. Log correlation skipped."
             return f"## Splunk Traffic Analysis\n\n{splunk_raw}"
 
+        def _build_investigation_section() -> str:
+            """Build investigation findings from routing_history + interface detail/all + syslog."""
+            device        = _rb_ctx.get("investigation_device", "")
+            hist          = _rb_ctx.get("historical_route", {})
+            detail        = _rb_ctx.get("investigation_intf_detail", {})
+            syslog        = _rb_ctx.get("investigation_syslog", [])
+            all_intfs     = _rb_ctx.get("all_interfaces", [])
+            down_intfs    = _rb_ctx.get("down_interfaces", [])
+            if not device or (not hist and not detail and not syslog and not all_intfs):
+                return ""
+
+            lines = [f"## Data-Plane Investigation — {device}"]
+
+            if hist and hist.get("found"):
+                age = ""
+                try:
+                    import datetime
+                    delta = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(hist["collected_at"])
+                    age = f" (collected {int(delta.total_seconds() // 3600)}h ago)"
+                except Exception:
+                    pass
+                lines.append(
+                    f"Last known data-plane route{age}: "
+                    f"egress **{hist['egress_interface']}** via {hist['next_hop'] or 'directly connected'} "
+                    f"({hist['protocol']}, {hist['prefix']})"
+                )
+            elif hist is not None:
+                lines.append("No routing history found in DB — device may not have been collected yet.")
+
+            if detail and "error" not in detail:
+                lp       = detail.get("line_protocol", "unknown")
+                oper     = detail.get("oper_status", "unknown")
+                in_err   = detail.get("input_errors", 0)
+                out_err  = detail.get("output_errors", 0)
+                in_disc  = detail.get("input_discards", 0)
+                desc     = detail.get("description", "")
+                admin_down = oper in ("disabled", "adminDown")
+                status_str = (
+                    "**ADMINISTRATIVELY SHUT DOWN (disabled)**"
+                    if admin_down else
+                    f"line-protocol: **{lp}**, oper_status: {oper}"
+                )
+                lines.append(
+                    f"Interface **{detail.get('interface')}** — {status_str}"
+                    + (f", description: {desc!r}" if desc else "")
+                    + f" | input_errors={in_err} output_errors={out_err} input_discards={in_disc}"
+                )
+
+            if all_intfs:
+                up_count   = sum(1 for i in all_intfs if i.get("up"))
+                down_count = len(down_intfs)
+                lines.append(f"Interface summary: {up_count} up, {down_count} DOWN")
+                if down_intfs:
+                    def _intf_status_str(i):
+                        oper = i.get("oper_status", "")
+                        if oper in ("disabled", "adminDown"):
+                            return "**ADMINISTRATIVELY SHUT DOWN**"
+                        return f"line-protocol: {i.get('line_protocol','?')}"
+                    down_list = ", ".join(
+                        f"**{i['interface']}** ({_intf_status_str(i)})"
+                        + (f" — {i['description']!r}" if i.get("description") else "")
+                        for i in down_intfs
+                    )
+                    lines.append(f"DOWN interfaces: {down_list}")
+
+            if syslog:
+                lines.append(
+                    "Recent syslog (interface/link events):\n"
+                    + "\n".join(f"  {l}" for l in syslog)
+                )
+
+            return "\n\n".join(lines)
+
+        def _build_ospf_section() -> str:
+            neighbors  = _rb_ctx.get("ospf_neighbors", {}).get("ospf_neighbors", {})
+            interfaces = _rb_ctx.get("ospf_interfaces", {}).get("ospf_interfaces", {})
+            history    = _rb_ctx.get("ospf_history", {}).get("ospf_history", {})
+            syslog_r   = _rb_ctx.get("syslog", {})
+            if not neighbors and not interfaces and not history and not syslog_r:
+                return ""
+            lines = ["## OSPF Analysis"]
+
+            # Per-device neighbor + interface counts
+            all_devices = set(list(neighbors.keys()) + list(interfaces.keys()) + list(history.keys()))
+            for device in sorted(all_devices):
+                nbr_data  = neighbors.get(device, {})
+                intf_data = interfaces.get(device, {})
+                hist_data = history.get(device, {})
+
+                nbr_count       = nbr_data.get("count", 0)
+                intf_count      = intf_data.get("ospf_interface_count", 0)
+                current_in_hist = hist_data.get("current_neighbor_count", nbr_count)
+                hist_snaps      = hist_data.get("history", [])
+
+                # Build the status line
+                if intf_count == 0 and any(s.get("neighbor_count", 0) > 0 for s in hist_snaps):
+                    max_hist = max(s["neighbor_count"] for s in hist_snaps)
+                    status = (
+                        f"⚠️ **OSPF MISCONFIGURATION** — 0 OSPF-enabled interfaces "
+                        f"(no `network` command or `ip ospf area` on any interface). "
+                        f"Historically had {max_hist} neighbor(s)."
+                    )
+                elif nbr_count == 0 and intf_count > 0:
+                    status = f"⚠️ 0 OSPF neighbors — {intf_count} interface(s) configured but no adjacency formed."
+                else:
+                    nbr_list = ", ".join(
+                        f"{n['router_id']} via {n['interface']} ({n['state']})"
+                        for n in nbr_data.get("neighbors", [])
+                    )
+                    status = f"✓ {nbr_count} neighbor(s): {nbr_list}"
+
+                lines.append(f"**{device}**: {status}")
+
+                # Historical trend
+                if hist_snaps:
+                    trend = " → ".join(
+                        f"{s['neighbor_count']} neighbors @ {s['snapshot_time'][:16]}"
+                        for s in reversed(hist_snaps)
+                    )
+                    lines.append(f"  History: {trend} → now: {nbr_count}")
+
+            return "\n".join(lines)
+
+        def _build_vendor_kb_section() -> str:
+            kb       = _rb_ctx.get("vendor_kb") or {}
+            results  = kb.get("kb_results") or []
+            symptoms = kb.get("symptoms") or []
+            vendor   = kb.get("vendor", "unknown")
+            if not results and not symptoms:
+                return ""
+            lines = [f"## Vendor Knowledge Base ({vendor})"]
+            if symptoms:
+                sym_labels = ", ".join(f"`{s['type']}`" + (f" on {s['device']}" if s.get('device') else "") for s in symptoms)
+                lines.append(f"**Detected symptoms:** {sym_labels}")
+                lines.append("")
+            if results:
+                for r in results:
+                    lines.append(f"**{r['title']}**")
+                    lines.append(r["snippet"])
+                    if r.get("url"):
+                        lines.append(f"*{r['url']}*")
+                    lines.append("")
+            else:
+                lines.append("*No relevant vendor articles found.*")
+            return "\n".join(lines)
+
         # Build all sections
         report_sections: list[str] = []
         path_sec = _build_path_section()
         if path_sec:
             report_sections.append(path_sec)
-        if not _path_has_firewalls:
-            for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section()):
-                if sec:
-                    report_sections.append(sec)
-        else:
-            for sec in (_build_firewall_section(), _build_splunk_section()):
-                if sec:
-                    report_sections.append(sec)
+        investigation_sec = _build_investigation_section()
+        logger.info(
+            "investigation_sec built: device=%r hist_found=%r detail_oper=%r syslog_lines=%d all_intfs=%d",
+            _rb_ctx.get("investigation_device"),
+            _rb_ctx.get("historical_route", {}).get("found"),
+            _rb_ctx.get("investigation_intf_detail", {}).get("oper_status"),
+            len(_rb_ctx.get("investigation_syslog") or []),
+            len(_rb_ctx.get("all_interfaces") or []),
+        )
+        if investigation_sec:
+            report_sections.append(investigation_sec)
+        # Connectivity-specific sections only make sense when src+dst IPs are present
+        if _rb_src_ip and _rb_dst_ip:
+            if not _path_has_firewalls:
+                for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section(), _build_ospf_section(), _build_vendor_kb_section()):
+                    if sec:
+                        report_sections.append(sec)
+            else:
+                for sec in (_build_firewall_section(), _build_splunk_section(), _build_vendor_kb_section()):
+                    if sec:
+                        report_sections.append(sec)
 
         # Parse ServiceNow change block
         chg_block = ""
@@ -1778,22 +2425,44 @@ async def orchestrate_troubleshoot(
             parts = _re.split(r'\n\nCHANGE REQUESTS:', snow_raw, maxsplit=1)
             chg_block = parts[1].strip() if len(parts) == 2 else ""
 
-        chg_section = (
-            "\n\n## Recent Changes\n\n" + chg_block
-            if chg_block and chg_block != "No change requests found."
-            else "\n\n## Recent Changes\nNo related changes found for devices in the path."
-        )
+        chg_section = ""
+        if _rb_src_ip and _rb_dst_ip:
+            chg_section = (
+                "\n\n## Recent Changes\n\n" + chg_block
+                if chg_block and chg_block != "No change requests found."
+                else "\n\n## Recent Changes\nNo related changes found for devices in the path."
+            )
+        elif chg_block and chg_block != "No change requests found.":
+            chg_section = "\n\n## Recent Changes\n\n" + chg_block
 
-        # ── Memory recall ────────────────────────────────────────────────────
+        # ── Vendor KB lookup + Memory recall (parallel) ──────────────────────
         logger.info("Memory recall prep: path_devices=%s", path_devices)
         memory_context = ""
+        vendor_kb: dict = {}
         try:
             import atlas.status_bus as status_bus
-            await status_bus.push(_session_id or "default", "Recalling similar past cases from memory...")
+            await status_bus.push(_session_id or "default", "Searching vendor knowledge base and recalling past cases...")
         except Exception:
             pass
+
+        # Vendor KB lookup
         try:
-            from agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
+            try:
+                from agents.vendor_lookup_agent import lookup as _vendor_lookup
+            except ImportError:
+                from vendor_lookup_agent import lookup as _vendor_lookup
+            vendor_kb = await _vendor_lookup(_rb_ctx, path_devices)
+            _rb_ctx["vendor_kb"] = vendor_kb
+            logger.info("vendor_lookup: vendor=%r symptoms=%d kb_articles=%d",
+                        vendor_kb.get("vendor"), len(vendor_kb.get("symptoms", [])), len(vendor_kb.get("kb_results", [])))
+        except Exception as _vk_exc:
+            logger.warning("vendor_lookup failed: %s", _vk_exc)
+
+        try:
+            from agent_memory import (
+                recall_memory, recall_incidents_by_devices, format_memory_context,
+                get_confirmed_resolutions, format_confirmed_resolutions,
+            )
             past_memories, semantic_incidents, device_incidents = await asyncio.gather(
                 recall_memory(prompt, agent_type="atlas", top_k=3),
                 recall_memory(prompt, agent_type="incident", top_k=5, min_similarity=0.40),
@@ -1808,52 +2477,87 @@ async def orchestrate_troubleshoot(
                     past_incidents.append(inc)
             all_memories = past_memories + past_incidents
             memory_context = format_memory_context(all_memories) if all_memories else ""
-            logger.info("Memory recall: atlas=%d incidents=%d", len(past_memories), len(past_incidents))
+
+            # Confirmed resolutions from closed SNOW tickets for path devices
+            confirmed_fixes = get_confirmed_resolutions(path_devices, max_per_device=2)
+            confirmed_context = format_confirmed_resolutions(confirmed_fixes) if confirmed_fixes else ""
+
+            logger.info("Memory recall: atlas=%d incidents=%d confirmed_fixes=%d", len(past_memories), len(past_incidents), len(confirmed_fixes))
         except Exception as _mem_exc:
             logger.warning("Memory recall failed: %s", _mem_exc)
             memory_context = ""
+            confirmed_context = ""
 
         # ── LLM: Root Cause + Recommendation only ────────────────────────────
         sections_text = "\n\n".join(report_sections)
-        synthesis_system = (
-            ((memory_context + "\n\n") if memory_context else "") +
-            "You are writing the final section of a network troubleshooting report.\n"
-            "The diagnostic sections above have already been built from structured data.\n"
-            "Your ONLY job is to write:\n\n"
-            "  ## Root Cause\n  (one or two sentences based strictly on the diagnostic data)\n\n"
-            "  ## Recommendation\n  (specific, actionable steps that match the root cause)\n\n"
-            "Rules:\n"
-            "- Do NOT repeat or summarise the diagnostic sections.\n"
-            "- Do NOT mention firewalls, Panorama, or Splunk if there are no firewalls in the path.\n"
-            "- Do NOT write 'Unable to determine root cause' — always draw a conclusion.\n"
-            "- If ping succeeded and interfaces are clean: say the path is healthy and the issue is likely "
-            "at the application or service layer.\n"
-            "- If ping failed: name the specific hop or device where routing breaks.\n"
-            "- If a firewall denied traffic: name the rule and device.\n\n"
-            "DIAGNOSTIC DATA:\n" + sections_text
-        )
-        synthesis_messages = [
-            SystemMessage(content=_load_skill()),
-            HumanMessage(content=prompt),
-            SystemMessage(content=synthesis_system),
-            HumanMessage(content="Write ONLY ## Root Cause and ## Recommendation based on the diagnostic data above."),
-        ]
-        synthesis_response = await _llm.ainvoke(synthesis_messages)
-        rc_text = synthesis_response.content or ""
 
-        # Strip any preamble before ## Root Cause
-        rc_match = _re.search(r'## Root Cause', rc_text)
-        if rc_match:
-            rc_text = rc_text[rc_match.start():]
+        # Skip Root Cause synthesis when there's no connectivity diagnostic data (no src/dst IPs).
+        # For device health queries, just output the agent team results directly.
+        if not _rb_src_ip or not _rb_dst_ip:
+            parts = [p for p in [sections_text, chg_section.strip(), "\n\n".join(non_snow_outputs)] if p]
+            final = "\n\n".join(parts).strip()
+            if memory_context:
+                final += "\n\n---\n\n" + memory_context
+        else:
+            # ── Fast-path: deterministic root cause when we have definitive findings ──
+            _det_rc = _build_deterministic_root_cause(_rb_ctx, _rb_src_ip, _rb_dst_ip)
+            if _det_rc:
+                _kb_sec = _build_vendor_kb_section()
+                final = sections_text + chg_section + "\n\n" + _det_rc
+                if _kb_sec:
+                    final += "\n\n" + _kb_sec
+                logger.info("Using deterministic root cause (skipping LLM synthesis)")
 
-        # Append change context addendum to Recommendation if changes were found
-        has_changes = chg_block and chg_block != "No change requests found."
-        if has_changes and "## Recommendation" in rc_text:
-            rc_text = rc_text.rstrip() + (
-                "\n- Recent changes were made to path devices — correlate these with the onset of the issue."
-            )
+            if not _det_rc:
+                _synthesis_prefix = "\n\n".join(filter(None, [confirmed_context, memory_context]))
+                synthesis_system = (
+                    ((_synthesis_prefix + "\n\n") if _synthesis_prefix else "") +
+                    "You are writing the final section of a network troubleshooting report.\n"
+                    "The diagnostic sections above have already been built from structured data.\n"
+                    "Your ONLY job is to write:\n\n"
+                    "  ## Root Cause\n  (one or two sentences based strictly on the diagnostic data)\n\n"
+                    "  ## Recommendation\n  (specific, actionable steps that match the root cause)\n\n"
+                    "Rules:\n"
+                    "- Do NOT repeat or summarise the diagnostic sections.\n"
+                    "- Do NOT mention firewalls, Panorama, or Splunk if there are no firewalls in the path.\n"
+                    "- Do NOT write 'Unable to determine root cause' — always draw a conclusion.\n"
+                    "- If a 'Data-Plane Investigation' section is present: name the device and interface, "
+                    "state whether it is admin-shutdown or link-down, and include the timestamp from syslog "
+                    "showing when the interface went down. If OSPF dropped, mention it.\n"
+                    "- If the OSPF Analysis section shows '⚠️ OSPF MISCONFIGURATION' (ospf_interface_count=0 "
+                    "with historical neighbors): the root cause is a missing OSPF network command or "
+                    "ip ospf area config — NOT a physical link issue. Say this explicitly.\n"
+                    "- If routing via Management: data-plane interfaces are DOWN or OSPF is misconfigured.\n"
+                    "- If ping failed: name the specific hop or device where routing breaks.\n"
+                    "- If ping succeeded and interfaces are clean: say the path is healthy and the issue is likely "
+                    "at the application or service layer.\n"
+                    "- If a firewall denied traffic: name the rule and device.\n"
+                    "- If a 'Vendor Knowledge Base' section is present: use the article titles and "
+                    "snippets to add vendor-specific config commands, known bug references, or "
+                    "documentation links to the Recommendation. Do not quote snippets verbatim — "
+                    "synthesise them into actionable steps.\n\n"
+                    "DIAGNOSTIC DATA:\n" + sections_text
+                )
+                synthesis_messages = [
+                    SystemMessage(content=_load_skill()),
+                    HumanMessage(content=prompt),
+                    SystemMessage(content=synthesis_system),
+                    HumanMessage(content="Write ONLY ## Root Cause and ## Recommendation based on the diagnostic data above."),
+                ]
+                synthesis_response = await _llm.ainvoke(synthesis_messages)
+                rc_text = synthesis_response.content or ""
 
-        final = sections_text + chg_section + "\n\n" + rc_text
+                rc_match = _re.search(r'## Root Cause', rc_text)
+                if rc_match:
+                    rc_text = rc_text[rc_match.start():]
+
+                has_changes = chg_block and chg_block != "No change requests found."
+                if has_changes and "## Recommendation" in rc_text:
+                    rc_text = rc_text.rstrip() + (
+                        "\n- Recent changes were made to path devices — correlate these with the onset of the issue."
+                    )
+
+                final = sections_text + chg_section + "\n\n" + rc_text
 
     else:
         # No tool results — fall back to whatever the agent produced
@@ -1876,23 +2580,43 @@ async def orchestrate_troubleshoot(
 
     # Store this session in semantic memory — extract Root Cause + Recommendation as the summary
     try:
-        from agent_memory import store_memory
+        from agent_memory import store_memory, record_device_incident
         # Store only the diagnostic content — strip injected ServiceNow/memory sections
         storable = final.split("\n\n---\n\n")[0].strip()
         summary_match = re.search(r'## Root Cause(.*?)(?=## Recommendation|$)', storable, re.DOTALL)
         summary = summary_match.group(1).strip()[:800] if summary_match else storable[:800]
         await store_memory(prompt, summary, agent_type="atlas")
+
+        # Determine root cause category and failure device from runbook context
+        if _rb_src_ip and _rb_dst_ip:
+            _ping_ok = not _rb_ctx.get("ping_failed", True)
+            _failure_dev = ""
+            _rc_category = "healthy"
+            if not _ping_ok:
+                _rc_category = "routing"
+                _failure_dev = _rb_ctx.get("first_hop_device", "")
+            elif _rb_ctx.get("has_firewalls"):
+                _rc_category = "firewall"
+            elif _session_interface_counters and any(e.get("active") for e in (_session_interface_counters or [])):
+                _rc_category = "interface_error"
+            _session_devs = _rb_ctx.get("path_devices") or path_devices or []
+            _sid = session_id or "default"
+            for _dev in _session_devs:
+                _cat = "failure_point" if _dev == _failure_dev else "was_in_path"
+                record_device_incident(_dev, _cat, _sid)
     except Exception as _mem_exc:
         logger.debug("agent_memory: store skipped: %s", _mem_exc)
 
     all_recalled = past_memories + past_incidents  # defined in if tool_outputs block; fallback [] if else branch ran
     logger.info("all_recalled=%d serializing...", len(all_recalled))
 
-    # Strip non-serializable fields from memories before returning to frontend
+    # Strip non-serializable fields from memories before returning to frontend.
+    # Only surface incident-type memories to the user — atlas memories are internal
+    # LLM context only (they contain raw prompts, not human-readable incident titles).
     serializable_memories = [
         {k: v for k, v in m.items() if k in ("query", "result_summary", "resolution", "timestamp", "similarity", "match_type")}
         for m in all_recalled
-        if not (m.get("agent_type") == "atlas" and float(m.get("similarity", 0) or 0) >= 0.99)
+        if m.get("agent_type") == "incident"
     ]
     logger.info("serializable_memories=%d", len(serializable_memories))
 
@@ -1913,6 +2637,8 @@ async def orchestrate_troubleshoot(
     content: dict = {}
     if final:
         content["direct_answer"] = final
+    if _inc_summary:
+        content["incident_summary"] = _inc_summary
     if _session_path_hops:
         content["path_hops"] = _session_path_hops
         content["source"] = src_ip if (src_ip := _extract_ips(prompt)[0]) else ""

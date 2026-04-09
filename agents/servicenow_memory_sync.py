@@ -25,7 +25,7 @@ async def sync_closed_incidents() -> int:
         import servicenowauth
         from tools.servicenow_tools import _base_url, _auth
         import aiohttp
-        from agent_memory import store_incident_memory
+        from agent_memory import store_incident_memory, store_confirmed_resolution
     except Exception as exc:
         logger.warning("servicenow_memory_sync: import failed: %s", exc)
         return 0
@@ -83,6 +83,9 @@ async def sync_closed_incidents() -> int:
                     logger.debug("servicenow_memory_sync: skipping %s — low-quality close notes", number)
                     continue
                 await store_incident_memory(number, short_desc, notes, cmdb_ci=cmdb_ci)
+                # Store confirmed resolution separately if cmdb_ci is a real device hostname
+                if cmdb_ci and len(close_notes) >= 30:
+                    store_confirmed_resolution(cmdb_ci, number, short_desc, close_notes)
                 stored += 1
 
             if len(records) < _BATCH_SIZE:

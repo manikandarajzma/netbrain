@@ -99,6 +99,13 @@ troubleshoot — Any network or infrastructure PROBLEM the user wants diagnosed 
   "users in building A can't reach the internet"  →  troubleshoot
   "troubleshoot connectivity between 10.0.0.1 and 11.0.0.1"  →  troubleshoot
   "why is there high latency between 10.0.0.1 and 11.0.0.1?"  →  troubleshoot
+  "what's going on with arista1?"  →  troubleshoot
+  "is arista1 healthy?"  →  troubleshoot
+  "what's happening with CORE-SW-01?"  →  troubleshoot
+  "check interface errors on arista1"  →  troubleshoot
+  "help me troubleshoot INC0010035"  →  troubleshoot
+  "troubleshoot INC0010001"  →  troubleshoot
+  "investigate INC0010005"  →  troubleshoot
 
 risk — Security posture or risk assessment for a single IP or host.
   "what is the risk of 10.0.0.5?"  →  risk
@@ -287,9 +294,14 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     # Determine if this is a clear servicenow context without needing the LLM
     _PATH_TRACE_RE = re.compile(r'\b(\d{1,3}\.){3}\d{1,3}\b.*\b(\d{1,3}\.){3}\d{1,3}\b|trace\s+path|path\s+trace', re.IGNORECASE)
+    _DEVICE_HEALTH_RE = re.compile(r"what'?s?\s+(going\s+on|happening)|is\s+\S+\s+healthy|check\s+(interface|error|counter)|what'?s?\s+the\s+status\s+of", re.IGNORECASE)
+    _TROUBLESHOOT_RE = re.compile(r'\btroubleshoot\b', re.IGNORECASE)
     _forced_servicenow = (
         active_flow in ("create_change_request", "create_incident")
-        or (_SNOW_RECORD_RE.search(_last) and len(prompt.split()) <= 8 and not _PATH_TRACE_RE.search(prompt))
+        or (_SNOW_RECORD_RE.search(_last) and len(prompt.split()) <= 5
+            and not _PATH_TRACE_RE.search(prompt)
+            and not _DEVICE_HEALTH_RE.search(prompt)
+            and not _TROUBLESHOOT_RE.search(prompt))
     )
 
     # discover_only: return display label — never invoke real agents.
@@ -297,6 +309,8 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     if state.get("discover_only"):
         if _forced_servicenow:
             effective_intent = "servicenow"
+        elif _TROUBLESHOOT_RE.search(prompt):
+            effective_intent = "troubleshoot"
         elif _pending_ts_exists(state.get("session_id") or "default"):
             # Clarification answer in progress — label as troubleshoot, not whatever the LLM thinks
             effective_intent = "troubleshoot"
@@ -324,6 +338,11 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             active_flow, bool(_SNOW_RECORD_RE.search(_last)),
         )
         return {"intent": "servicenow", "messages": [], "iteration": 0}
+
+    # Hard override: "troubleshoot" keyword always routes to orchestrator regardless of LLM
+    if _TROUBLESHOOT_RE.search(prompt):
+        logger.info("classify_intent: hard override → troubleshoot (keyword match)")
+        return {"intent": "troubleshoot", "messages": [], "iteration": 0}
 
     conversation_history = state.get("conversation_history") or []
     prompt_lower_strip = prompt.lower().strip().rstrip("!.")

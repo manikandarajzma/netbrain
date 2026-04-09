@@ -65,7 +65,7 @@ export default function AssistantMessage({ content, memories }) {
       return Array.isArray(v) && v.length > 0 && v.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
     })
     const BADGE_KEYS = new Set(['yes_no_answer', 'metric_answer', 'direct_answer'])
-    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action', 'insights', 'interface_counters', 'source', 'destination'])
+    const HIDDEN_KEYS = new Set(['desc_units', 'outer_width', 'outer_unit', 'outer_depth', 'intent', 'format', 'vsys', 'queried_ip', 'follow_up', 'follow_up_action', 'insights', 'interface_counters', 'source', 'destination', 'incident_summary'])
     const flatKeys = Object.keys(c).filter(k => {
       if (arrayKeys.includes(k) || k === 'ai_analysis' || BADGE_KEYS.has(k) || HIDDEN_KEYS.has(k)) return false
       const v = c[k]
@@ -132,6 +132,19 @@ export default function AssistantMessage({ content, memories }) {
       {hasMetric && <MetricBadge text={content.metric_answer} />}
       {classified.type === 'path' && (
         <>
+          {content.incident_summary && (
+            <div className={styles.incidentCard}>
+              <div className={styles.incidentNumber}>{content.incident_summary.number}</div>
+              <div className={styles.incidentTitle}>{content.incident_summary.short_description}</div>
+              <div className={styles.incidentMeta}>
+                {content.incident_summary.state && <span><b>State:</b> {content.incident_summary.state}</span>}
+                {content.incident_summary.priority && <span><b>Priority:</b> {content.incident_summary.priority}</span>}
+                {content.incident_summary.opened_at && <span><b>Opened:</b> {content.incident_summary.opened_at}</span>}
+                {content.incident_summary.assigned_to && <span><b>Assigned to:</b> {content.incident_summary.assigned_to}</span>}
+                {content.incident_summary.assignment_group && <span><b>Group:</b> {content.incident_summary.assignment_group}</span>}
+              </div>
+            </div>
+          )}
           <p className={styles.summaryHeading}>Path Summary</p>
           <PathVisualization content={content} />
           {content.reverse_path_hops && content.reverse_path_hops.length > 0 && (

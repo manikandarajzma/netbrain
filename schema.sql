@@ -148,6 +148,46 @@ CREATE INDEX IF NOT EXISTS idx_mac_table_mac
     ON mac_table (mac);
 
 -- ---------------------------------------------------------------------------
+-- OSPF neighbor table
+-- Current OSPF adjacency state per device, refreshed each collection run.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ospf_neighbors (
+    device          TEXT        NOT NULL,
+    vrf             TEXT        NOT NULL DEFAULT 'default',
+    instance_id     TEXT        NOT NULL DEFAULT '1',
+    router_id       TEXT        NOT NULL,
+    neighbor_ip     INET,
+    interface       TEXT,
+    state           TEXT,                       -- full, 2way, init, down, etc.
+    area            TEXT,
+    collected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (device, vrf, instance_id, router_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ospf_neighbors_device
+    ON ospf_neighbors (device, collected_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- OSPF neighbor history
+-- Accumulates every collection run — never deleted.
+-- Used to detect when adjacencies appeared/disappeared.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ospf_history (
+    device          TEXT        NOT NULL,
+    vrf             TEXT        NOT NULL DEFAULT 'default',
+    instance_id     TEXT        NOT NULL DEFAULT '1',
+    router_id       TEXT        NOT NULL,
+    neighbor_ip     INET,
+    interface       TEXT,
+    state           TEXT,
+    area            TEXT,
+    collected_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ospf_history_device_time
+    ON ospf_history (device, collected_at DESC);
+
+-- ---------------------------------------------------------------------------
 -- Collection runs
 -- Tracks when each device was last collected and whether it succeeded.
 -- ---------------------------------------------------------------------------

@@ -10,3 +10,36 @@
 .denyText { margin-top: 0.5rem; color: #f38ba8; font-size: 0.9rem; }
 .policyText { margin-top: 0.25rem; color: #a6adc8; font-size: 0.9rem; }
 .summaryHeading { font-weight: 600; margin: 1.25rem 0 0.5rem 0; color: var(--text-primary); font-size: 0.9375rem; }
+
+.incidentCard {
+  background: rgba(137, 180, 250, 0.06);
+  border: 1px solid rgba(137, 180, 250, 0.18);
+  border-radius: 10px;
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1rem;
+}
+.incidentNumber {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #89b4fa;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+.incidentTitle {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+.incidentMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  font-size: 0.78rem;
+  color: #a6adc8;
+}
+.incidentMeta span b {
+  color: #cdd6f4;
+  font-weight: 500;
+}

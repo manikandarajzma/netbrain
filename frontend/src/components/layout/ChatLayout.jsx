@@ -1,6 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react'
 import { useChatStore } from '../../stores/chatStore.js'
-import AppHeader from './AppHeader.jsx'
 import AppSidebar from './AppSidebar.jsx'
 import ChatMessages from '../chat/ChatMessages.jsx'
 import ChatInput from '../chat/ChatInput.jsx'
@@ -36,19 +35,14 @@ export default function ChatLayout() {
   }, [])
 
   return (
-    <>
-      <AppHeader />
-      <div className={styles.appMain}>
-        <div className={styles.appMainInner}>
-          <AppSidebar onFillInput={fillInput} />
-          <div className={styles.chatMain}>
-            <div className={styles.chatScroll}>
-              <ChatMessages />
-            </div>
-            <ChatInput ref={inputRef} />
-          </div>
+    <div className={styles.appMainInner}>
+      <AppSidebar onFillInput={fillInput} />
+      <div className={styles.chatMain}>
+        <div className={styles.chatScroll}>
+          <ChatMessages />
         </div>
+        <ChatInput ref={inputRef} />
       </div>
-    </>
+    </div>
   )
 }

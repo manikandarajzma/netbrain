@@ -128,6 +128,13 @@ export async function sendChat(message, conversationHistory, signal, conversatio
 }
 
 
+export async function fetchTopology() {
+  const res = await fetch('/api/topology')
+  checkAuthRedirect(res)
+  if (!res.ok) throw new Error('Failed to load topology')
+  return res.json()
+}
+
 export async function uploadBatch(file, message, signal) {
   const form = new FormData()
   form.append('file', file)

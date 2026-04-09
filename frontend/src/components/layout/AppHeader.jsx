@@ -3,7 +3,7 @@ import { useTheme } from '../../hooks/useTheme.js'
 import { useHealth } from '../../hooks/useHealth.js'
 import styles from './AppHeader.module.css'
 
-export default function AppHeader() {
+export default function AppHeader({ view, onViewChange }) {
   const displayName = useUserStore(s => s.displayName)
   const group = useUserStore(s => s.group)
   const { theme, toggleTheme } = useTheme()
@@ -12,6 +12,25 @@ export default function AppHeader() {
   return (
     <header className={styles.header}>
       <span className={styles.logo}>{'\u26A1'} Atlas</span>
+
+      {/* View nav */}
+      {onViewChange && (
+        <nav className={styles.nav}>
+          <button
+            className={`${styles.navBtn} ${view === 'chat' ? styles.navBtnActive : ''}`}
+            onClick={() => onViewChange('chat')}
+          >
+            Chat
+          </button>
+          <button
+            className={`${styles.navBtn} ${view === 'dashboard' ? styles.navBtnActive : ''}`}
+            onClick={() => onViewChange('dashboard')}
+          >
+            Dashboard
+          </button>
+        </nav>
+      )}
+
       <div className={`${styles.healthStatus} ${styles[status] || ''}`} title={tooltip}>
         <span className={`${styles.healthDot} ${styles[status] || ''}`} />
         <span className={styles.healthLabel}>{label}</span>
