@@ -27,10 +27,11 @@ Call `check_routing(devices=[last_hop_device], destination=src_ip)` to confirm t
 
 **Ping FAILED — management routing fallback (⚠️ Mgmt fallback in path trace):**
 "{device} is routing {dst_ip} via the management interface (default route 0.0.0.0/0). Data-plane interfaces are DOWN. Traffic from {src_ip} to {dst_ip} is blackholed."
-Recommendation: investigate why the data-plane interface on {device} is down — check OSPF, interface status, and syslog.
+Recommendation: On {device}: run `show interfaces` to find the down data-plane interface, then `show ip ospf neighbor` to confirm OSPF adjacency is lost. Restore the interface or OSPF config to re-establish the data-plane route.
 
 **Ping FAILED — no route (trace shows ⚠️ no route to {dst_ip}):**
-"{device} has no route to {dst_ip}. Check OSPF adjacency and routing table on {device}."
+"{device} has no route to {dst_ip}. The routing table has no match for this prefix — OSPF adjacency is missing or the route was withdrawn."
+Recommendation: On {device}: run `show ip ospf neighbor` — if 0 neighbors, OSPF has lost adjacency. Run `show ip route {dst_ip}` to confirm no match.
 
 **Ping FAILED — OSPF misconfiguration (ospf_interface_count=0):**
 Do not hedge. State definitively: "OSPF process is running on {device} but no interfaces are participating (ospf_interface_count=0). No `network` command or `ip ospf area` is configured on any interface."
@@ -49,5 +50,5 @@ Recommendation: `show ip access-lists` on {last_hop_device}; check any host-base
 "The network path is fully reachable at L3 and L4. The problem is at the application or service layer on the destination."
 
 **Reverse ping FAILED:**
-"The return path from {dst_ip} to {src_ip} is broken. {last_hop_device} has no route back to {src_ip}, or return traffic is being filtered."
-Recommendation: check routing table on {last_hop_device} for {src_ip}; check for ACL blocking the return direction.
+"The return path from {dst_ip} to {src_ip} is broken. {last_hop_device} has no route back to {src_ip}."
+Recommendation: On {last_hop_device}: run `show ip route {src_ip}` — if no match, add the missing return route or redistribute the subnet into the routing protocol. If a route exists, run `show ip access-lists` to check for an ACL blocking the return direction.

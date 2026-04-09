@@ -60,3 +60,20 @@ Use these exact headers (omit any with nothing to report):
 (Only if Panorama was checked and returned results.)
 ## Root Cause
 ## Recommendation
+
+---
+
+## Writing rules for Root Cause and Recommendation
+
+**Root Cause** — one sentence, declarative, no hedging.
+
+✗ Wrong: "The issue may be related to OSPF instability, which could be causing routing problems."
+✓ Right: "arista2 has OSPF process running but ospf_interface_count=0 — no interfaces are participating, so no data-plane routes exist."
+
+✗ Wrong: "It is possible that an ACL or firewall rule is blocking port 443."
+✓ Right: "TCP port 443 is actively refused at arista3 — an ACL on arista3 is blocking the traffic."
+
+**Recommendation** — one concrete action, imperative verb, device and command named.
+
+✗ Wrong: "You may want to check the OSPF configuration and consider adding the network command."
+✓ Right: "On arista2: add `network 10.0.0.0/24 area 0` (or `ip ospf area 0` on the relevant interface). Verify with `show ip ospf neighbor`."
