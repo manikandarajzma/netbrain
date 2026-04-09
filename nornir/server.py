@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-_repo_root = Path(__file__).resolve().parent.parent.parent
+_repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 from langchain_core.tools import tool
 
 logging.getLogger("atlas").setLevel(logging.INFO)
-logger = logging.getLogger("atlas.agents.nornir")
+logger = logging.getLogger("atlas.nornir.server")
 
 app = FastAPI(title="Atlas Nornir Path Agent")
 
@@ -124,7 +124,7 @@ def _load_device_registry() -> dict[str, dict]:
     """
     try:
         import yaml
-        hosts_file = Path(__file__).parent.parent / "nornir" / "inventory" / "hosts.yaml"
+        hosts_file = Path(__file__).parent / "inventory" / "hosts.yaml"
         with open(hosts_file) as f:
             data = yaml.safe_load(f)
         registry = {}
@@ -1131,4 +1131,4 @@ def _error_response(task_id: str, message: str) -> JSONResponse:
 if __name__ == "__main__":
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
-    uvicorn.run("nornir_agent:app", host="0.0.0.0", port=8006, reload=False)
+    uvicorn.run("server:app", host="0.0.0.0", port=8006, reload=False)

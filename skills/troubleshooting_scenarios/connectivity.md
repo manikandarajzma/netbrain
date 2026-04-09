@@ -4,7 +4,7 @@
 
 Always call these three simultaneously — do not skip any:
 1. `ping_device(device=first_hop_device, destination=dest_ip, ...)` — forward ping
-2. `ping_device(device=last_hop_device, destination=src_ip)` — reverse ping
+2. `ping_device(device=last_hop_device, destination=src_ip, source_interface=last_hop_lan_interface, vrf=dst_vrf)` — reverse ping
 3. `trace_reverse_path(source_ip=source_ip, dest_ip=dest_ip)` — reverse path trace
 
 Always write a `## Reverse Path` section in the report based on `trace_reverse_path` output.
