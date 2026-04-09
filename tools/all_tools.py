@@ -1142,9 +1142,10 @@ async def check_splunk(task: str, config: RunnableConfig) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Unified tool list — import this in troubleshoot_agent.py
+# Tool lists — each agent gets only the tools it needs
 # ---------------------------------------------------------------------------
 
+# Full diagnostic tool set for the troubleshooting agent
 ALL_TOOLS = [
     trace_path,
     trace_reverse_path,
@@ -1163,4 +1164,14 @@ ALL_TOOLS = [
     get_incident_details,
     check_panorama_policy,
     check_splunk,
+]
+
+# Restricted tool set for the network-ops agent — path + policy + tickets only.
+# No diagnostic tools (OSPF, counters, routing checks, ping) — those belong to
+# the troubleshooting agent.
+NETWORK_OPS_TOOLS = [
+    trace_path,
+    check_panorama_policy,
+    search_servicenow,
+    get_incident_details,
 ]

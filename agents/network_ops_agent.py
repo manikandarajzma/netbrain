@@ -7,8 +7,9 @@ but are NOT layered troubleshooting:
   - Policy review (what rule currently matches this flow?)
   - Access request documentation
 
-Shares ALL_TOOLS with troubleshoot_agent — no duplicate tools.
-Gets a different system prompt: concise, document-oriented, no deep diagnosis.
+Uses NETWORK_OPS_TOOLS — a restricted subset (trace_path, check_panorama_policy,
+search_servicenow, get_incident_details). No diagnostic tools.
+Gets a document-oriented system prompt, not a diagnostic one.
 """
 from __future__ import annotations
 
@@ -21,11 +22,11 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 try:
-    from atlas.tools.all_tools import ALL_TOOLS, pop_session_data
+    from atlas.tools.all_tools import NETWORK_OPS_TOOLS, pop_session_data
     from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
 except ImportError:
-    from tools.all_tools import ALL_TOOLS, pop_session_data  # type: ignore
-    from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL    # type: ignore
+    from tools.all_tools import NETWORK_OPS_TOOLS, pop_session_data  # type: ignore
+    from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL            # type: ignore
 
 logger = logging.getLogger("atlas.network_ops_agent")
 
@@ -82,7 +83,7 @@ async def handle(
         api_key="docker",
     )
 
-    agent = create_react_agent(llm, ALL_TOOLS, prompt=SystemMessage(content=system_prompt))
+    agent = create_react_agent(llm, NETWORK_OPS_TOOLS, prompt=SystemMessage(content=system_prompt))
 
     config = {
         "configurable": {
