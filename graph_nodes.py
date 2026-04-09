@@ -2,7 +2,10 @@
 Atlas LangGraph nodes.
 
 Graph shape:
-  classify_intent → call_troubleshoot_agent → build_final_response
+  classify_intent
+      ├─► call_troubleshoot_agent   (connectivity / device-health investigation)
+      ├─► call_network_ops_agent    (firewall change requests, policy review, access requests)
+      └─► build_final_response      (dismiss / early-exit)
 """
 import json
 import logging
@@ -88,12 +91,34 @@ _ACKNOWLEDGEMENTS = {"yes", "yeah", "sure", "ok", "okay", "great", "thanks",
                      "thank you", "cool", "got it", "noted", "perfect", "sounds good"}
 
 # Signals a network-ops / document-generation workflow rather than troubleshooting.
-# Matched BEFORE the troubleshooting keywords so explicit ops requests don't get
-# misclassified as "why is X broken" investigations.
+# Checked BEFORE the troubleshoot fallback so explicit ops requests are never
+# misclassified as "something is broken" investigations.
+#
+# Covers:
+#   - Explicit request phrases (firewall request, change request, fw request…)
+#   - Port/access opening ("open port 443", "need port … open", "whitelist")
+#   - Rule operations (add/create/remove/update/modify rule)
+#   - Traffic directives that are actionable, not diagnostic (allow/block/permit/deny traffic)
+#   - Policy & security review workflows
+#   - Document generation (spreadsheet, change ticket)
 _NETWORK_OPS_RE = re.compile(
-    r"\b(firewall\s+request|change\s+request|spreadsheet|policy\s+review|"
-    r"open\s+port|allow\s+traffic|create\s+(a\s+)?rule|new\s+rule|"
-    r"request\s+access|access\s+request|fw\s+request|security\s+review)\b",
+    r"\b("
+    # Explicit ops request phrases
+    r"firewall\s+request|fw\s+request|change\s+request|network\s+change|"
+    r"access\s+request|request\s+access|security\s+review|policy\s+review|"
+    r"spreadsheet|change\s+ticket|"
+    # Port opening / whitelisting
+    r"open\s+port|need\s+port|port\s+\d+\s+(open|allowed|whitelisted)|"
+    r"whitelist|need\s+access\s+(from|to|between)|grant\s+access|allow\s+access|"
+    # Rule CRUD
+    r"(add|create|remove|delete|update|modify)\s+(a\s+)?(firewall\s+)?rule|"
+    r"new\s+rule|fw\s+rule|firewall\s+rule|"
+    # Actionable traffic directives (not diagnostic)
+    r"allow\s+traffic|block\s+traffic|permit\s+traffic|deny\s+traffic|"
+    r"allow\s+\d{1,3}\.\d{1,3}|permit\s+\d{1,3}\.\d{1,3}|"
+    # Panorama / firewall policy work
+    r"firewall\s+policy|fw\s+policy|panorama\s+rule|security\s+policy"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -229,12 +254,12 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 
 async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     """
-    Route network-ops workflows (firewall change requests, spreadsheet generation,
-    policy reviews, etc.) to the dedicated network_ops_agent.
+    Route network-ops workflows (firewall change requests, policy reviews,
+    access requests, spreadsheet generation) to network_ops_agent.
 
-    This agent shares ALL_TOOLS with troubleshoot_agent but runs a different
-    system prompt focused on structured output and document generation rather
-    than step-by-step diagnostic investigation.
+    Uses NETWORK_OPS_TOOLS (trace_path, check_panorama_policy, search_servicenow,
+    get_incident_details) — no diagnostic tools. Produces structured documents
+    (change request tables, recommended rules) rather than diagnostic reports.
     """
     try:
         from atlas.agents.network_ops_agent import handle as network_ops_handle
