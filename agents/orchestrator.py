@@ -1956,23 +1956,10 @@ async def orchestrate_troubleshoot(
             logger.warning("Tool plan cache check failed: %s", _plan_exc)
 
     if not _plan_used:
-        try:
-            from atlas.agents.agent_team import run_agent_team
-        except ImportError:
-            from agent_team import run_agent_team
-
-        _team_tools: dict[str, list] = {
-            "path_agent":     [call_nornir_path_agent, call_netbrain_agent],
-            "evidence_agent": [call_servicenow_agent, get_incident_details],
-            "device_agent":   [call_interface_counters_agent],
-            "security_agent": [call_panorama_agent],
-        }
-        tool_outputs = await run_agent_team(
-            query=prompt,
-            llm=_llm,
-            tools_by_agent=_team_tools,
-            session_id=session_id or "default",
-        )
+        _default_plan = ["call_nornir_path_agent", "call_servicenow_agent", "call_panorama_agent"]
+        logger.info("No plan cache hit — running default plan: %s", _default_plan)
+        tool_outputs = await _execute_plan(_default_plan, prompt)
+        _plan_used = True
 
     # Force ServiceNow / interface counters only when the runbook did NOT already run them.
     # When _plan_used via runbook executor, these were already called as runbook steps — skip.
@@ -2018,10 +2005,6 @@ async def orchestrate_troubleshoot(
                 await call_interface_counters_agent.ainvoke({"devices_and_interfaces": _j.dumps(_forced_entries)})
             except Exception as _intf_exc:
                 logger.warning("Forced interface counters call failed: %s", _intf_exc)
-
-    past_memories: list[dict] = []
-    past_incidents: list[dict] = []
-    confirmed_context = ""
 
     if tool_outputs:
         import re as _re
@@ -2369,29 +2352,6 @@ async def orchestrate_troubleshoot(
 
             return "\n".join(lines)
 
-        def _build_vendor_kb_section() -> str:
-            kb       = _rb_ctx.get("vendor_kb") or {}
-            results  = kb.get("kb_results") or []
-            symptoms = kb.get("symptoms") or []
-            vendor   = kb.get("vendor", "unknown")
-            if not results and not symptoms:
-                return ""
-            lines = [f"## Vendor Knowledge Base ({vendor})"]
-            if symptoms:
-                sym_labels = ", ".join(f"`{s['type']}`" + (f" on {s['device']}" if s.get('device') else "") for s in symptoms)
-                lines.append(f"**Detected symptoms:** {sym_labels}")
-                lines.append("")
-            if results:
-                for r in results:
-                    lines.append(f"**{r['title']}**")
-                    lines.append(r["snippet"])
-                    if r.get("url"):
-                        lines.append(f"*{r['url']}*")
-                    lines.append("")
-            else:
-                lines.append("*No relevant vendor articles found.*")
-            return "\n".join(lines)
-
         # Build all sections
         report_sections: list[str] = []
         path_sec = _build_path_section()
@@ -2411,11 +2371,11 @@ async def orchestrate_troubleshoot(
         # Connectivity-specific sections only make sense when src+dst IPs are present
         if _rb_src_ip and _rb_dst_ip:
             if not _path_has_firewalls:
-                for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section(), _build_ospf_section(), _build_vendor_kb_section()):
+                for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section(), _build_ospf_section()):
                     if sec:
                         report_sections.append(sec)
             else:
-                for sec in (_build_firewall_section(), _build_splunk_section(), _build_vendor_kb_section()):
+                for sec in (_build_firewall_section(), _build_splunk_section()):
                     if sec:
                         report_sections.append(sec)
 
@@ -2435,59 +2395,6 @@ async def orchestrate_troubleshoot(
         elif chg_block and chg_block != "No change requests found.":
             chg_section = "\n\n## Recent Changes\n\n" + chg_block
 
-        # ── Vendor KB lookup + Memory recall (parallel) ──────────────────────
-        logger.info("Memory recall prep: path_devices=%s", path_devices)
-        memory_context = ""
-        vendor_kb: dict = {}
-        try:
-            import atlas.status_bus as status_bus
-            await status_bus.push(_session_id or "default", "Searching vendor knowledge base and recalling past cases...")
-        except Exception:
-            pass
-
-        # Vendor KB lookup
-        try:
-            try:
-                from agents.vendor_lookup_agent import lookup as _vendor_lookup
-            except ImportError:
-                from vendor_lookup_agent import lookup as _vendor_lookup
-            vendor_kb = await _vendor_lookup(_rb_ctx, path_devices)
-            _rb_ctx["vendor_kb"] = vendor_kb
-            logger.info("vendor_lookup: vendor=%r symptoms=%d kb_articles=%d",
-                        vendor_kb.get("vendor"), len(vendor_kb.get("symptoms", [])), len(vendor_kb.get("kb_results", [])))
-        except Exception as _vk_exc:
-            logger.warning("vendor_lookup failed: %s", _vk_exc)
-
-        try:
-            from agent_memory import (
-                recall_memory, recall_incidents_by_devices, format_memory_context,
-                get_confirmed_resolutions, format_confirmed_resolutions,
-            )
-            past_memories, semantic_incidents, device_incidents = await asyncio.gather(
-                recall_memory(prompt, agent_type="atlas", top_k=3),
-                recall_memory(prompt, agent_type="incident", top_k=5, min_similarity=0.40),
-                recall_incidents_by_devices(path_devices, query=prompt),
-            )
-            seen_keys: set[str] = set()
-            past_incidents: list[dict] = []
-            for inc in semantic_incidents + device_incidents:
-                key = inc.get("result_summary", "")[:30]
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    past_incidents.append(inc)
-            all_memories = past_memories + past_incidents
-            memory_context = format_memory_context(all_memories) if all_memories else ""
-
-            # Confirmed resolutions from closed SNOW tickets for path devices
-            confirmed_fixes = get_confirmed_resolutions(path_devices, max_per_device=2)
-            confirmed_context = format_confirmed_resolutions(confirmed_fixes) if confirmed_fixes else ""
-
-            logger.info("Memory recall: atlas=%d incidents=%d confirmed_fixes=%d", len(past_memories), len(past_incidents), len(confirmed_fixes))
-        except Exception as _mem_exc:
-            logger.warning("Memory recall failed: %s", _mem_exc)
-            memory_context = ""
-            confirmed_context = ""
-
         # ── LLM: Root Cause + Recommendation only ────────────────────────────
         sections_text = "\n\n".join(report_sections)
 
@@ -2496,22 +2403,16 @@ async def orchestrate_troubleshoot(
         if not _rb_src_ip or not _rb_dst_ip:
             parts = [p for p in [sections_text, chg_section.strip(), "\n\n".join(non_snow_outputs)] if p]
             final = "\n\n".join(parts).strip()
-            if memory_context:
-                final += "\n\n---\n\n" + memory_context
+            pass
         else:
             # ── Fast-path: deterministic root cause when we have definitive findings ──
             _det_rc = _build_deterministic_root_cause(_rb_ctx, _rb_src_ip, _rb_dst_ip)
             if _det_rc:
-                _kb_sec = _build_vendor_kb_section()
                 final = sections_text + chg_section + "\n\n" + _det_rc
-                if _kb_sec:
-                    final += "\n\n" + _kb_sec
                 logger.info("Using deterministic root cause (skipping LLM synthesis)")
 
             if not _det_rc:
-                _synthesis_prefix = "\n\n".join(filter(None, [confirmed_context, memory_context]))
                 synthesis_system = (
-                    ((_synthesis_prefix + "\n\n") if _synthesis_prefix else "") +
                     "You are writing the final section of a network troubleshooting report.\n"
                     "The diagnostic sections above have already been built from structured data.\n"
                     "Your ONLY job is to write:\n\n"
@@ -2531,11 +2432,7 @@ async def orchestrate_troubleshoot(
                     "- If ping failed: name the specific hop or device where routing breaks.\n"
                     "- If ping succeeded and interfaces are clean: say the path is healthy and the issue is likely "
                     "at the application or service layer.\n"
-                    "- If a firewall denied traffic: name the rule and device.\n"
-                    "- If a 'Vendor Knowledge Base' section is present: use the article titles and "
-                    "snippets to add vendor-specific config commands, known bug references, or "
-                    "documentation links to the Recommendation. Do not quote snippets verbatim — "
-                    "synthesise them into actionable steps.\n\n"
+                    "- If a firewall denied traffic: name the rule and device.\n\n"
                     "DIAGNOSTIC DATA:\n" + sections_text
                 )
                 synthesis_messages = [
@@ -2607,18 +2504,7 @@ async def orchestrate_troubleshoot(
     except Exception as _mem_exc:
         logger.debug("agent_memory: store skipped: %s", _mem_exc)
 
-    all_recalled = past_memories + past_incidents  # defined in if tool_outputs block; fallback [] if else branch ran
-    logger.info("all_recalled=%d serializing...", len(all_recalled))
-
-    # Strip non-serializable fields from memories before returning to frontend.
-    # Only surface incident-type memories to the user — atlas memories are internal
-    # LLM context only (they contain raw prompts, not human-readable incident titles).
-    serializable_memories = [
-        {k: v for k, v in m.items() if k in ("query", "result_summary", "resolution", "timestamp", "similarity", "match_type")}
-        for m in all_recalled
-        if m.get("agent_type") == "incident"
-    ]
-    logger.info("serializable_memories=%d", len(serializable_memories))
+    serializable_memories: list[dict] = []
 
     # For DB path traces, drop the report when it contains only empty/default sections
     # (no firewalls, no incidents, no changes, Splunk unreachable) — the visual is sufficient.

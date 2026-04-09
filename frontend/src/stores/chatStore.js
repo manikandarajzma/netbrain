@@ -207,10 +207,16 @@ export const useChatStore = create((set, get) => ({
 
       await new Promise(r => setTimeout(r, 400))
 
-      const content = data.content ?? data.message ?? 'No response'
+      // If the response includes structured path hops, wrap them together with
+      // the markdown text so the PathVisualization component can render the
+      // diagram while the analysis text is still shown below it.
+      const rawContent = data.content ?? data.message ?? 'No response'
+      const content = data.path_hops?.length
+        ? { text: rawContent, path_hops: data.path_hops, ...(data.reverse_path_hops?.length ? { reverse_path_hops: data.reverse_path_hops } : {}) }
+        : rawContent
       const memories = Array.isArray(data.memories) ? data.memories : []
       addMessage('assistant', content, memories)
-      pushHistory('assistant', content)
+      pushHistory('assistant', rawContent)
 
       if (data.conversation_id) {
         set({ activeConversationId: data.conversation_id, nextConversationParentId: null })

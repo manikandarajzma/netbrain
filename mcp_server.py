@@ -1,14 +1,5 @@
 """
-MCP Server for Atlas network query – Entry Point.
-
-This module imports domain tool modules to register all MCP tools on the
-shared FastMCP instance, then starts the server.
-
-Domain modules:
-  - tools.splunk_tools   : get_splunk_recent_denies
-  - tools.panorama_tools : query_panorama_ip_object_group, query_panorama_address_group_members
-  - tools.netbrain_tools : query_network_path, check_path_allowed
-  - tools.netbox_tools   : get_gateway_for_prefix, get_prefix_for_ip, get_ip_info
+MCP Server for Atlas — ServiceNow tools only.
 """
 
 import logging
@@ -24,12 +15,6 @@ if _this_dir not in sys.path:
 # Import the shared FastMCP instance and config
 from tools.shared import mcp, MCP_SERVER_HOST, MCP_SERVER_PORT
 
-# Import domain modules – the act of importing triggers @mcp.tool() registration
-import tools.splunk_tools       # noqa: F401
-import tools.panorama_tools     # noqa: F401
-import tools.netbrain_tools     # noqa: F401
-import tools.netbox_tools       # noqa: F401
-import tools.docs_tool          # noqa: F401
 import tools.servicenow_tools   # noqa: F401
 
 logger = logging.getLogger("atlas.server")

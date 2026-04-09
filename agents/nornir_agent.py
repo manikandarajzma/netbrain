@@ -88,44 +88,17 @@ def _run_privileged(hostname: str, host: str, port: int, command: str) -> str:
         return conn.send_command(command, read_timeout=30)
 
 
-_SSH_BANNER_ERROR = "Error reading SSH protocol banner"
-_SSH_MAX_RETRIES = 3
-_SSH_RETRY_DELAY = 2.0  # seconds between retries on banner error
-
-
 def _run_show(hostname: str, host: str, port: int, command: str) -> str:
-    """SSH into a device and run a single show command. Returns raw output.
-
-    Serialized per device (threading.Semaphore) and retried on SSH banner errors,
-    which occur when the cEOS SSH daemon drops connections under rapid successive access.
-    """
+    """SSH into a device and run a single show command. Returns raw output."""
     from nornir_netmiko.tasks import netmiko_send_command
 
-    last_exc: Exception | None = None
-    for attempt in range(_SSH_MAX_RETRIES):
-        if attempt > 0:
-            time.sleep(_SSH_RETRY_DELAY * attempt)
-            logger.info("_run_show %s: retry %d/%d after banner error", hostname, attempt, _SSH_MAX_RETRIES - 1)
-        try:
-            with _device_semaphore(hostname):
-                nr = _build_nornir(hostname, host, port)
-                try:
-                    result = nr.run(task=netmiko_send_command, command_string=command)
-                finally:
-                    nr.close_connections()  # always release SSH connections — prevents socket leak
-        except Exception as exc:
-            if _SSH_BANNER_ERROR in str(exc):
-                last_exc = exc
-                continue
-            raise
-
+    nr = _build_nornir(hostname, host, port)
+    try:
+        result = nr.run(task=netmiko_send_command, command_string=command)
         for _, multi in result.items():
             task_result = multi[0]
             if task_result.failed or task_result.exception:
                 exc = task_result.exception
-                if exc and _SSH_BANNER_ERROR in str(exc):
-                    last_exc = exc
-                    break  # retry outer loop
                 raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
             r = task_result.result
             logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
@@ -133,12 +106,9 @@ def _run_show(hostname: str, host: str, port: int, command: str) -> str:
                 return r
             if r and r.strip().startswith("Traceback"):
                 raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
-        else:
-            raise RuntimeError(f"Empty output from {hostname} for '{command}'")
-        # banner error — retry outer loop
-        continue
-
-    raise last_exc if last_exc else RuntimeError(f"SSH failed on {hostname} after {_SSH_MAX_RETRIES} attempts")
+        raise RuntimeError(f"Empty output from {hostname} for '{command}'")
+    finally:
+        nr.close_connections()
 
 
 
@@ -200,20 +170,6 @@ def _registry() -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
-
-@tool
-def get_gateway(ip: str) -> dict:
-    """
-    Look up the gateway (VIP) for the prefix containing this IP using NetBox.
-    Use this first to identify the first-hop router for a source IP.
-    Returns: {gateway, prefix} or {error}.
-    """
-    try:
-        from atlas.tools.netbox_tools import get_gateway_for_prefix
-    except ImportError:
-        from tools.netbox_tools import get_gateway_for_prefix
-    return get_gateway_for_prefix.fn(ip)
-
 
 @tool
 def find_device_for_ip(ip: str) -> dict:
@@ -524,34 +480,28 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
     COUNTER_KEYS  = ("inErrors", "outErrors", "inDiscards", "outDiscards",
                      "fcsErrors", "runtFrames", "giantFrames")
 
-    # Open ONE SSH connection for all iterations — avoids rapid reconnect banner errors.
-    # Acquire the per-device semaphore for the full duration so routing-check / path-trace
-    # calls via _run_show don't race with this connection and trigger cEOS MaxStartups drops.
     snapshots: list[dict] = []
-    with _device_semaphore(device):
-        netmiko_conn = ConnectHandler(
-            device_type="arista_eos",
-            host=conn_info["host"],
-            port=conn_info["port"],
-            username=SSH_USER,
-            password=SSH_PASSWORD,
-            timeout=30,
-        )
-
-        # Collect snapshots: snapshots[iteration][intf] = counter dict
-        try:
-            for i in range(ITERATIONS):
-                if i > 0:
-                    time.sleep(POLL_INTERVAL)
-                snap = {}
-                for intf in interfaces:
-                    try:
-                        snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
-                    except Exception as exc:
-                        snap[intf] = {"error": str(exc)}
-                snapshots.append(snap)
-        finally:
-            netmiko_conn.disconnect()
+    netmiko_conn = ConnectHandler(
+        device_type="arista_eos",
+        host=conn_info["host"],
+        port=conn_info["port"],
+        username=SSH_USER,
+        password=SSH_PASSWORD,
+        timeout=30,
+    )
+    try:
+        for i in range(ITERATIONS):
+            if i > 0:
+                time.sleep(POLL_INTERVAL)
+            snap = {}
+            for intf in interfaces:
+                try:
+                    snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
+                except Exception as exc:
+                    snap[intf] = {"error": str(exc)}
+            snapshots.append(snap)
+    finally:
+        netmiko_conn.disconnect()
 
     # Report only interfaces with at least one incrementing counter
     active = []
@@ -762,7 +712,6 @@ def check_routing_on_hops(
 
 
 NORNIR_TOOLS = [
-    get_gateway,
     find_device_for_ip,
     get_route,
     get_arp,
@@ -1118,10 +1067,7 @@ async def handle_interface_counters(request: Request) -> JSONResponse:
     interfaces = body.get("interfaces", [])
     if not device or not interfaces:
         return JSONResponse({"error": "device and interfaces required"}, status_code=400)
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None, lambda: get_interface_counters.invoke({"device": device, "interfaces": interfaces})
-    )
+    result = get_interface_counters.invoke({"device": device, "interfaces": interfaces})
     return JSONResponse(result)
 
 

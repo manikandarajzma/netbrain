@@ -2,7 +2,7 @@
 Authentication for Atlas (FastAPI).
 
 Identity provider: Microsoft Entra ID via OIDC. No local passwords.
-All backend credentials (NetBrain, Panorama, Splunk) are stored in Azure Key Vault.
+All backend credentials (ServiceNow, etc.) are stored in Azure Key Vault.
 
 Session storage: signed cookies (itsdangerous URLSafeTimedSerializer).
 There is no server-side session store — the session payload is the cookie itself.
@@ -69,12 +69,9 @@ _session_serializer = URLSafeTimedSerializer(_SESSION_SECRET, salt="atlas-sessio
 GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
     "admin": None,
     "netadmin": {
-        "query_network_path",
-        "check_path_allowed",
-        "query_panorama_ip_object_group",
-        "query_panorama_address_group_members",
-        "find_unused_panorama_objects",
-        "search_documentation",
+        "search_servicenow_incidents",
+        "list_servicenow_change_requests",
+        "get_servicenow_incident",
     },
     "guest": set(),  # least privilege: no tool access
 }
@@ -82,7 +79,7 @@ GROUP_ALLOWED_TOOLS: dict[str, set[str] | None] = {
 # Maps group -> list of sidebar category slugs shown in the UI.  None = all.
 GROUP_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin": None,
-    "netadmin": ["netbrain", "panorama", "docs"],
+    "netadmin": ["troubleshoot", "servicenow"],
     "guest": [],
 }
 

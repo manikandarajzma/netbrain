@@ -45,24 +45,6 @@ export function isArrayOfObjects(val) {
   return Array.isArray(val) && val.length > 0 && val.every(x => x != null && typeof x === 'object' && !Array.isArray(x))
 }
 
-export const PANORAMA_COLUMN_ORDER = {
-  address_objects: ['name', 'type', 'value', 'location', 'device_group'],
-  address_groups: ['name', 'contains_address_object', 'members', 'location', 'device_group'],
-  members: ['name', 'type', 'value', 'location', 'device_group'],
-  policies: ['name', 'type', 'rulebase', 'action', 'source', 'destination', 'services', 'address_groups', 'address_objects', 'location', 'device_group'],
-  orphaned_address_objects: ['name', 'type', 'value', 'location', 'device_group'],
-  unused_address_groups: ['name', 'member_count', 'members', 'location', 'device_group'],
-}
-
-export const PANORAMA_TABLE_LABELS = {
-  address_objects: 'Address objects',
-  address_groups: 'Address groups',
-  members: 'Address group members (IPs)',
-  policies: 'Policy details',
-  orphaned_address_objects: 'Orphaned address objects',
-  unused_address_groups: 'Unused address groups',
-}
-
 export const DEVICE_RACK_KEYS = ['device', 'rack', 'position', 'face', 'site', 'status', 'device_type']
 
 export function isDeviceRackRow(row) {

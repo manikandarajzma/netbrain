@@ -9,13 +9,13 @@ Provides:
 Usage (async):
     from tools.resilience import retry_async, CircuitBreaker
 
-    _cb = CircuitBreaker("splunk")
+    _cb = CircuitBreaker("nornir")
     result = await retry_async(_cb, my_async_fn, arg1, arg2)
 
 Usage (sync):
     from tools.resilience import retry_sync, CircuitBreaker
 
-    _cb = CircuitBreaker("netbox")
+    _cb = CircuitBreaker("servicenow")
     result = retry_sync(_cb, my_sync_fn, arg1, arg2)
 """
 

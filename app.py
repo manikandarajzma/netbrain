@@ -12,7 +12,7 @@ import json as _json
 
 _sse_log = logging.getLogger("atlas.app")
 
-from fastapi import Depends, FastAPI, File, Form, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,11 +44,7 @@ from atlas.auth import (
 # Paths
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = APP_DIR / "templates"
-STATIC_DIR = APP_DIR / "static"
-
-# Ensure dirs exist
 TEMPLATES_DIR.mkdir(exist_ok=True)
-STATIC_DIR.mkdir(exist_ok=True)
 
 async def _midnight_sync_loop():
     """Background task: sync closed ServiceNow incidents into memory daily at midnight."""
@@ -321,25 +317,18 @@ async def api_me(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Serve main chat app — React SPA if built, else Jinja2 fallback."""
+    """Serve the React SPA."""
     username = get_current_username(request)
     if not username:
         return RedirectResponse(url="/login", status_code=302)
 
-    # Serve React build if available
     react_index = APP_DIR / "frontend" / "dist" / "index.html"
-    if react_index.exists():
-        return HTMLResponse(react_index.read_text(encoding="utf-8"))
-
-    # Fallback to Jinja2 template
-    sid = get_session_id(request)
-    group = get_group_for_session(sid)
-    categories = get_allowed_categories(group)
-    return templates.TemplateResponse(request, "index.html", {
-        "username": username,
-        "group": group,
-        "allowed_categories": categories,
-    })
+    if not react_index.exists():
+        return HTMLResponse(
+            "<h2>Frontend not built.</h2><p>Run <code>npm run build</code> inside <code>frontend/</code>.</p>",
+            status_code=503,
+        )
+    return HTMLResponse(react_index.read_text(encoding="utf-8"))
 
 
 # --- Health check ---
@@ -484,23 +473,13 @@ async def api_topology(request: Request):
 
 @app.post("/api/discover")
 async def api_discover(request: Request, body: ChatRequest):
-    """Lightweight tool discovery — returns tool name without executing."""
+    """Lightweight tool discovery — returns display name without running the graph."""
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    import uuid as _uuid
-    from atlas.chat_service import process_message
-    # Use a throwaway session_id so discover never overwrites the real session's
-    # status_bus queue or _pending_ts_prompts entry (both are keyed by session_id).
-    discover_session_id = f"discover-{_uuid.uuid4().hex}"
-    result = await process_message(
-        body.message.strip(),
-        body.conversation_history or [],
-        discover_only=True,
-        username=username,
-        session_id=discover_session_id,
-    )
-    return result
+    # Return immediately without any LLM call — the label is always the same
+    # for this app (single troubleshooting flow).
+    return {"tool_display_name": "Network troubleshooter"}
 
 
 @app.get("/api/chat/history")
@@ -663,162 +642,14 @@ async def api_chat(request: Request, body: ChatRequest):
         finally:
             status_bus.deregister(sid)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-# --- Batch Upload API ---
-
-_COL_ALIASES = {
-    "source": ("source ip", "source_ip", "src", "src ip", "src_ip", "source"),
-    "destination": ("destination ip", "destination_ip", "dest", "dest ip", "dest_ip", "destination", "dst", "dst ip", "dst_ip"),
-    "protocol": ("protocol", "proto"),
-    "port": ("port", "dst port", "dst_port", "dest port", "dest_port"),
-}
-
-
-def _match_columns(columns: list[str]) -> dict[str, str]:
-    """Map spreadsheet columns to expected field names (case-insensitive)."""
-    col_map = {}
-    lower_cols = {c.strip().lower(): c for c in columns}
-    for field, aliases in _COL_ALIASES.items():
-        for alias in aliases:
-            if alias in lower_cols:
-                col_map[field] = lower_cols[alias]
-                break
-    return col_map
-
-
-def _detect_batch_tool(message: str) -> str:
-    """Determine which MCP tool to run based on the user's natural language message."""
-    msg = message.lower()
-    path_kw = ("network path", "trace", "hop", "route", "show path", "find path",
-               "path between", "traceroute", "path map", "path query", "path from")
-    if any(kw in msg for kw in path_kw):
-        return "query_network_path"
-    return "check_path_allowed"
-
-
-
-@app.post("/api/batch-upload")
-async def batch_upload(
-    request: Request,
-    file: UploadFile = File(...),
-    message: str = Form(""),
-):
-    """Parse an uploaded spreadsheet and run the appropriate tool for each row."""
-    username = get_current_username(request)
-    if not username:
-        return response_401_clear_session(request)
-
-    filename = file.filename or ""
-    if not filename.lower().endswith((".xlsx", ".xls", ".csv")):
-        return JSONResponse(
-            {"error": "Unsupported file type. Upload .xlsx or .csv"},
-            status_code=400,
-        )
-
-    import pandas as pd
-    import io
-
-    raw = await file.read()
-    try:
-        if filename.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(raw))
-        else:
-            df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
-    except Exception as exc:
-        return JSONResponse({"error": f"Failed to parse file: {exc}"}, status_code=400)
-
-    if df.empty:
-        return JSONResponse({"error": "Spreadsheet is empty"}, status_code=400)
-
-    col_map = _match_columns(list(df.columns))
-    missing = [f for f in ("source", "destination") if f not in col_map]
-    if missing:
-        return JSONResponse(
-            {"error": f"Missing required columns: {', '.join(missing)}. Found: {', '.join(df.columns)}"},
-            status_code=400,
-        )
-
-    tool_name = _detect_batch_tool(message)
-
-    from atlas.chat_service import process_message
-
-    results = []
-    for idx, row in df.iterrows():
-        src = str(row[col_map["source"]]).strip()
-        dst = str(row[col_map["destination"]]).strip()
-        proto = str(row.get(col_map.get("protocol", ""), "tcp")).strip().lower() or "tcp"
-        port_val = row.get(col_map.get("port", ""), 0)
-        port_str = str(int(port_val)) if pd.notna(port_val) and port_val else "0"
-
-        prompt = (
-            f"Is path from {src} to {dst} on {proto} port {port_str} allowed?"
-            if tool_name == "check_path_allowed"
-            else f"Show network path from {src} to {dst} on {proto} port {port_str}"
-        )
-
-        try:
-            result = await process_message(
-                prompt,
-                [],
-                tool_name=tool_name,
-                parameters={"source": src, "destination": dst, "protocol": proto, "port": port_str},
-                username=username,
-                session_id=get_session_id(request),
-            )
-            content = result.get("content", {}) if isinstance(result, dict) else {}
-            if isinstance(content, dict):
-                _strip_l2_noise(content)
-                if tool_name == "check_path_allowed":
-                    results.append({
-                        "source": src,
-                        "destination": dst,
-                        "protocol": proto,
-                        "port": port_str,
-                        "status": content.get("status", "unknown"),
-                        "reason": content.get("reason", ""),
-                        "firewall_denied_by": content.get("firewall_denied_by", ""),
-                        "policy_details": content.get("policy_details", ""),
-                    })
-                else:
-                    hops = content.get("path_hops", [])
-                    hop_names = []
-                    if hops:
-                        first = hops[0].get("from_device")
-                        if first:
-                            hop_names.append(first)
-                        for h in hops:
-                            td = h.get("to_device")
-                            if td and td not in hop_names:
-                                hop_names.append(td)
-                    raw_status = (content.get("path_status") or "unknown").lower()
-                    effective_status = "success" if hops else raw_status
-                    row_result = {
-                        "source": src,
-                        "destination": dst,
-                        "protocol": proto,
-                        "port": port_str,
-                        "status": effective_status,
-                        "reason": content.get("path_status_description", ""),
-                        "path_summary": " → ".join(hop_names) if hop_names else "",
-                        "path_hops": hops,
-                        "path_status": raw_status,
-                        "path_failure_reason": content.get("path_failure_reason", ""),
-                    }
-                    results.append(row_result)
-            else:
-                results.append({
-                    "source": src, "destination": dst, "protocol": proto,
-                    "port": port_str, "status": "error", "reason": str(content),
-                })
-        except Exception as exc:
-            results.append({
-                "source": src, "destination": dst, "protocol": proto,
-                "port": port_str, "status": "error", "reason": str(exc),
-            })
-
-    return {"role": "assistant", "content": {"batch_results": results, "tool": tool_name}}
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # Mount React build assets (must come before /static to take priority)
@@ -826,10 +657,6 @@ REACT_DIST = APP_DIR / "frontend" / "dist"
 REACT_ASSETS = REACT_DIST / "assets"
 if REACT_ASSETS.exists():
     app.mount("/assets", StaticFiles(directory=str(REACT_ASSETS)), name="react-assets")
-
-# Mount static files (CSS/JS) if present
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Mount icons for path visualization
 ICONS_DIR = APP_DIR / "icons"

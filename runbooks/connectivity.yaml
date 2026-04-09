@@ -19,44 +19,7 @@ steps:
         input:
           prompt: "{{prompt}}"
 
-  # ── Step 2: Investigate path anomalies (mgmt routing or no-route) ─────────
-  - id: path_anomaly_investigation
-    if: path_anomaly_detected
-    then:
-      - id: historical_route
-        tool: routing_history_agent
-        input:
-          device: "{{investigation_device}}"
-          destination: "{{dst_ip}}"
-
-      - id: down_interface_investigation
-        if: historical_egress_found
-        then:
-          - id: interface_detail
-            tool: interface_detail_agent
-            input:
-              device: "{{investigation_device}}"
-              interface: "{{historical_egress}}"
-
-          - id: device_syslog
-            tool: syslog_agent
-            input:
-              device: "{{investigation_device}}"
-              interface: "{{historical_egress}}"
-        else:
-          # No routing history — check all non-management interfaces + link events
-          - id: all_interfaces
-            tool: all_interfaces_agent
-            input:
-              device: "{{investigation_device}}"
-
-          - id: device_syslog_all
-            tool: syslog_agent
-            input:
-              device: "{{investigation_device}}"
-              interface: ""
-
-  # ── Step 3: Gather evidence in parallel (regardless of path result) ───────
+  # ── Step 2: Gather evidence in parallel (regardless of path result) ───────
   - id: gather_evidence
     parallel:
       - id: servicenow
@@ -78,57 +41,25 @@ steps:
   - id: connectivity_check
     if: first_hop_device
     then:
-      - id: active_pings
-        parallel:
-          - id: ping_test
-            tool: ping_agent
-            input:
-              device: "{{first_hop_device}}"
-              destination: "{{dst_ip}}"
-              source_interface: "{{first_hop_lan_interface}}"
-              vrf: "{{src_vrf}}"
-
-          - id: reverse_ping_test
-            tool: ping_agent
-            input:
-              device: "{{last_hop_device}}"
-              destination: "{{src_ip}}"
-              source_interface: "{{last_hop_egress_interface}}"
+      - id: ping_test
+        tool: ping_agent
+        input:
+          device: "{{first_hop_device}}"
+          destination: "{{dst_ip}}"
+          source_interface: "{{first_hop_lan_interface}}"
+          vrf: "{{src_vrf}}"
 
       # Branch on ping result
       - id: post_ping
         if: ping_failed
         then:
-          # Ping failed → routing is suspect, check every hop + OSPF state in parallel
-          - id: ping_failed_checks
-            parallel:
-              - id: routing_check
-                tool: routing_check_agent
-                input:
-                  devices: "{{path_devices}}"
-                  destination: "{{dst_ip}}"
-                  vrf: "{{src_vrf}}"
-
-              - id: ospf_neighbors
-                tool: ospf_agent
-                input:
-                  devices: "{{path_devices}}"
-
-              - id: ospf_interfaces
-                tool: ospf_interfaces_agent
-                input:
-                  devices: "{{path_devices}}"
-
-              - id: ospf_history
-                tool: ospf_history_agent
-                input:
-                  devices: "{{path_devices}}"
-
-              - id: syslog
-                tool: syslog_agent
-                input:
-                  device: "{{first_hop_device}}"
-                  interface: ""
+          # Ping failed → routing is suspect, check every hop
+          - id: routing_check
+            tool: routing_check_agent
+            input:
+              devices: "{{path_devices}}"
+              destination: "{{dst_ip}}"
+              vrf: "{{src_vrf}}"
 
           # If firewalls in path, check policy — may be blocking
           - id: firewall_check

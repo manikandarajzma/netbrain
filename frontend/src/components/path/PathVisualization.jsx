@@ -13,7 +13,7 @@ export default function PathVisualization({ content }) {
   const contentStatus = (content.status || '').toLowerCase()
   const showStatusBar = pathStatus === 'failed' || contentStatus === 'denied' || contentStatus === 'unknown'
   const statusText = content.reason || content.path_failure_reason || content.path_status_description || ''
-  const statusFallback = 'Path: ' + (content.source || '') + ' \u2192 ' + (content.destination || '')
+  const statusFallback = 'Path: ' + (content.source || content.src_ip || '') + ' \u2192 ' + (content.destination || content.dst_ip || '')
   const showDenyBlock = content.firewall_denied_by || content.policy_details
 
   const nodes = useMemo(() => {
@@ -75,8 +75,8 @@ export default function PathVisualization({ content }) {
           <PathItem
             key={(keyPrefix || '') + i}
             node={node}
-            sourceIp={content.source || ''}
-            destIp={content.destination || ''}
+            sourceIp={content.source || content.src_ip || ''}
+            destIp={content.destination || content.dst_ip || ''}
           />
         ))}
       </div>

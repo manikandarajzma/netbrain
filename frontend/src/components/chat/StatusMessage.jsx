@@ -7,9 +7,9 @@ function getPhase(text) {
   if (t.includes('identify') || t.includes('routing') || t.includes('classif')) return { label: 'Routing', icon: '⟁' }
   if (t.includes('querying') || t.includes('fetching') || t.includes('calling')) return { label: 'Querying', icon: '⬡' }
   if (t.includes('processing') || t.includes('synthesiz') || t.includes('analyz')) return { label: 'Processing', icon: '◎' }
-  if (t.includes('path') || t.includes('netbrain')) return { label: 'Tracing path', icon: '⟁' }
-  if (t.includes('panorama') || t.includes('firewall')) return { label: 'Querying', icon: '⬡' }
-  if (t.includes('splunk')) return { label: 'Querying', icon: '⬡' }
+  if (t.includes('path') || t.includes('tracing') || t.includes('trace')) return { label: 'Tracing path', icon: '⟁' }
+  if (t.includes('ssh') || t.includes('device') || t.includes('nornir')) return { label: 'Querying device', icon: '⬡' }
+  if (t.includes('servicenow') || t.includes('incident') || t.includes('change')) return { label: 'Checking ServiceNow', icon: '🎫' }
   return { label: 'Working', icon: '◈' }
 }
 

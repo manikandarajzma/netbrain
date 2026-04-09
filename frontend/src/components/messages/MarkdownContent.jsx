@@ -1,4 +1,5 @@
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import styles from './MarkdownContent.module.css'
 
 // Links in documentation point to local .md file paths which have no web URL.
@@ -14,7 +15,7 @@ function TableWrapper({ children }) {
 export default function MarkdownContent({ text }) {
   return (
     <div className={styles.root}>
-      <ReactMarkdown components={{ a: DocLink, table: TableWrapper }}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: DocLink, table: TableWrapper }}>{text}</ReactMarkdown>
     </div>
   )
 }

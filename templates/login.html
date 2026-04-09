@@ -4,7 +4,53 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign in – Atlas</title>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        :root {
+            --bg-body: #1a1a1e;
+            --bg-body-subtle: linear-gradient(180deg, #1e1e24 0%, #1a1a1e 100%);
+            --bg-card: #222228;
+            --bg-input: #26262c;
+            --border: #2e2e36;
+            --border-strong: #3e3e48;
+            --text-primary: #f0f0f4;
+            --text-secondary: #c8c8d4;
+            --text-muted: #9090a0;
+            --text-dim: #606074;
+            --accent-blue: #7ab7ff;
+            --accent-blue-focus: #5ba3f5;
+            --accent-red: #f07178;
+            --focus-ring: rgba(122, 183, 255, 0.2);
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+            --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+            --radius-sm: 10px;
+            --radius-xl: 22px;
+            color-scheme: dark;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        [data-theme="light"] {
+            --bg-body: #fafafa;
+            --bg-body-subtle: linear-gradient(180deg, #ffffff 0%, #f5f5f7 100%);
+            --bg-card: #f0f0f0;
+            --bg-input: #f0f0f0;
+            --border: #d9d9d9;
+            --border-strong: #c0c0c0;
+            --text-primary: #0d0d0d;
+            --text-secondary: #2d2d2d;
+            --text-muted: #4a4a4a;
+            --text-dim: #707070;
+            --accent-blue: #2563eb;
+            --accent-blue-focus: #1d4ed8;
+            --accent-red: #dc2626;
+            --focus-ring: rgba(37, 99, 235, 0.15);
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.06);
+            --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+            --radius-sm: 10px;
+            --radius-xl: 22px;
+            color-scheme: light;
+        }
+        body { margin: 0; background: var(--bg-body); background-image: var(--bg-body-subtle); color: var(--text-primary); }
+    </style>
     <style>
         .login-page {
             min-height: 100vh;

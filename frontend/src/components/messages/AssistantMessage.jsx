@@ -2,7 +2,6 @@ import { useMemo } from 'react'
 import { classifyResponse } from '../../utils/responseClassifier.js'
 import {
   isArrayOfObjects, isDeviceRackRow, DEVICE_RACK_KEYS,
-  PANORAMA_COLUMN_ORDER, PANORAMA_TABLE_LABELS,
 } from '../../utils/formatters.js'
 import YesNoBadge from './YesNoBadge.jsx'
 import MetricBadge from './MetricBadge.jsx'
@@ -13,7 +12,6 @@ import MarkdownContent from './MarkdownContent.jsx'
 import PathVisualization from '../path/PathVisualization.jsx'
 import DataTable from '../tables/DataTable.jsx'
 import VerticalTable from '../tables/VerticalTable.jsx'
-import BatchResults from '../tables/BatchResults.jsx'
 import MemoryFeedback from './MemoryFeedback.jsx'
 import InterfaceCounters from './InterfaceCounters.jsx'
 import styles from './AssistantMessage.module.css'
@@ -75,8 +73,7 @@ export default function AssistantMessage({ content, memories }) {
     if (flatKeys.length > 0 && flatKeys.length <= 25 && arrayKeys.length > 0) {
       const flatLower = flatKeys.map(k => k.toLowerCase())
       const hasRack = flatLower.includes('site') || flatLower.includes('facility') || (arrayKeys.includes('devices') && flatLower.some(k => k === 'name' || k === 'rack_name'))
-      const looksPanorama = (flatLower.includes('ip_address') || flatLower.includes('vsys')) && (arrayKeys.includes('address_objects') || arrayKeys.includes('address_groups'))
-      if (hasRack && !looksPanorama) {
+      if (hasRack) {
         groups.push({
           type: 'horizontal',
           rows: [Object.fromEntries(flatKeys.map(k => [k, c[k]]))],
@@ -85,21 +82,14 @@ export default function AssistantMessage({ content, memories }) {
       }
     }
 
-    const isPanorama = arrayKeys.includes('address_objects') || arrayKeys.includes('address_groups') || arrayKeys.includes('policies') || arrayKeys.includes('members')
-      || arrayKeys.includes('orphaned_address_objects') || arrayKeys.includes('unused_address_groups')
-    const tableOrder = isPanorama
-      ? ['members', 'address_objects', 'address_groups', 'policies', 'orphaned_address_objects', 'unused_address_groups']
-      : arrayKeys
-
-    for (const key of tableOrder) {
-      if (!arrayKeys.includes(key) || key === 'path_hops' || key === 'reverse_path_hops') continue
+    for (const key of arrayKeys) {
+      if (key === 'path_hops' || key === 'reverse_path_hops') continue
       const arr = c[key]
-      const heading = PANORAMA_TABLE_LABELS[key] || key.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
-      const colOrder = PANORAMA_COLUMN_ORDER[key] || null
+      const heading = key.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
       if (arr.length === 1 && isDeviceRackRow(arr[0])) {
         groups.push({ type: 'vertical', row: arr[0], keys: DEVICE_RACK_KEYS, heading })
       } else {
-        groups.push({ type: 'horizontal', rows: arr, columns: colOrder, heading })
+        groups.push({ type: 'horizontal', rows: arr, heading })
       }
     }
 
@@ -132,35 +122,24 @@ export default function AssistantMessage({ content, memories }) {
       {hasMetric && <MetricBadge text={content.metric_answer} />}
       {classified.type === 'path' && (
         <>
-          {content.incident_summary && (
-            <div className={styles.incidentCard}>
-              <div className={styles.incidentNumber}>{content.incident_summary.number}</div>
-              <div className={styles.incidentTitle}>{content.incident_summary.short_description}</div>
-              <div className={styles.incidentMeta}>
-                {content.incident_summary.state && <span><b>State:</b> {content.incident_summary.state}</span>}
-                {content.incident_summary.priority && <span><b>Priority:</b> {content.incident_summary.priority}</span>}
-                {content.incident_summary.opened_at && <span><b>Opened:</b> {content.incident_summary.opened_at}</span>}
-                {content.incident_summary.assigned_to && <span><b>Assigned to:</b> {content.incident_summary.assigned_to}</span>}
-                {content.incident_summary.assignment_group && <span><b>Group:</b> {content.incident_summary.assignment_group}</span>}
-              </div>
-            </div>
-          )}
-          <p className={styles.summaryHeading}>Path Summary</p>
+          <p className={styles.summaryHeading}>Forward Path</p>
           <PathVisualization content={content} />
           {content.reverse_path_hops && content.reverse_path_hops.length > 0 && (
             <>
               <p className={styles.summaryHeading} style={{ marginTop: '1.25rem' }}>Return Path</p>
-              <PathVisualization content={{ ...content, path_hops: content.reverse_path_hops, source: content.destination, destination: content.source }} />
+              <PathVisualization content={{
+                ...content,
+                path_hops: content.reverse_path_hops,
+                src_ip: content.dst_ip,
+                dst_ip: content.src_ip,
+              }} />
             </>
           )}
+          {content.text && <MarkdownContent text={content.text} />}
         </>
       )}
 
       {hasDirectAnswer && <DirectAnswerBadge text={content.direct_answer} />}
-
-      {classified.type === 'batch' && (
-        <BatchResults results={content.batch_results} tool={content.tool || ''} />
-      )}
 
       {classified.type === 'error' && <ErrorMessage content={content} />}
 

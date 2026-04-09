@@ -1,45 +1,51 @@
 """
 Atlas LangGraph state definition.
+
+Only the fields needed by the three-node troubleshoot graph are defined here:
+
+    classify_intent → troubleshoot_orchestrator → build_final_response
+
+Fields
+------
+prompt
+    The raw user input for this turn.
+conversation_history
+    List of prior ``{"role": "user"|"assistant", "content": ...}`` dicts,
+    used to provide multi-turn context to the orchestrator.
+username
+    Authenticated username from the session cookie; passed through to the
+    orchestrator so it can stamp ServiceNow tickets and enforce RBAC.
+session_id
+    Opaque string identifying this browser session.  Used as the LangGraph
+    ``thread_id`` (checkpointer key) and as the Redis key for pending
+    clarification state.
+intent
+    Set by ``classify_intent``:
+      - ``"troubleshoot"`` — real query, send to orchestrator
+      - ``"dismiss"``      — bare acknowledgement with nothing pending
+rbac_error
+    Non-None when an RBAC check fails; carried through to ``build_final_response``
+    so a user-friendly error is returned without calling the LLM.
+final_response
+    The completed ``{"role": "assistant", "content": ...}`` dict, possibly
+    also containing ``path_hops`` for the PathVisualization component.
+    Set by ``troubleshoot_orchestrator`` (or ``classify_intent`` for early
+    exits) and surfaced to the caller by ``process_message``.
 """
 from typing import Any, Literal
 from typing_extensions import TypedDict
-from langchain_core.messages import BaseMessage
 
 
 class AtlasState(TypedDict, total=False):
-    # Input (set once at entry)
+    # ── Inputs (set once at graph entry) ──────────────────────────────────
     prompt: str
     conversation_history: list[dict[str, str]]
     username: str | None
     session_id: str | None
-    discover_only: bool
-    prefilled_tool_name: str | None
-    prefilled_tool_params: dict[str, Any] | None
-    max_iterations: int
 
-    # Routing signals
-    intent: Literal["doc", "network", "prefilled", "dismiss", "risk", "netbrain", "troubleshoot", "servicenow"] | None
+    # ── Routing signals (set by classify_intent) ──────────────────────────
+    intent: Literal["troubleshoot", "dismiss"] | None
     rbac_error: str | None
 
-    # LLM tool selection
-    messages: list[BaseMessage]
-    selected_tool_name: str | None
-    selected_tool_args: dict[str, Any] | None
-    tool_call_id: str | None
-    iteration: int
-
-    # Tool execution
-    tool_raw_result: dict[str, Any] | str | None
-    accumulated_results: list
-    requires_site: bool
-    tool_error: str | dict | None
-
-    # Most recent follow_up_action from any tool result (set at graph entry, not scanned in nodes)
-    last_follow_up_action: dict[str, Any] | None
-
-    # Final answer
+    # ── Output (set by troubleshoot_orchestrator / classify_intent) ───────
     final_response: dict[str, Any] | None
-
-    # Conversation flow context — persisted across turns via LangGraph checkpointer.
-    # "create_change_request" | "create_incident" | None
-    active_flow: str | None
