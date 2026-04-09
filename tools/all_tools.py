@@ -1130,22 +1130,30 @@ async def check_splunk(task: str, config: RunnableConfig) -> str:
         return "Splunk (STUB): 14 deny events on port 22 from 10.0.0.1 in the last 24h."
 
     import uuid
-    try:
+    cb = CircuitBreaker.for_endpoint(SPLUNK_AGENT_URL)
+
+    async def _do() -> dict:
         async with httpx.AsyncClient(timeout=30.0) as c:
             resp = await c.post(SPLUNK_AGENT_URL, json={
                 "id": str(uuid.uuid4()),
                 "message": {"role": "user", "parts": [{"type": "text", "text": task}]},
             })
             resp.raise_for_status()
-            data = resp.json()
-            artifacts = data.get("artifacts", [])
-            if artifacts:
-                text = next(
-                    (p.get("text") for p in artifacts[0].get("parts", []) if p.get("type") == "text"),
-                    None,
-                )
-                if text:
-                    return text
+            return resp.json()
+
+    try:
+        data = await retry_async(
+            cb, _do,
+            retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError),
+        )
+        artifacts = data.get("artifacts", [])
+        if artifacts:
+            text = next(
+                (p.get("text") for p in artifacts[0].get("parts", []) if p.get("type") == "text"),
+                None,
+            )
+            if text:
+                return text
         return "Splunk: no data returned."
     except Exception as exc:
         return f"Splunk unavailable: {exc}"
