@@ -157,7 +157,35 @@ _TOOL_STATUS: dict[str, str] = {
     "panorama_agent":           "Checking Panorama firewall policies...",
     "splunk_agent":             "Querying Splunk for traffic patterns...",
     "tcp_port_agent":           "Testing TCP port reachability from last-hop device...",
+    "ospf_agent":               "Checking OSPF neighbor state...",
+    "ospf_interfaces_agent":    "Checking OSPF interface config...",
+    "ospf_history_agent":       "Comparing OSPF neighbor history...",
+    "routing_history_agent":    "Looking up routing history...",
 }
+
+
+def _build_status(tool_name: str, resolved: dict) -> str:
+    """Build a human-readable status message using resolved input values (e.g. actual hostnames)."""
+    device = resolved.get("device", "")
+    devices = resolved.get("devices", "")
+    destination = resolved.get("destination", "")
+    port = resolved.get("port", "")
+
+    if tool_name == "ping_agent":
+        if device and destination:
+            return f"Pinging from {device} → {destination}..."
+        return "Pinging from first-hop device..."
+    if tool_name == "tcp_port_agent":
+        if device and destination and port:
+            return f"Testing TCP {port} from {device} → {destination}..."
+        return "Testing TCP port reachability..."
+    if tool_name == "routing_check_agent":
+        if devices:
+            return f"Checking routing on: {devices}..."
+        return "Checking routing table on each hop..."
+    if tool_name == "path_agent":
+        return "Tracing network path via live SSH..."
+    return _TOOL_STATUS.get(tool_name, f"Running {tool_name}...")
 
 
 async def _push_status(session_id: str, message: str) -> None:
@@ -247,8 +275,12 @@ class RunbookExecutor:
 
         # ── Parallel block ─────────────────────────────────────────────────
         if "parallel" in step:
-            sub_tools = [s.get("tool", "") for s in step["parallel"] if s.get("tool")]
-            labels = [_TOOL_STATUS.get(t, t) for t in sub_tools]
+            labels = []
+            for s in step["parallel"]:
+                t = s.get("tool", "")
+                if t:
+                    resolved_preview = _resolve(s.get("input", {}), self.ctx)
+                    labels.append(_build_status(t, resolved_preview))
             if labels:
                 await _push_status(self.session_id, " | ".join(labels))
             await asyncio.gather(*[self._run_step(s, _in_parallel=True) for s in step["parallel"]])
@@ -264,12 +296,12 @@ class RunbookExecutor:
             logger.warning("runbook[%s]: no tool registered for '%s'", step_id, tool_name)
             return
 
+        resolved = _resolve(step.get("input", {}), self.ctx)
+
         # Push individual status only when NOT inside a parallel block
         if not _in_parallel:
-            status_msg = _TOOL_STATUS.get(tool_name, f"Running {tool_name}...")
+            status_msg = _build_status(tool_name, resolved)
             await _push_status(self.session_id, status_msg)
-
-        resolved = _resolve(step.get("input", {}), self.ctx)
         logger.info(
             "runbook[%s]: %s(%s)",
             step_id, tool_name,

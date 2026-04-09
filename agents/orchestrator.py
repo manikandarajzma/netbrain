@@ -1263,9 +1263,26 @@ async def _post_path_trace(result: str, ctx: dict) -> None:
     devices   = _extract_devices_from_netbrain(result)
     firewalls = _extract_firewalls_from_netbrain(result)
 
-    ctx["path_devices"]       = devices
-    ctx["has_firewalls"]      = bool(firewalls)
-    ctx["firewall_hostnames"] = firewalls
+    # Prefer structured hops for device list — text parsing often misses downstream devices.
+    # Only accept clean hostnames: alphanumeric + hyphens/underscores, no spaces or emoji.
+    if _session_path_hops:
+        import re as _re_ip
+        _HOSTNAME_RE = _re_ip.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-_\.]*[A-Za-z0-9])?$')
+        hop_devices = []
+        seen: set[str] = set()
+        for h in _session_path_hops:
+            for key in ("from_device", "to_device"):
+                d = h.get(key, "")
+                if d and d not in seen and _HOSTNAME_RE.match(d):
+                    seen.add(d)
+                    hop_devices.append(d)
+        if hop_devices:
+            devices = hop_devices
+
+    ctx["path_devices"]            = devices
+    ctx["ospf_candidate_devices"]  = list(devices)  # refined by _post_historical_route after routing history
+    ctx["has_firewalls"]           = bool(firewalls)
+    ctx["firewall_hostnames"]      = firewalls
 
     # Extract first hop device + interfaces from path text or structured hops.
     # first_hop_lan_interface  = interface on the first device facing the SOURCE (used for ping source)
@@ -1385,8 +1402,8 @@ def _post_tcp_test(result: dict, ctx: dict) -> None:
         ctx["tcp_reachable"] = False
 
 
-def _post_historical_route(result: dict, ctx: dict) -> None:
-    """Store routing_history result and set historical_egress / historical_egress_found."""
+async def _post_historical_route(result: dict, ctx: dict) -> None:
+    """Store routing_history result, resolve next-hop IP → device name, build ospf_candidate_devices."""
     if isinstance(result, dict) and result.get("found"):
         ctx["historical_egress"]       = result.get("egress_interface", "")
         ctx["historical_egress_found"] = bool(ctx["historical_egress"])
@@ -1395,6 +1412,20 @@ def _post_historical_route(result: dict, ctx: dict) -> None:
         ctx["historical_egress"]       = ""
         ctx["historical_egress_found"] = False
         ctx["historical_route"]        = {}
+
+    # Build ospf_candidate_devices: union of current path devices + historically known path devices
+    current: list[str] = list(ctx.get("path_devices") or [])
+    historical_devices: list[str] = (ctx.get("historical_route") or {}).get("historical_devices", [])
+    for dev in historical_devices:
+        if dev and dev not in current:
+            current.append(dev)
+    if historical_devices:
+        logger.info(
+            "_post_historical_route: ospf_candidate_devices=%s (added from routing history: %s)",
+            current,
+            [d for d in historical_devices if d not in list(ctx.get("path_devices") or [])],
+        )
+    ctx["ospf_candidate_devices"] = current
 
 
 def _post_interface_detail(result: dict, ctx: dict) -> None:
@@ -1534,9 +1565,10 @@ def _build_runbook_tools(prompt: str) -> dict:
         return await call_splunk_agent.ainvoke({"task": task})
 
     async def _routing_history_agent(device: str, destination: str) -> dict:
-        """Query routing_history DB for the last known data-plane route on device to destination."""
+        """Query routing_history DB for the last known data-plane route on device to destination.
+        Also returns all devices that historically had a data-plane route to destination."""
         try:
-            from db import fetchrow as _frow
+            from db import fetchrow as _frow, fetch as _fetch
             hist = await _frow(
                 """
                 SELECT egress_interface, next_hop::text, protocol, prefix::text, collected_at
@@ -1550,19 +1582,31 @@ def _build_runbook_tools(prompt: str) -> dict:
                 """,
                 device, destination,
             )
+            # All devices that ever had a data-plane route to this destination
+            hist_devs = await _fetch(
+                """
+                SELECT DISTINCT device FROM routing_history
+                WHERE $1::inet << prefix
+                  AND egress_interface IS NOT NULL
+                  AND egress_interface NOT ILIKE 'management%'
+                """,
+                destination,
+            )
+            historical_devices = [r["device"] for r in hist_devs]
         except Exception as exc:
             logger.warning("routing_history_agent: DB error: %s", exc)
             return {"found": False, "device": device, "error": str(exc)}
         if not hist:
-            return {"found": False, "device": device}
+            return {"found": False, "device": device, "historical_devices": historical_devices}
         return {
-            "found":             True,
-            "device":            device,
-            "egress_interface":  hist["egress_interface"],
-            "next_hop":          hist["next_hop"],
-            "protocol":          hist["protocol"],
-            "prefix":            hist["prefix"],
-            "collected_at":      hist["collected_at"].isoformat(),
+            "found":              True,
+            "device":             device,
+            "egress_interface":   hist["egress_interface"],
+            "next_hop":           hist["next_hop"],
+            "protocol":           hist["protocol"],
+            "prefix":             hist["prefix"],
+            "collected_at":       hist["collected_at"].isoformat(),
+            "historical_devices": historical_devices,
         }
 
     async def _interface_detail_agent(device: str, interface: str) -> dict:
@@ -1721,31 +1765,47 @@ def _build_deterministic_root_cause(ctx: dict, src_ip: str, dst_ip: str) -> str:
             if intf_data.get("ospf_interface_count", -1) == 0:
                 hist_snaps = ospf_history.get(device, {}).get("history", [])
                 had_neighbors = any(s.get("neighbor_count", 0) > 0 for s in hist_snaps)
-                if had_neighbors:
-                    max_hist = max(s["neighbor_count"] for s in hist_snaps)
-                    syslog_r = ctx.get("syslog", {})
-                    syslog_block = ""
-                    if syslog_r and syslog_r.get("logs"):
-                        syslog_block = "\n\nSyslog events on {}:\n".format(device) + "\n".join(
-                            f"  - {l}" for l in syslog_r["logs"][-10:]
-                        )
-                    return (
-                        f"## Root Cause\n\n"
-                        f"**OSPF misconfiguration on {device}** — the OSPF process is running "
-                        f"(router-ID exists) but **no interfaces are participating in OSPF** "
-                        f"(`ospf_interface_count: 0`). This means no `network` command or "
-                        f"`ip ospf area` is configured on any interface. "
-                        f"Historically {device} had **{max_hist} OSPF neighbor(s)**; loss of "
-                        f"OSPF routes caused traffic to fall back to a static default via "
-                        f"Management0 ({src_ip} → {dst_ip} blackholed)."
-                        f"{syslog_block}\n\n"
-                        f"## Recommendation\n\n"
-                        f"- Re-add the OSPF `network` statement (or `ip ospf area <id>` on the "
-                        f"relevant interfaces) on **{device}**\n"
-                        f"- Verify OSPF adjacencies reconverge with `show ip ospf neighbor`\n"
-                        f"- Confirm the route to {dst_ip} is learned via OSPF (not Management0)\n"
-                        f"- Validate end-to-end connectivity from {src_ip} to {dst_ip}"
+                max_hist = max((s["neighbor_count"] for s in hist_snaps), default=0) if hist_snaps else 0
+
+                # Also infer prior neighbors from other devices' current neighbor data
+                if not had_neighbors:
+                    for other_dev, nbr_data in ospf_neighbors.items():
+                        if other_dev != device and nbr_data.get("count", 0) > 0:
+                            # Another path device still has OSPF neighbors — this device had some too
+                            had_neighbors = True
+                            break
+
+                syslog_r = ctx.get("syslog", {})
+                syslog_block = ""
+                if syslog_r and syslog_r.get("logs"):
+                    syslog_block = "\n\nSyslog events on {}:\n".format(device) + "\n".join(
+                        f"  - {l}" for l in syslog_r["logs"][-10:]
                     )
+
+                history_note = (
+                    f"Historically {device} had **{max_hist} OSPF neighbor(s)**; loss of "
+                    f"OSPF routes caused traffic to fall back to a static default via "
+                    f"Management0 ({src_ip} → {dst_ip} blackholed)."
+                    if had_neighbors and max_hist
+                    else f"With no OSPF-enabled interfaces, {device} cannot form adjacencies "
+                    f"or advertise/receive OSPF routes, breaking the path from {src_ip} to {dst_ip}."
+                )
+
+                return (
+                    f"## Root Cause\n\n"
+                    f"**OSPF misconfiguration on {device}** — the OSPF process is running "
+                    f"(router-ID exists) but **no interfaces are participating in OSPF** "
+                    f"(`ospf_interface_count: 0`). This means no `network` command or "
+                    f"`ip ospf area` is configured on any interface. "
+                    f"{history_note}"
+                    f"{syslog_block}\n\n"
+                    f"## Recommendation\n\n"
+                    f"- Re-add the OSPF `network` statement (or `ip ospf area <id>` on the "
+                    f"relevant interfaces) on **{device}**\n"
+                    f"- Verify OSPF adjacencies reconverge with `show ip ospf neighbor`\n"
+                    f"- Confirm the route to {dst_ip} is learned via OSPF (not Management0)\n"
+                    f"- Validate end-to-end connectivity from {src_ip} to {dst_ip}"
+                )
 
     device  = ctx.get("investigation_device", "")
     detail  = ctx.get("investigation_intf_detail", {})
@@ -2352,6 +2412,32 @@ async def orchestrate_troubleshoot(
 
             return "\n".join(lines)
 
+        def _build_vendor_kb_section() -> str:
+            kb       = _rb_ctx.get("vendor_kb") or {}
+            results  = kb.get("kb_results") or []
+            symptoms = kb.get("symptoms") or []
+            vendor   = kb.get("vendor", "unknown")
+            if not results and not symptoms:
+                return ""
+            lines = [f"## Vendor Knowledge Base ({vendor})"]
+            if symptoms:
+                sym_labels = ", ".join(
+                    f"`{s['type']}`" + (f" on {s['device']}" if s.get("device") else "")
+                    for s in symptoms
+                )
+                lines.append(f"**Detected symptoms:** {sym_labels}")
+                lines.append("")
+            if results:
+                for r in results:
+                    lines.append(f"**{r['title']}**")
+                    lines.append(r["snippet"])
+                    if r.get("url"):
+                        lines.append(f"*{r['url']}*")
+                    lines.append("")
+            else:
+                lines.append("*No relevant vendor articles found.*")
+            return "\n".join(lines)
+
         # Build all sections
         report_sections: list[str] = []
         path_sec = _build_path_section()
@@ -2368,14 +2454,31 @@ async def orchestrate_troubleshoot(
         )
         if investigation_sec:
             report_sections.append(investigation_sec)
+        # ── Vendor KB lookup (must run before section building so _rb_ctx["vendor_kb"] is populated) ──
+        try:
+            try:
+                from atlas.agents.vendor_lookup_agent import lookup as _vendor_lookup
+            except ImportError:
+                from agents.vendor_lookup_agent import lookup as _vendor_lookup
+            vendor_kb = await _vendor_lookup(_rb_ctx, path_devices)
+            _rb_ctx["vendor_kb"] = vendor_kb
+            logger.info(
+                "vendor_lookup: vendor=%r symptoms=%d kb_articles=%d",
+                vendor_kb.get("vendor"),
+                len(vendor_kb.get("symptoms", [])),
+                len(vendor_kb.get("kb_results", [])),
+            )
+        except Exception as _vk_exc:
+            logger.warning("vendor_lookup failed: %s", _vk_exc)
+
         # Connectivity-specific sections only make sense when src+dst IPs are present
         if _rb_src_ip and _rb_dst_ip:
             if not _path_has_firewalls:
-                for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section(), _build_ospf_section()):
+                for sec in (_build_ping_section(), _build_tcp_section(), _build_interface_section(), _build_routing_section(), _build_ospf_section(), _build_vendor_kb_section()):
                     if sec:
                         report_sections.append(sec)
             else:
-                for sec in (_build_firewall_section(), _build_splunk_section()):
+                for sec in (_build_firewall_section(), _build_splunk_section(), _build_vendor_kb_section()):
                     if sec:
                         report_sections.append(sec)
 
@@ -2432,7 +2535,10 @@ async def orchestrate_troubleshoot(
                     "- If ping failed: name the specific hop or device where routing breaks.\n"
                     "- If ping succeeded and interfaces are clean: say the path is healthy and the issue is likely "
                     "at the application or service layer.\n"
-                    "- If a firewall denied traffic: name the rule and device.\n\n"
+                    "- If a firewall denied traffic: name the rule and device.\n"
+                    "- If a 'Vendor Knowledge Base' section is present: use the article titles and "
+                    "snippets to add vendor-specific config commands or known-issue context to the "
+                    "Recommendation. Do not quote snippets verbatim — synthesise into actionable steps.\n\n"
                     "DIAGNOSTIC DATA:\n" + sections_text
                 )
                 synthesis_messages = [

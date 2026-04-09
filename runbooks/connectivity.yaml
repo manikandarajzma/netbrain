@@ -1,7 +1,8 @@
 name: connectivity
 description: >
   Connectivity blocked/denied troubleshoot.
-  Decision tree: path trace → evidence gathering → ping →
+  Decision tree: path trace → evidence gathering → OSPF checks on candidate devices
+  (current path + historically known devices via routing history) → ping →
     if ping fails: routing check on all hops, then Panorama if firewalls
     if ping passes: TCP port test from last-hop device (if port known), then Panorama if firewalls
 
@@ -19,7 +20,7 @@ steps:
         input:
           prompt: "{{prompt}}"
 
-  # ── Step 2: Gather evidence in parallel (regardless of path result) ───────
+  # ── Step 2: Gather evidence + routing history in parallel ─────────────────
   - id: gather_evidence
     parallel:
       - id: servicenow
@@ -37,17 +38,59 @@ steps:
         input:
           devices_and_interfaces: "{{path_hops_for_counters}}"
 
-  # ── Step 3: Active test — only if we have a first-hop device ─────────────
+      # Routing history: what was the last known good route from the first-hop device?
+      # Post-processor resolves next-hop IP → device name → builds ospf_candidate_devices
+      - id: historical_route
+        if: first_hop_device
+        then:
+          - id: historical_route
+            tool: routing_history_agent
+            input:
+              device: "{{first_hop_device}}"
+              destination: "{{dst_ip}}"
+
+  # ── Step 3: OSPF checks on candidate devices (current path + historically known) ──
+  - id: ospf_checks
+    parallel:
+      - id: ospf_neighbors
+        tool: ospf_agent
+        input:
+          devices: "{{ospf_candidate_devices}}"
+
+      - id: ospf_interfaces
+        tool: ospf_interfaces_agent
+        input:
+          devices: "{{ospf_candidate_devices}}"
+
+      - id: ospf_history
+        tool: ospf_history_agent
+        input:
+          devices: "{{ospf_candidate_devices}}"
+
+  # ── Step 4: Active test — only if we have a first-hop device ─────────────
   - id: connectivity_check
     if: first_hop_device
     then:
-      - id: ping_test
-        tool: ping_agent
-        input:
-          device: "{{first_hop_device}}"
-          destination: "{{dst_ip}}"
-          source_interface: "{{first_hop_lan_interface}}"
-          vrf: "{{src_vrf}}"
+      # Run forward and reverse pings in parallel
+      - id: ping_tests
+        parallel:
+          - id: ping_test
+            tool: ping_agent
+            input:
+              device: "{{first_hop_device}}"
+              destination: "{{dst_ip}}"
+              source_interface: "{{first_hop_lan_interface}}"
+              vrf: "{{src_vrf}}"
+
+          - id: reverse_ping_check
+            if: last_hop_device
+            then:
+              - id: reverse_ping_test
+                tool: ping_agent
+                input:
+                  device: "{{last_hop_device}}"
+                  destination: "{{src_ip}}"
+                  source_interface: "{{last_hop_egress_interface}}"
 
       # Branch on ping result
       - id: post_ping
@@ -57,7 +100,7 @@ steps:
           - id: routing_check
             tool: routing_check_agent
             input:
-              devices: "{{path_devices}}"
+              devices: "{{ospf_candidate_devices}}"
               destination: "{{dst_ip}}"
               vrf: "{{src_vrf}}"
 
@@ -103,12 +146,12 @@ steps:
     else:
       # No first-hop device found — path trace couldn't identify hops
       - id: routing_fallback
-        if: path_devices
+        if: ospf_candidate_devices
         then:
           - id: routing_check
             tool: routing_check_agent
             input:
-              devices: "{{path_devices}}"
+              devices: "{{ospf_candidate_devices}}"
               destination: "{{dst_ip}}"
               vrf: "{{src_vrf}}"
         else:
