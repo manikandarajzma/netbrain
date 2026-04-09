@@ -78,6 +78,27 @@ async def _push_status(session_id: str, msg: str) -> None:
         pass
 
 
+async def _nornir_post(endpoint: str, payload: dict, timeout: float = 30.0) -> dict:
+    """
+    POST to the Nornir HTTP backend with circuit-breaker + retry.
+    Every Nornir tool call should go through here — never call httpx directly.
+    Raises on failure; callers catch and return an error string.
+    """
+    url = f"{NORNIR_AGENT_URL}/{endpoint.lstrip('/')}"
+    cb  = CircuitBreaker.for_endpoint(url)
+
+    async def _do() -> dict:
+        async with httpx.AsyncClient(timeout=timeout) as c:
+            r = await c.post(url, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+    return await retry_async(
+        cb, _do,
+        retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError),
+    )
+
+
 _PLATFORM_TO_TYPE = {
     "arista_eos":  "arista switch",
     "cisco_ios":   "cisco router",
@@ -475,12 +496,10 @@ async def test_tcp_port(
     await _push_status(session_id, f"Testing TCP {device} → {destination}:{port}...")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/tcp-test",
-                             json={"device": device, "destination": destination,
-                                   "port": int(port), "vrf": vrf})
-            r.raise_for_status()
-            result = r.json()
+        result = await _nornir_post("/tcp-test",
+                                    {"device": device, "destination": destination,
+                                     "port": int(port), "vrf": vrf},
+                                    timeout=30.0)
     except Exception as exc:
         result = {"reachable": False, "error": str(exc)}
 
@@ -628,10 +647,10 @@ async def get_interface_detail(
     await _push_status(session_id, f"Checking interface {device}/{interface}...")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/interface-detail",
-                             json={"device": device, "interface": interface})
-            return json.dumps(r.json(), indent=2)
+        data = await _nornir_post("/interface-detail",
+                                  {"device": device, "interface": interface},
+                                  timeout=15.0)
+        return json.dumps(data, indent=2)
     except Exception as exc:
         return f"Interface detail error: {exc}"
 
@@ -648,9 +667,7 @@ async def get_all_interfaces(device: str, config: RunnableConfig) -> str:
     await _push_status(session_id, f"Getting all interfaces on {device}...")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/all-interfaces-status", json={"device": device})
-            data = r.json()
+        data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
     except Exception as exc:
         return f"All-interfaces error: {exc}"
 
@@ -681,10 +698,7 @@ async def get_device_syslog(device: str, config: RunnableConfig, interface: str 
     await _push_status(session_id, f"Fetching syslog from {device}...")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/show-logging",
-                             json={"device": device, "lines": 100})
-            data = r.json()
+        data = await _nornir_post("/show-logging", {"device": device, "lines": 100}, timeout=15.0)
     except Exception as exc:
         return f"Syslog error on {device}: {exc}"
 
@@ -722,9 +736,7 @@ async def check_ospf_neighbors(devices: list[str], config: RunnableConfig) -> st
     await _push_status(session_id, f"Checking OSPF neighbors on {devs_str}...")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/ospf-neighbors", json={"devices": devices})
-            data = r.json()
+        data = await _nornir_post("/ospf-neighbors", {"devices": devices}, timeout=30.0)
     except Exception as exc:
         return f"OSPF neighbors error: {exc}"
 
@@ -759,9 +771,7 @@ async def check_ospf_interfaces(devices: list[str], config: RunnableConfig) -> s
     await _push_status(session_id, f"Checking OSPF interface config on {', '.join(devices)}...")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.post(f"{NORNIR_AGENT_URL}/ospf-interfaces", json={"devices": devices})
-            data = r.json()
+        data = await _nornir_post("/ospf-interfaces", {"devices": devices}, timeout=30.0)
     except Exception as exc:
         return f"OSPF interfaces error: {exc}"
 

@@ -169,8 +169,31 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             return {"intent": intent}
         _pending_ts_delete(session_id)
 
-    # Network-ops workflow detection (checked before generic troubleshooting keywords)
+    # Ambiguity guard: diagnostic framing overrides ops keywords.
+    # "why is my traffic being blocked?" has ops words but is a diagnosis request.
+    # "I need to open port 443 because it's being blocked" is still ops (has an action request).
+    _DIAGNOSTIC_FRAMING_RE = re.compile(
+        r"\b(why\s+(is|are|isn'?t|aren'?t|can'?t|doesn'?t|won'?t)|"
+        r"what'?s\s+(blocking|causing|wrong|happening)|"
+        r"not\s+(working|reachable|responding|connecting)|"
+        r"can'?t\s+(reach|connect|ping|access)|"
+        r"investigate|diagnose|debug|trace|check\s+why|"
+        r"failing|broken|down\b|unreachable|timed?\s*out)\b",
+        re.IGNORECASE,
+    )
+
     if _NETWORK_OPS_RE.search(prompt):
+        # If the query is framed as diagnosis ("why is it blocked") AND has no
+        # explicit action request ("open port", "add rule", "whitelist"), keep it
+        # as troubleshoot.
+        _ACTION_RE = re.compile(
+            r"\b(open\s+port|need\s+port|whitelist|add\s+rule|create\s+rule|"
+            r"allow\s+access|grant\s+access|change\s+request|fw\s+request|"
+            r"access\s+request|new\s+rule|firewall\s+rule)\b",
+            re.IGNORECASE,
+        )
+        if _DIAGNOSTIC_FRAMING_RE.search(prompt) and not _ACTION_RE.search(prompt):
+            return {"intent": "troubleshoot"}
         return {"intent": "network_ops"}
 
     # Everything else is a troubleshooting query
