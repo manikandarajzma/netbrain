@@ -1160,6 +1160,47 @@ async def check_splunk(task: str, config: RunnableConfig) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Long-term memory recall — semantic search over past sessions + incidents
+# ---------------------------------------------------------------------------
+
+@tool
+async def recall_similar_cases(
+    query: str,
+    devices: list[str],
+    config: RunnableConfig,
+) -> str:
+    """
+    Search long-term memory for past troubleshooting sessions and closed incidents
+    semantically similar to the current query.
+
+    Call this early in the investigation — similar past cases often reveal the
+    root cause before running live diagnostic tools.
+
+    Args:
+        query:   The current issue description (e.g. "10.0.100.100 can't reach 10.0.200.200 port 443").
+        devices: Device hostnames in the path — used to match device-tagged incidents.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, "Searching past cases...")
+
+    try:
+        try:
+            from atlas.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
+        except ImportError:
+            from agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context  # type: ignore
+
+        past_sessions = await recall_memory(query, agent_type="troubleshoot", top_k=3)
+        past_incidents = await recall_incidents_by_devices(devices, query=query, top_k=5) if devices else []
+
+        combined = past_sessions + [i for i in past_incidents if i not in past_sessions]
+        if not combined:
+            return "No similar past cases found in memory."
+        return format_memory_context(combined)
+    except Exception as exc:
+        return f"Memory recall unavailable: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # Vendor KB lookup — LLM-generated vendor-specific guidance
 # ---------------------------------------------------------------------------
 
@@ -1305,6 +1346,7 @@ ALL_TOOLS = [
     get_incident_details,
     check_panorama_policy,
     check_splunk,
+    recall_similar_cases,
     lookup_vendor_kb,
 ]
 

@@ -115,7 +115,35 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 
 ---
 
-## 4. File Structure
+## 4. Memory Architecture
+
+Atlas uses two distinct memory layers backed by Redis.
+
+### Short-Term Memory (Conversation / Thread)
+
+Implemented via **LangGraph's `AsyncRedisSaver`** checkpointer, wired in `chat_service.py`.
+
+- Stores the full message history (user messages, tool calls, tool results, agent replies) for a single session
+- Keyed by `thread_id = session_id` — each browser session gets its own slot
+- Enables multi-turn conversations: the agent remembers what was said and which tools were called earlier in the same chat
+- Very fast (sub-millisecond Redis reads/writes)
+- No TTL — persists until the session expires
+
+### Long-Term Memory (Cross-Session / Semantic)
+
+Implemented via **RedisVL vector store** in `agent_memory.py`.
+
+| Mechanism | What it stores | How it's written | How it's read |
+|-----------|---------------|-----------------|---------------|
+| `store_memory()` | Past troubleshooting findings (query + root cause) | Called automatically in `graph_nodes.py` after each successful troubleshoot run | `recall_similar_cases` tool |
+| `store_incident_memory()` | Closed ServiceNow incidents | Nightly sync via `servicenow_memory_sync.py` | `recall_similar_cases` tool |
+
+**Agent usage:** The `recall_similar_cases` tool is in `ALL_TOOLS`. The troubleshoot agent calls it early in its investigation — semantically similar past cases surface root causes before live tools run.
+
+**Embedding model:** `sentence-transformers/all-MiniLM-L6-v2` (384-dim, CPU-only)
+**TTL:** 30 days (configurable via `AGENT_MEMORY_TTL_DAYS`)
+
+## 5. File Structure
 
 ```
 atlas/
@@ -133,7 +161,9 @@ atlas/
 │       ├── connectivity.md     # Sequence + root cause patterns + report format
 │       ├── performance.md
 │       └── intermittent.md
-└── mcp_server.py           # FastMCP server — ServiceNow tools over MCP
+├── mcp_server.py           # FastMCP server — ServiceNow tools over MCP
+├── agent_memory.py         # Long-term memory: RedisVL vector store (store + recall)
+└── servicenow_memory_sync.py  # Nightly job: closed SNOW incidents → long-term memory
 ```
 
 ---

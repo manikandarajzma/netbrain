@@ -370,6 +370,18 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     if counters:      content["interface_counters"]  = counters
     if inc_summary:   content["incident_summary"]    = inc_summary
 
+    # Store findings in long-term memory for future recall
+    if final_text:
+        try:
+            try:
+                from atlas.agent_memory import store_memory
+            except ImportError:
+                from agent_memory import store_memory  # type: ignore
+            import asyncio
+            asyncio.create_task(store_memory(full_prompt, final_text, agent_type="troubleshoot"))
+        except Exception:
+            pass
+
     logger.info("troubleshoot done: keys=%s hops=%d counters=%d", list(content.keys()), len(path_hops), len(counters))
     return {"final_response": {"role": "assistant", "content": content}}
 
