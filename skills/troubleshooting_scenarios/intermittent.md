@@ -4,13 +4,25 @@
 
 Intermittent issues are almost never routing misconfigurations — they are stability problems. Focus on what is changing over time: OSPF adjacency flaps, interface link events, hardware errors.
 
-### Step sequence for intermittent issues
+### Investigation sequence
 
-Follow the standard sequence. Pay close attention to:
-- `lookup_ospf_history` — look for a trend like "2 → 1 → 2 → 0 → 2". Any variance in neighbor count indicates instability.
-- `get_device_syslog` — look for repeated link-down/up events, OSPF adjacency drops, or err-disable events. The timestamp of these events correlates the disruption.
-- `get_interface_counters` — CRC errors or input errors that are actively incrementing point to a flapping physical link.
-- `get_interface_detail` — check for frequent carrier transitions (input resets, carrier transitions counter).
+**Step 1** — `trace_path(source_ip, dest_ip)` — always first.
+
+**Step 2** — In parallel:
+- `search_servicenow(device_names=[...], source_ip=..., dest_ip=...)`
+- `get_interface_counters(devices_and_interfaces=[...path_hops...])` — look for CRC/input errors actively incrementing
+- `lookup_routing_history(destination_ip=dest_ip)`
+- `get_device_syslog(devices=[...path_hops...])` — timestamps of link-down/up and OSPF events are the primary signal
+
+**Step 3** — OSPF stability checks in parallel:
+- `check_ospf_neighbors(devices=[...])`
+- `check_ospf_interfaces(devices=[...])`
+- `lookup_ospf_history(devices=[...])` — look for a trend like "2 → 1 → 2 → 0 → 2"; any variance indicates instability
+
+**Step 4** — Interface detail on suspected devices:
+- `get_interface_detail(device=..., interface=...)` — check carrier-transitions counter
+
+---
 
 ### Root cause patterns
 
@@ -37,3 +49,17 @@ Recommendation:
 **No evidence of flapping (path and interfaces stable):**
 If OSPF history is flat, interfaces are clean, and syslog shows no events — the problem may be upstream of the first-hop device or at the application layer.
 Root cause: "No network-layer instability detected. OSPF is stable and interfaces are clean. The intermittent issue may be at the application layer or in a segment not visible to this inventory."
+
+---
+
+### Report format
+
+Use these exact headers (omit any with nothing to report):
+
+## Path Summary
+## ServiceNow
+## Interface Errors
+## OSPF Analysis
+## Vendor-Specific Guidance
+## Root Cause
+## Recommendation

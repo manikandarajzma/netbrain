@@ -1,16 +1,29 @@
 ## Scenario: Performance (slow / high latency / degraded throughput)
 
-### Approach
+### Key insight
 
 Ping works but traffic is slow or degraded. Focus on interface errors and OSPF instability — these are the most common causes of throughput degradation on a healthy L3 path.
 
-### Step sequence for performance issues
+### Investigation sequence
 
-Same as the standard sequence, but pay extra attention to:
-- `get_interface_counters` results — actively incrementing input errors, CRC errors, or output drops indicate a physical or hardware problem.
-- `lookup_ospf_history` — frequent neighbor count changes indicate OSPF flapping, causing micro-outages and re-convergence delays.
-- Ping RTT from `ping_device` — if RTT is high (> 10ms on a LAN), suspect interface errors or QoS misconfiguration.
-- `trace_reverse_path` — if the return path is different from the forward path, asymmetric routing may cause TCP performance issues (RSTs, retransmits).
+**Step 1** — `trace_path(source_ip, dest_ip)` — always first.
+
+**Step 2** — In parallel:
+- `search_servicenow(device_names=[...], source_ip=..., dest_ip=...)`
+- `get_interface_counters(devices_and_interfaces=[...path_hops...])` — actively incrementing errors are the primary signal
+- `lookup_routing_history(destination_ip=dest_ip)`
+- `get_device_syslog(devices=[...path_hops...])` — look for recurring error events
+
+**Step 3** — OSPF checks in parallel on path devices + historically known devices:
+- `check_ospf_neighbors(devices=[...])`
+- `check_ospf_interfaces(devices=[...])`
+- `lookup_ospf_history(devices=[...])` — look for neighbor count changes (flapping)
+
+**Step 4** — Ping to measure RTT:
+- `ping_device(device=first_hop_device, destination=dest_ip, source_interface=first_hop_lan_interface, vrf=src_vrf)`
+- `trace_reverse_path(source_ip=source_ip, dest_ip=dest_ip)` — asymmetric path causes TCP issues
+
+---
 
 ### Root cause patterns
 
@@ -33,3 +46,17 @@ Recommendation: Review QoS policy, interface bandwidth, and traffic rates. Consi
 **Clean counters, no OSPF issues:**
 If all interfaces are clean and OSPF is stable, the bottleneck is likely at the application or server layer.
 Root cause: "Network path is healthy (no interface errors, OSPF stable, RTT normal). Performance issue is at the application or server layer."
+
+---
+
+### Report format
+
+Use these exact headers (omit any with nothing to report):
+
+## Path Summary
+## ServiceNow
+## Interface Errors
+## OSPF Analysis
+## Vendor-Specific Guidance
+## Root Cause
+## Recommendation

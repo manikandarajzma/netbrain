@@ -10,7 +10,10 @@ Graph shape:
 import json
 import logging
 import re
+import traceback as _tb
 from typing import Any
+
+from langchain_core.messages import HumanMessage
 
 try:
     from atlas.graph_state import AtlasState
@@ -211,18 +214,95 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Shared infrastructure helpers
+# ---------------------------------------------------------------------------
+
+_INC_RE = re.compile(r'\bINC\d+\b', re.IGNORECASE)
+_IP_RE  = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+
+
+def _extract_ips(text: str) -> tuple[str, str]:
+    ips = _IP_RE.findall(text)
+    return (ips[0] if ips else ""), (ips[1] if len(ips) > 1 else "")
+
+
+def _extract_final_text(messages: list) -> str:
+    text = next(
+        (m.content for m in reversed(messages)
+         if hasattr(m, "content") and m.content and not getattr(m, "tool_calls", None)),
+        "",
+    )
+    text = re.sub(r"<plan>.*?</plan>",             "", text, flags=re.DOTALL)
+    text = re.sub(r"<reflection>.*?</reflection>", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+async def _push_status(session_id: str, msg: str) -> None:
+    try:
+        try:
+            import atlas.status_bus as sb
+        except ImportError:
+            import status_bus as sb  # type: ignore
+        await sb.push(session_id, msg)
+    except Exception:
+        pass
+
+
+async def _resolve_inc(prompt: str) -> tuple[str, dict | None]:
+    """Expand INC→IPs when the prompt has an INC number but no IPs."""
+    m = _INC_RE.search(prompt)
+    if not m or _IP_RE.search(prompt):
+        return prompt, None
+    inc_num = m.group(0).upper()
+    try:
+        try:
+            from atlas.tools.servicenow_tools import get_servicenow_incident as _t
+        except ImportError:
+            from tools.servicenow_tools import get_servicenow_incident as _t  # type: ignore
+        fn   = getattr(_t, "fn", None) or _t
+        data = await fn(inc_num)
+        if "error" in data:
+            return prompt, None
+        r    = data.get("result", {})
+        desc = r.get("description") or r.get("short_description") or ""
+        ips  = _IP_RE.findall(desc)
+        if len(ips) < 2:
+            return prompt, None
+        port_hit = re.search(r'\bport\s+(\d+)\b', desc, re.IGNORECASE)
+        port_str = f" port {port_hit.group(1)}" if port_hit else ""
+        new_prompt = f"{prompt} (source: {ips[0]}, destination: {ips[1]}{port_str})"
+        logger.info("INC→IP resolved: %s → %s", inc_num, new_prompt[-60:])
+        inc_summary = {
+            "number":            r.get("number", inc_num),
+            "short_description": r.get("short_description", ""),
+            "state":             r.get("state", ""),
+            "priority":          r.get("priority", ""),
+            "opened_at":         r.get("opened_at", ""),
+            "assigned_to":       (r.get("assigned_to") or {}).get("display_value") or "Unassigned",
+        }
+        return new_prompt, inc_summary
+    except Exception as exc:
+        logger.warning("INC→IP resolution failed: %s", exc)
+        return prompt, None
+
+
+# ---------------------------------------------------------------------------
 # Node 2: call_troubleshoot_agent
 # ---------------------------------------------------------------------------
 
 async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
-    """Invoke the troubleshoot ReAct agent and return its structured result."""
+    """Build and invoke the troubleshoot ReAct agent; collect session data."""
     try:
-        from atlas.agents.troubleshoot_agent import orchestrate_troubleshoot
+        from atlas.agents.troubleshoot_agent import build_agent
+        from atlas.tools.all_tools import pop_session_data
     except ImportError:
-        from agents.troubleshoot_agent import orchestrate_troubleshoot  # type: ignore
+        from agents.troubleshoot_agent import build_agent                # type: ignore
+        from tools.all_tools import pop_session_data                     # type: ignore
 
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
+
+    await _push_status(session_id, "Investigating...")
 
     # Recover clarification context if pending
     pending, pending_issue_type = _pending_ts_get(session_id)
@@ -245,40 +325,53 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
                 and len(prompt.split()) <= 6
             )
             if is_clarification_reply and _IP_OR_CIDR_RE.findall(last_user_before):
-                pending           = last_user_before
+                pending            = last_user_before
                 pending_issue_type = "general"
 
-    issue_type = pending_issue_type or "general"
+    issue_type  = pending_issue_type or "general"
+    full_prompt = f"{pending}\n\nUser clarification: {prompt}" if pending else prompt
 
-    if pending:
-        full_prompt = f"{pending}\n\nUser clarification: {prompt}"
-    else:
+    if not pending:
         ip_matches = _IP_OR_CIDR_RE.findall(prompt)
-
-        # Require at minimum some device/IP context for very short prompts
-        words = prompt.lower().split()
+        words      = prompt.lower().split()
         has_device_context = any(c.isdigit() or "-" in w for w in words for c in w)
-        if not has_device_context and len(ip_matches) == 0 and len(prompt.split()) < 4:
+        if not has_device_context and not ip_matches and len(prompt.split()) < 4:
             return {"final_response": {"role": "assistant", "content": (
                 "Please describe the problem — include device names, IP addresses, or what is failing.\n"
                 'Example: "Why can\'t 10.0.0.1 connect to 11.0.0.1?" or "arista1 is unreachable"'
             )}}
 
-        full_prompt = prompt
+    # INC→IP expansion
+    full_prompt, inc_summary = await _resolve_inc(full_prompt)
+
+    config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
 
     try:
-        result = await orchestrate_troubleshoot(
-            full_prompt,
-            username=state.get("username"),
-            session_id=session_id,
-            issue_type=issue_type,
-        )
+        agent  = build_agent(full_prompt, issue_type)
+        result = await agent.ainvoke({"messages": [HumanMessage(content=full_prompt)]}, config=config)
     except Exception as exc:
-        import traceback as _tb
         logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
-        result = {"role": "assistant", "content": f"Troubleshooting failed: {exc}"}
+        return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Troubleshooting failed: {exc}"}}}
 
-    return {"final_response": result}
+    final_text    = _extract_final_text(result.get("messages", []))
+    session_data  = pop_session_data(session_id)
+    path_hops     = session_data.get("path_hops", [])
+    rev_hops      = session_data.get("reverse_path_hops", [])
+    counters      = session_data.get("interface_counters", [])
+    src_ip, dst_ip = _extract_ips(full_prompt)
+
+    content: dict = {}
+    if final_text:    content["direct_answer"]      = final_text
+    if path_hops:
+        content["path_hops"]   = path_hops
+        content["source"]      = src_ip
+        content["destination"] = dst_ip
+    if rev_hops:      content["reverse_path_hops"]  = rev_hops
+    if counters:      content["interface_counters"]  = counters
+    if inc_summary:   content["incident_summary"]    = inc_summary
+
+    logger.info("troubleshoot done: keys=%s hops=%d counters=%d", list(content.keys()), len(path_hops), len(counters))
+    return {"final_response": {"role": "assistant", "content": content}}
 
 
 # ---------------------------------------------------------------------------
@@ -286,34 +379,43 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
-    """
-    Route network-ops workflows (firewall change requests, policy reviews,
-    access requests, spreadsheet generation) to network_ops_agent.
-
-    Uses NETWORK_OPS_TOOLS (trace_path, check_panorama_policy, search_servicenow,
-    get_incident_details) — no diagnostic tools. Produces structured documents
-    (change request tables, recommended rules) rather than diagnostic reports.
-    """
+    """Build and invoke the network-ops ReAct agent; collect session data."""
     try:
-        from atlas.agents.network_ops_agent import handle as network_ops_handle
+        from atlas.agents.network_ops_agent import build_agent
+        from atlas.tools.all_tools import pop_session_data
     except ImportError:
-        from agents.network_ops_agent import handle as network_ops_handle  # type: ignore
+        from agents.network_ops_agent import build_agent                 # type: ignore
+        from tools.all_tools import pop_session_data                     # type: ignore
 
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
 
-    try:
-        result = await network_ops_handle(
-            prompt,
-            username=state.get("username"),
-            session_id=session_id,
-        )
-    except Exception as exc:
-        import traceback as _tb
-        logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
-        result = {"role": "assistant", "content": f"Network ops agent failed: {exc}"}
+    await _push_status(session_id, "Processing network ops request...")
 
-    return {"final_response": result}
+    config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
+
+    try:
+        agent  = build_agent()
+        result = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]}, config=config)
+    except Exception as exc:
+        logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
+        return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Network ops agent failed: {exc}"}}}
+
+    final_text = _extract_final_text(result.get("messages", []))
+    session_data = pop_session_data(session_id)
+    path_hops    = session_data.get("path_hops", [])
+    rev_hops     = session_data.get("reverse_path_hops", [])
+    src_ip, dst_ip = _extract_ips(prompt)
+
+    content: dict = {}
+    if final_text: content["direct_answer"] = final_text
+    if path_hops:
+        content["path_hops"]   = path_hops
+        content["source"]      = src_ip
+        content["destination"] = dst_ip
+    if rev_hops:   content["reverse_path_hops"] = rev_hops
+
+    return {"final_response": {"role": "assistant", "content": content}}
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,11 @@
       "Bash(grep -v grep curl -s http://localhost:8006/devices curl -s -X POST http://localhost:8006/route -H \"Content-Type: application/json\" -d '{\"\"\"\"device\"\"\"\":\"\"\"\"arista1\"\"\"\",\"\"\"\"destination\"\"\"\":\"\"\"\"10.0.100.100\"\"\"\"}')",
       "Bash(clab inspect:*)",
       "Bash(grep -v \"^#\\\\|^$\\\\|PASSWORD\\\\|SECRET\\\\|KEY\\\\|TOKEN\" /Users/manig/Documents/coding/atlas/.env)",
-      "Bash(docker compose:*)"
+      "Bash(docker compose:*)",
+      "Bash(sed -n '20,25p' /Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py)",
+      "Bash(sed -n '178,182p' /Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py)",
+      "Bash(sed -n '20,24p' /Users/manig/Documents/coding/atlas/agents/network_ops_agent.py)",
+      "Bash(sed -n '84,88p' /Users/manig/Documents/coding/atlas/agents/network_ops_agent.py)"
     ]
   }
 }
