@@ -8,6 +8,7 @@
 - `search_servicenow(device_names=[...], source_ip=..., dest_ip=..., port=...)`
 - `get_interface_counters(devices_and_interfaces=[...path_hops...])`
 - `lookup_routing_history(destination_ip=dest_ip)`
+- `recall_similar_cases(query="...", devices=[...path_hops...])` — surface past cases; treat as context only, not conclusions
 
 **Step 3** — OSPF checks in parallel on path devices + historically known devices:
 - `check_ospf_neighbors(devices=[...])`

@@ -344,11 +344,29 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     # INC→IP expansion
     full_prompt, inc_summary = await _resolve_inc(full_prompt)
 
+    # Auto-inject long-term memory context before the agent starts reasoning
+    memory_context = ""
+    try:
+        try:
+            from atlas.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
+        except ImportError:
+            from agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context  # type: ignore
+        past = await recall_memory(full_prompt, agent_type="troubleshoot", top_k=3, min_similarity=0.65)
+        if past:
+            memory_context = format_memory_context(past)
+            logger.info("injecting %d past cases into context", len(past))
+    except Exception as exc:
+        logger.debug("memory recall skipped: %s", exc)
+
+    agent_input = full_prompt
+    if memory_context:
+        agent_input = f"{memory_context}\n\n---\n\n{full_prompt}"
+
     config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
 
     try:
         agent  = build_agent(full_prompt, issue_type)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=full_prompt)]}, config=config)
+        result = await agent.ainvoke({"messages": [HumanMessage(content=agent_input)]}, config=config)
     except Exception as exc:
         logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Troubleshooting failed: {exc}"}}}
