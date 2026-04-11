@@ -66,6 +66,10 @@ Before writing Root Cause, you MUST troubleshoot the peering on BOTH devices in 
 
 If that bilateral peering evidence exists, base the root cause and recommendation on that specific adjacency rather than on generic destination-subnet wording.
 If `inspect_ospf_peering(...)` reports `Evidence summary: both ends of the peering are down/admin-down` or that one named side is down/admin-down, treat that as the primary root cause and say so directly.
+When the evidence shows one or both peering interfaces are administratively down, use explicit operator language in Recommendation:
+- If both sides are admin down: `Re-enable {from_interface} on {from_device} and {to_interface} on {to_device}, then verify the OSPF adjacency reforms and {dest_subnet} is readvertised upstream.`
+- If one side is admin down: `Re-enable {interface} on {device}, then verify the OSPF adjacency reforms and {dest_subnet} is readvertised upstream.`
+Do not dilute this into vague wording like `bring it back up` or `restore the physical/administrative link` when the tool evidence already proves `admin down`.
 If the final report only discusses `dst_gateway_device` and does not mention the upstream learner from the routing-history clue, the investigation is incomplete.
 
 **Ping PASSED + port is known — CALL test_tcp_port BEFORE WRITING ANY REPORT:**
