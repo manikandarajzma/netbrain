@@ -829,7 +829,7 @@ async def handle_interface_status(request: Request) -> JSONResponse:
 
 @app.post("/all-interfaces-status")
 async def handle_all_interfaces_status(request: Request) -> JSONResponse:
-    """Return status of all non-management interfaces on a device. {device} → [{interface, up, line_protocol}]"""
+    """Return status and primary IP of all non-management interfaces on a device."""
     body = await request.json()
     device = body.get("device", "")
     if not device:
@@ -847,12 +847,19 @@ async def handle_all_interfaces_status(request: Request) -> JSONResponse:
         for intf_name, intf_data in data.get("interfaces", {}).items():
             if intf_name.lower().startswith("management"):
                 continue
+            primary_ip = {}
+            for addr_entry in intf_data.get("interfaceAddress", []):
+                primary_ip = addr_entry.get("primaryIp", {}) or {}
+                if primary_ip.get("address"):
+                    break
             results.append({
                 "interface":    intf_name,
                 "up":           intf_data.get("lineProtocolStatus") == "up",
                 "line_protocol": intf_data.get("lineProtocolStatus", "unknown"),
                 "oper_status":  intf_data.get("interfaceStatus", "unknown"),
                 "description":  intf_data.get("description", ""),
+                "primary_ip":   primary_ip.get("address"),
+                "prefix_len":   primary_ip.get("maskLen"),
             })
         return JSONResponse({"device": device, "interfaces": results})
     except Exception as e:
@@ -1013,8 +1020,19 @@ async def handle_interface_counters(request: Request) -> JSONResponse:
     interfaces = body.get("interfaces", [])
     if not device or not interfaces:
         return JSONResponse({"error": "device and interfaces required"}, status_code=400)
-    result = get_interface_counters.invoke({"device": device, "interfaces": interfaces})
-    return JSONResponse(result)
+    try:
+        result = get_interface_counters.invoke({"device": device, "interfaces": interfaces})
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "device": device,
+                "active_errors": [],
+                "clean_interfaces": [],
+                "error": str(exc),
+            },
+            status_code=200,
+        )
 
 
 if __name__ == "__main__":

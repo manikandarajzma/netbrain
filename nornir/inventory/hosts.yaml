@@ -1,127 +1,20 @@
 ---
-arista1:
-  hostname: 127.0.0.1
-  port: 6022
+arista-ai1:
+  hostname: 192.168.15.151
   groups:
     - arista_eos
-  data:
-    spanning_tree_mode: mstp
-    interfaces:
-      - name: Ethernet1
-        ip_address: 169.254.0.0
-        prefix_length: 31
-        description: "P2P Link 1"
-      - name: Ethernet2
-        ip_address: 169.254.0.2
-        prefix_length: 31
-        description: "P2P Link 2"
-      - name: Ethernet3
-        ip_address: 10.0.100.1
-        prefix_length: 24
-        description: "LAN Segment"
-      - name: Management0
-        ip_address: 172.20.20.11
-        prefix_length: 24
-        description: "Management Interface"
-    routing:
-      ip_routing: true
-      static_routes:
-        - prefix: 0.0.0.0/0
-          next_hop: 172.20.20.1
-      ospf:
-        process_id: 1
-        networks:
-          - prefix: 0.0.0.0/0
-            area: 0.0.0.0
-        max_lsa: 12000
-    management_api:
-      gnmi:
-        transport: grpc
-        name: default
-      netconf:
-        transport: ssh
-        name: default
 
-arista2:
-  hostname: 127.0.0.1
-  port: 6023
+arista-ai2:
+  hostname: 192.168.15.152
   groups:
     - arista_eos
-  data:
-    spanning_tree_mode: mstp
-    interfaces:
-      - name: Ethernet1
-        ip_address: 169.254.0.1
-        prefix_length: 31
-        description: "P2P Link 1"
-      - name: Ethernet2
-        ip_address: 169.254.0.4
-        prefix_length: 31
-        description: "P2P Link 2"
-      - name: Ethernet3
-        ip_address: 10.0.200.1
-        prefix_length: 24
-        description: "LAN Segment"
-      - name: Management0
-        ip_address: 172.20.20.12
-        prefix_length: 24
-        description: "Management Interface"
-    routing:
-      ip_routing: true
-      static_routes:
-        - prefix: 0.0.0.0/0
-          next_hop: 172.20.20.1
-      ospf:
-        process_id: 1
-        redistribute_connected: true
-        networks:
-          - prefix: 0.0.0.0/0
-            area: 0.0.0.0
-        max_lsa: 12000
-    management_api:
-      gnmi:
-        transport: grpc
-        name: default
-      netconf:
-        transport: ssh
-        name: default
 
-arista3:
-  hostname: 127.0.0.1
-  port: 6024
+arista-ai3:
+  hostname: 192.168.15.153
   groups:
     - arista_eos
-  data:
-    spanning_tree_mode: mstp
-    interfaces:
-      - name: Ethernet1
-        ip_address: 169.254.0.5
-        prefix_length: 31
-        description: "P2P Link 1"
-      - name: Ethernet2
-        ip_address: 169.254.0.3
-        prefix_length: 31
-        description: "P2P Link 2"
-      - name: Ethernet3
-      - name: Management0
-        ip_address: 172.20.20.13
-        prefix_length: 24
-        description: "Management Interface"
-    routing:
-      ip_routing: true
-      static_routes:
-        - prefix: 0.0.0.0/0
-          next_hop: 172.20.20.1
-      ospf:
-        process_id: 1
-        networks:
-          - prefix: 0.0.0.0/0
-            area: 0.0.0.0
-        max_lsa: 12000
-    management_api:
-      gnmi:
-        transport: grpc
-        name: default
-      netconf:
-        transport: ssh
-        name: default
+
+arista-ai4:
+  hostname: 192.168.15.154
+  groups:
+    - arista_eos

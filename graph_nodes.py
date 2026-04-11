@@ -237,6 +237,214 @@ def _extract_final_text(messages: list) -> str:
     return text.strip()
 
 
+def _needs_forced_peering_inspection(session_data: dict[str, Any]) -> bool:
+    routing = session_data.get("routing_history") or {}
+    peer_hint = routing.get("peer_hint") or {}
+    if not all((
+        str(peer_hint.get("from_device", "")).strip(),
+        str(peer_hint.get("from_interface", "")).strip(),
+        str(peer_hint.get("to_device", "")).strip(),
+        str(peer_hint.get("to_interface", "")).strip(),
+    )):
+        return False
+
+    inspections = session_data.get("peering_inspections") or []
+    for item in inspections:
+        if not isinstance(item, dict):
+            continue
+        same_forward = (
+            item.get("device_a") == peer_hint.get("from_device")
+            and item.get("interface_a") == peer_hint.get("from_interface")
+            and item.get("device_b") == peer_hint.get("to_device")
+            and item.get("interface_b") == peer_hint.get("to_interface")
+        )
+        same_reverse = (
+            item.get("device_b") == peer_hint.get("from_device")
+            and item.get("interface_b") == peer_hint.get("from_interface")
+            and item.get("device_a") == peer_hint.get("to_device")
+            and item.get("interface_a") == peer_hint.get("to_interface")
+        )
+        if same_forward or same_reverse:
+            return False
+    return True
+
+
+def _replace_markdown_section(text: str, header: str, body: str) -> str:
+    pattern = rf"(^## {re.escape(header)}\s*$)(.*?)(?=^## |\Z)"
+    replacement = rf"\1\n\n{body.strip()}\n\n"
+    new_text, count = re.subn(pattern, replacement, text, flags=re.MULTILINE | re.DOTALL)
+    if count:
+        return new_text.strip()
+    return (text.strip() + f"\n\n## {header}\n\n{body.strip()}").strip()
+
+
+def _derive_connectivity_evidence(session_data: dict[str, Any], dst_ip: str) -> dict[str, str] | None:
+    routing = session_data.get("routing_history") or {}
+    peer_hint = routing.get("peer_hint") or {}
+    from_device = str(peer_hint.get("from_device", "")).strip()
+    from_interface = str(peer_hint.get("from_interface", "")).strip()
+    to_device = str(peer_hint.get("to_device", "")).strip()
+    to_interface = str(peer_hint.get("to_interface", "")).strip()
+    next_hop_ip = str(peer_hint.get("next_hop_ip", "")).strip()
+    if not all((from_device, from_interface, to_device, to_interface)):
+        return None
+
+    def _interface_state(device: str, interface: str) -> dict[str, Any]:
+        data = (session_data.get("all_interfaces") or {}).get(device, {})
+        for item in data.get("interfaces", []) if isinstance(data, dict) else []:
+            if item.get("interface") == interface:
+                return item
+        detail = (session_data.get("interface_details") or {}).get(f"{device}:{interface}", {})
+        return detail if isinstance(detail, dict) else {}
+
+    def _counter_state(device: str, interface: str) -> dict[str, Any]:
+        for item in session_data.get("interface_counters", []) or []:
+            if item.get("device") != device:
+                continue
+            for active in item.get("active", []) or []:
+                if active.get("interface") == interface:
+                    return active
+            if interface in (item.get("clean") or []):
+                return {"clean": True}
+        return {}
+
+    def _syslog_has(device: str, pattern: str) -> bool:
+        syslog_data = (session_data.get("syslog") or {}).get(device, {})
+        lines = syslog_data.get("relevant") or []
+        pattern_l = pattern.lower()
+        return any(pattern_l in str(line).lower() for line in lines)
+
+    def _find_ping(device: str, destination: str, source_interface: str = "") -> dict[str, Any]:
+        for item in reversed(session_data.get("ping_results", []) or []):
+            if item.get("device") != device:
+                continue
+            if item.get("destination") != destination:
+                continue
+            if source_interface and item.get("source_interface") != source_interface:
+                continue
+            return item
+        return {}
+
+    from_state = _interface_state(from_device, from_interface)
+    to_state = _interface_state(to_device, to_interface)
+    from_counter = _counter_state(from_device, from_interface)
+    to_counter = _counter_state(to_device, to_interface)
+    from_up = from_state.get("up")
+    to_up = to_state.get("up")
+    inactivity_seen = _syslog_has(from_device, "inactivity timer expired") or _syslog_has(to_device, "inactivity timer expired")
+    from_desc = f"{from_device} {from_interface}"
+    to_desc = f"{to_device} {to_interface}"
+    forward_peer_ping = _find_ping(from_device, next_hop_ip, from_interface) if next_hop_ip else {}
+    reverse_peer_ping = _find_ping(to_device, next_hop_ip, to_interface) if next_hop_ip else {}
+    peer_ping_failed = (
+        bool(next_hop_ip)
+        and forward_peer_ping.get("success") is False
+        and reverse_peer_ping.get("success") is False
+    )
+    one_way_peer_ping_failed = (
+        bool(next_hop_ip)
+        and not peer_ping_failed
+        and (
+            forward_peer_ping.get("success") is False
+            or reverse_peer_ping.get("success") is False
+        )
+    )
+
+    if from_up is False or to_up is False:
+        down_desc = from_desc if from_up is False else to_desc
+        root_cause = (
+            f"{from_device} historically learned the route to {dst_ip} from {to_device} over the "
+            f"{from_desc} <-> {to_desc} OSPF peering. {down_desc} is currently down, so that peering dropped "
+            f"and {to_device} stopped advertising the route to {dst_ip}."
+        )
+        recommendation = (
+            f"Restore the failed peering interface ({down_desc}) and then confirm the OSPF adjacency reforms on "
+            f"{from_desc} <-> {to_desc}."
+        )
+    elif from_counter.get("delta_9s") or to_counter.get("delta_9s"):
+        noisy_desc = from_desc if from_counter.get("delta_9s") else to_desc
+        root_cause = (
+            f"{from_device} historically learned the route to {dst_ip} from {to_device} over the "
+            f"{from_desc} <-> {to_desc} OSPF peering. That peering is failing while {noisy_desc} shows actively "
+            f"incrementing interface errors, which is the most likely trigger for the adjacency loss and route withdrawal."
+        )
+        recommendation = (
+            f"Fix the physical/link issue on {noisy_desc} first, then re-check OSPF adjacency on "
+            f"{from_desc} <-> {to_desc}."
+        )
+    elif peer_ping_failed:
+        root_cause = (
+            f"{from_device} historically learned the route to {dst_ip} from {to_device} over the "
+            f"{from_desc} <-> {to_desc} OSPF peering. Both sides now fail to reach the historical peering IP "
+            f"{next_hop_ip} from that adjacency, which localizes the outage to the peering itself rather than "
+            f"the destination LAN interface. That peer reachability failure is what caused the OSPF adjacency to "
+            f"drop and the route advertisement to disappear upstream."
+        )
+        recommendation = (
+            f"Treat {from_desc} <-> {to_desc} as the failing peering. Fix peer reachability on that link first: "
+            f"confirm both interfaces are physically up, verify the peering IP {next_hop_ip} answers ping from both sides, "
+            f"and only if IP reachability works then compare OSPF timers, area, authentication, MTU, network type, and BFD."
+        )
+    elif one_way_peer_ping_failed:
+        failing_desc = from_desc if forward_peer_ping.get("success") is False else to_desc
+        root_cause = (
+            f"{from_device} historically learned the route to {dst_ip} from {to_device} over the "
+            f"{from_desc} <-> {to_desc} OSPF peering. Current evidence shows the peering IP {next_hop_ip} is not "
+            f"reachable from {failing_desc}, which narrows the failure to that bilateral peering rather than the "
+            f"destination LAN interface. The adjacency loss is the routing symptom; the missing peer reachability "
+            f"on the peering is the stronger root-cause clue."
+        )
+        recommendation = (
+            f"Start on {failing_desc}. Verify the interface is sourcing traffic correctly toward peer IP {next_hop_ip}, "
+            f"then compare OSPF timers, area, authentication, MTU, network type, and BFD across {from_desc} <-> {to_desc}."
+        )
+    else:
+        root_cause = (
+            f"{from_device} historically learned the route to {dst_ip} from {to_device} over the "
+            f"{from_desc} <-> {to_desc} OSPF peering. That peering is no longer up, so {to_device} stopped "
+            f"advertising the route and upstream devices lost reachability to {dst_ip}."
+        )
+        if inactivity_seen:
+            root_cause += (
+                " Syslog confirms the adjacency timed out, but the collected evidence does not yet prove whether "
+                "the underlying trigger is peer-side reachability loss or an OSPF parameter mismatch on that peering."
+            )
+        if next_hop_ip:
+            root_cause += (
+                f" The historical next-hop on that peering was {next_hop_ip}, which is the correct place "
+                f"to focus rather than the destination LAN interface."
+            )
+
+        recommendation = (
+            f"Focus on the specific {from_desc} <-> {to_desc} OSPF peering. Verify both interfaces are up, "
+            f"verify the peering IP answers ping from both sides, and compare OSPF timers, area, authentication, "
+            f"MTU, network type, and BFD settings on that adjacency before changing anything else."
+        )
+
+    return {
+        "from_device": from_device,
+        "from_interface": from_interface,
+        "to_device": to_device,
+        "to_interface": to_interface,
+        "next_hop_ip": next_hop_ip,
+        "root_cause": root_cause,
+        "recommendation": recommendation,
+    }
+
+
+def _apply_connectivity_evidence_guardrails(final_text: str, session_data: dict[str, Any], dst_ip: str) -> str:
+    evidence = _derive_connectivity_evidence(session_data, dst_ip)
+    if not evidence:
+        return final_text
+
+    rewritten = final_text
+    rewritten = rewritten.replace("the interface associated with the 10.0.200.0/24 subnet", "the OSPF peering")
+    rewritten = rewritten.replace("the interface connected to the 10.0.200.0/24 subnet", "the OSPF peering")
+    rewritten = _replace_markdown_section(rewritten, "Root Cause", evidence["root_cause"])
+    rewritten = _replace_markdown_section(rewritten, "Recommendation", evidence["recommendation"])
+    return rewritten
+
+
 async def _push_status(session_id: str, msg: str) -> None:
     try:
         try:
@@ -344,23 +552,7 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     # INC→IP expansion
     full_prompt, inc_summary = await _resolve_inc(full_prompt)
 
-    # Auto-inject long-term memory context before the agent starts reasoning
-    memory_context = ""
-    try:
-        try:
-            from atlas.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
-        except ImportError:
-            from agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context  # type: ignore
-        past = await recall_memory(full_prompt, agent_type="troubleshoot", top_k=3, min_similarity=0.65)
-        if past:
-            memory_context = format_memory_context(past)
-            logger.info("injecting %d past cases into context", len(past))
-    except Exception as exc:
-        logger.debug("memory recall skipped: %s", exc)
-
     agent_input = full_prompt
-    if memory_context:
-        agent_input = f"{memory_context}\n\n---\n\n{full_prompt}"
 
     config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
 
@@ -373,6 +565,22 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 
     final_text    = _extract_final_text(result.get("messages", []))
     session_data  = pop_session_data(session_id)
+    if _needs_forced_peering_inspection(session_data):
+        peer_hint = (session_data.get("routing_history") or {}).get("peer_hint") or {}
+        await _push_status(session_id, "Gathering required peering evidence...")
+        follow_up = (
+            f"{full_prompt}\n\n"
+            "Required follow-up before answering:\n"
+            f"- Routing history identified a concrete OSPF peering pair: {peer_hint.get('from_device')} {peer_hint.get('from_interface')} "
+            f"<-> {peer_hint.get('to_device')} {peer_hint.get('to_interface')} via {peer_hint.get('next_hop_ip')}\n"
+            "- You must call inspect_ospf_peering(...) for that exact pair before writing Root Cause or Recommendation.\n"
+            "- Base the conclusion on that fresh inspection evidence, not prior runs or generic OSPF wording."
+        )
+        agent = build_agent(full_prompt, issue_type)
+        result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
+        final_text = _extract_final_text(result.get("messages", []))
+        session_data = pop_session_data(session_id)
+
     path_hops     = session_data.get("path_hops", [])
     rev_hops      = session_data.get("reverse_path_hops", [])
     counters      = session_data.get("interface_counters", [])

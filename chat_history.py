@@ -5,8 +5,9 @@ Storage backends (auto-selected based on REDIS_URL env var):
   1. Redis — when REDIS_URL is set. Encrypted blobs stored with AES-256-GCM.
   2. Disk  — fallback. Files at {APP_DIR}/data/chats/{sha256(username)}/.
 
-Encryption at rest is mandatory for both backends: AES-256-GCM key loaded from
-Azure Key Vault secret CHAT-ENCRYPTION-KEY (AZURE_KEYVAULT_URL must be set).
+Encryption at rest is mandatory for both backends: AES-256-GCM key from either
+``CHAT_ENCRYPTION_KEY`` (local .env) or Azure Key Vault secret CHAT-ENCRYPTION-KEY
+(when ``AZURE_KEYVAULT_URL`` is set).
 
 Redis key structure:
   atlas:chats:{user_hash}:index          → encrypted index JSON
@@ -38,6 +39,15 @@ def _get_aes_key() -> bytes:
     """Return the 32-byte AES-256 key loaded from Azure Key Vault."""
     global _AES_KEY
     if _AES_KEY is not None:
+        return _AES_KEY
+
+    # Local dev: CHAT_ENCRYPTION_KEY in .env (hex or base64, 32 bytes)
+    local_key = os.getenv("CHAT_ENCRYPTION_KEY", "").strip()
+    if local_key:
+        if len(local_key) == 64 and all(c in "0123456789abcdefABCDEF" for c in local_key):
+            _AES_KEY = bytes.fromhex(local_key)
+        else:
+            _AES_KEY = base64.b64decode(local_key)
         return _AES_KEY
 
     vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")

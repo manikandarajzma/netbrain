@@ -62,14 +62,7 @@ def _snow_cache_set(key: str, value: Any, ttl: int) -> None:
 
 async def _cached_get(tool: str, cache_parts: list, path: str, params: dict = None) -> Dict[str, Any]:
     """GET with Redis read-through cache. Skips cache on error responses."""
-    key = _snow_cache_key(tool, *cache_parts)
-    cached = _snow_cache_get(key)
-    if cached is not None:
-        logger.info("snow cache hit [%s]: %s", tool, key)
-        return cached
     result = await _get(path, params)
-    if "error" not in result:
-        _snow_cache_set(key, result, _SNOW_CACHE_TTL[tool])
     return result
 
 

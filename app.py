@@ -615,19 +615,22 @@ async def api_chat(request: Request, body: ChatRequest):
             elif assistant_content is None:
                 assistant_content = "No response"
 
-            if conversation_id:
-                append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
-                if isinstance(result, dict):
-                    result["conversation_id"] = conversation_id
-            else:
-                title = (user_msg[:60] + "…") if len(user_msg) > 60 else user_msg or "New chat"
-                conv_id = create_conversation(APP_DIR, username, title, parent_id=parent_id)
-                append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
-                if isinstance(result, dict):
-                    result["conversation_id"] = conv_id
-                    result["conversation_title"] = title
-                    if parent_id:
-                        result["parent_id"] = parent_id
+            try:
+                if conversation_id:
+                    append_to_conversation(APP_DIR, username, conversation_id, user_msg, assistant_content)
+                    if isinstance(result, dict):
+                        result["conversation_id"] = conversation_id
+                else:
+                    title = (user_msg[:60] + "…") if len(user_msg) > 60 else user_msg or "New chat"
+                    conv_id = create_conversation(APP_DIR, username, title, parent_id=parent_id)
+                    append_to_conversation(APP_DIR, username, conv_id, user_msg, assistant_content)
+                    if isinstance(result, dict):
+                        result["conversation_id"] = conv_id
+                        result["conversation_title"] = title
+                        if parent_id:
+                            result["parent_id"] = parent_id
+            except Exception as hist_exc:
+                _sse_log.warning("Chat history save failed (non-fatal): %s", hist_exc)
 
             done_event = {"type": "done", "result": result}
             _sse_log.info("SSE: sending done event, content_type=%s", type(result.get("content")).__name__ if isinstance(result, dict) else "?")

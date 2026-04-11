@@ -51,6 +51,12 @@ def _store(session_id: str) -> dict[str, Any]:
         "path_hops":          [],
         "reverse_path_hops":  [],
         "interface_counters": [],
+        "routing_history":    {},
+        "ping_results":       [],
+        "peering_inspections": [],
+        "all_interfaces":     {},
+        "interface_details":  {},
+        "syslog":             {},
     })
 
 
@@ -467,6 +473,13 @@ async def ping_device(
         result = {"success": False, "error": str(exc)}
 
     _store(session_id)["ping_result"] = result
+    _store(session_id)["ping_results"].append({
+        "device": device,
+        "destination": destination,
+        "source_interface": source_interface,
+        "vrf": vrf or "default",
+        **result,
+    })
 
     if result.get("success"):
         rtt = result.get("rtt_avg_ms")
@@ -577,7 +590,15 @@ async def get_interface_counters(
 
     session_id = _sid(config)
 
-    valid = [e for e in devices_and_interfaces if e.get("interfaces")]
+    valid = []
+    for entry in devices_and_interfaces:
+        if not isinstance(entry, dict):
+            continue
+        device = str(entry.get("device", "")).strip()
+        interfaces = entry.get("interfaces")
+        if not device or not interfaces:
+            continue
+        valid.append({"device": device, "interfaces": interfaces})
     if not valid:
         return "No interface data available for counter polling."
 
@@ -650,6 +671,7 @@ async def get_interface_detail(
         data = await _nornir_post("/interface-detail",
                                   {"device": device, "interface": interface},
                                   timeout=15.0)
+        _store(session_id)["interface_details"][f"{device}:{interface}"] = data
         return json.dumps(data, indent=2)
     except Exception as exc:
         return f"Interface detail error: {exc}"
@@ -658,10 +680,11 @@ async def get_interface_detail(
 @tool
 async def get_all_interfaces(device: str, config: RunnableConfig) -> str:
     """
-    List all non-management interfaces and their up/down state on a device via live SSH.
-    Use for device health queries or when you need to find which interfaces are DOWN.
+    List all non-management interfaces, their up/down state, and primary IP on a device.
+    Use for device health queries or when you need to map an OSPF/syslog interface IP to
+    a concrete interface and determine whether that interface is down.
 
-    Returns: per-interface oper_status, line-protocol, description.
+    Returns: per-interface oper_status, line-protocol, description, and primary IP.
     """
     session_id = _sid(config)
     await _push_status(session_id, f"Getting all interfaces on {device}...")
@@ -671,17 +694,24 @@ async def get_all_interfaces(device: str, config: RunnableConfig) -> str:
     except Exception as exc:
         return f"All-interfaces error: {exc}"
 
+    _store(session_id)["all_interfaces"][device] = data
     interfaces = data.get("interfaces", [])
     if not interfaces:
         return f"No interface data returned for {device}."
-    down  = [i for i in interfaces if not i.get("up")]
+    down = [i for i in interfaces if not i.get("up")]
     lines = [f"{device}: {len(interfaces)} interfaces, {len(down)} DOWN"]
-    if down:
-        for i in down:
-            oper = i.get("oper_status", "")
-            status = "ADMIN-DOWN" if oper in ("disabled", "adminDown") else f"link-down ({oper})"
-            lines.append(f"  ✗ {i['interface']} — {status}" +
-                         (f" ({i['description']})" if i.get("description") else ""))
+    for i in interfaces:
+        oper = i.get("oper_status", "")
+        ip = i.get("primary_ip")
+        plen = i.get("prefix_len")
+        ip_text = f" ip {ip}/{plen}" if ip and plen is not None else ""
+        desc_text = f" ({i['description']})" if i.get("description") else ""
+        if i.get("up"):
+            if ip:
+                lines.append(f"  ✓ {i['interface']} — up{ip_text}{desc_text}")
+            continue
+        status = "ADMIN-DOWN" if oper in ("disabled", "adminDown") else f"link-down ({oper})"
+        lines.append(f"  ✗ {i['interface']} — {status}{ip_text}{desc_text}")
     return "\n".join(lines)
 
 
@@ -715,7 +745,223 @@ async def get_device_syslog(device: str, config: RunnableConfig, interface: str 
 
     if not relevant:
         return f"{device}: no relevant syslog events found."
-    return f"{device} syslog:\n" + "\n".join(f"  {l}" for l in relevant)
+
+    store = _store(session_id)
+    interface_inventory = (store.get("all_interfaces") or {}).get(device, {})
+    interface_rows = interface_inventory.get("interfaces", []) if isinstance(interface_inventory, dict) else []
+    ip_to_interface: dict[str, dict[str, Any]] = {}
+    for row in interface_rows:
+        ip = str(row.get("primary_ip") or "").strip()
+        if ip:
+            ip_to_interface[ip] = row
+
+    correlations: list[dict[str, Any]] = []
+    correlation_lines: list[str] = []
+    for line in relevant:
+        lower = line.lower()
+        if "adjacency" not in lower and "ospf" not in lower:
+            continue
+        for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", line):
+            row = ip_to_interface.get(ip)
+            if not row:
+                continue
+            oper = row.get("oper_status", "unknown")
+            state = "up" if row.get("up") else f"down ({oper})"
+            correlation = {
+                "ip": ip,
+                "interface": row.get("interface"),
+                "up": row.get("up"),
+                "oper_status": oper,
+                "line": line,
+            }
+            if correlation not in correlations:
+                correlations.append(correlation)
+                correlation_lines.append(
+                    f"  Correlated OSPF syslog IP {ip} -> {row.get('interface')} ({state})"
+                )
+
+    store["syslog"][device] = {
+        "logs": logs,
+        "relevant": relevant,
+        "interface": interface,
+        "correlations": correlations,
+    }
+    body = [f"{device} syslog:"]
+    body.extend(f"  {l}" for l in relevant)
+    if correlation_lines:
+        body.append("  OSPF interface correlation:")
+        body.extend(correlation_lines)
+    return "\n".join(body)
+
+
+@tool
+async def inspect_ospf_peering(
+    device_a: str,
+    interface_a: str,
+    device_b: str,
+    interface_b: str,
+    config: RunnableConfig,
+    ip_a: str = "",
+    ip_b: str = "",
+) -> str:
+    """
+    Inspect a specific OSPF peering end-to-end on both devices via live SSH.
+    Use this when routing history identifies a concrete peering pair such as
+    `ai3 Ethernet2 <-> ai4 Ethernet2`.
+
+    Returns:
+      - interface state and primary IP on both sides
+      - interface detail on both sides
+      - recent syslog with OSPF/IP correlation on both sides
+      - bilateral ping results across the peering IPs when provided
+      - a short evidence summary the LLM can reason from directly
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, f"Inspecting OSPF peering {device_a}/{interface_a} <-> {device_b}/{interface_b}...")
+
+    async def _all_interfaces(device: str) -> dict[str, Any]:
+        data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
+        _store(session_id)["all_interfaces"][device] = data
+        return data
+
+    async def _interface_detail(device: str, interface: str) -> dict[str, Any]:
+        data = await _nornir_post("/interface-detail", {"device": device, "interface": interface}, timeout=15.0)
+        _store(session_id)["interface_details"][f"{device}:{interface}"] = data
+        return data
+
+    async def _syslog(device: str) -> dict[str, Any]:
+        data = await _nornir_post("/show-logging", {"device": device, "lines": 100}, timeout=15.0)
+        logs = data.get("logs", [])
+        kw = ["link", "down", "flap", "err-disable", "lineproto", "ospf", "adjacency"]
+        relevant = [l for l in logs if any(k in l.lower() for k in kw)][-30:]
+        return {"logs": logs, "relevant": relevant}
+
+    async def _ping(device: str, destination: str, source_interface: str) -> dict[str, Any]:
+        try:
+            result = await _nornir_post(
+                "/ping",
+                {"device": device, "destination": destination, "source_interface": source_interface, "vrf": ""},
+                timeout=30.0,
+            )
+        except Exception as exc:
+            result = {"success": False, "error": str(exc), "device": device, "destination": destination}
+        _store(session_id)["ping_results"].append({
+            "device": device,
+            "destination": destination,
+            "source_interface": source_interface,
+            "vrf": "default",
+            **result,
+        })
+        return result
+
+    all_a, all_b, detail_a, detail_b, syslog_a, syslog_b = await asyncio.gather(
+        _all_interfaces(device_a),
+        _all_interfaces(device_b),
+        _interface_detail(device_a, interface_a),
+        _interface_detail(device_b, interface_b),
+        _syslog(device_a),
+        _syslog(device_b),
+    )
+
+    def _pick_interface(data: dict[str, Any], interface: str) -> dict[str, Any]:
+        for row in data.get("interfaces", []) or []:
+            if row.get("interface") == interface:
+                return row
+        return {}
+
+    row_a = _pick_interface(all_a, interface_a)
+    row_b = _pick_interface(all_b, interface_b)
+
+    def _correlate_syslog(device: str, row: dict[str, Any], syslog_data: dict[str, Any]) -> list[str]:
+        ip = str(row.get("primary_ip") or "").strip()
+        if not ip:
+            return []
+        lines = []
+        for line in syslog_data.get("relevant", []) or []:
+            if ip in line and ("adjacency" in line.lower() or "ospf" in line.lower()):
+                oper = row.get("oper_status", "unknown")
+                state = "up" if row.get("up") else f"down ({oper})"
+                lines.append(f"{device}: syslog local IP {ip} belongs to {row.get('interface')} ({state})")
+        return lines
+
+    correlations = _correlate_syslog(device_a, row_a, syslog_a) + _correlate_syslog(device_b, row_b, syslog_b)
+    _store(session_id)["syslog"][device_a] = {**syslog_a, "interface": interface_a, "correlations": correlations}
+    _store(session_id)["syslog"][device_b] = {**syslog_b, "interface": interface_b, "correlations": correlations}
+
+    ping_a = ping_b = None
+    if ip_b and row_a.get("up"):
+        ping_a = await _ping(device_a, ip_b, interface_a)
+    if ip_a and row_b.get("up"):
+        ping_b = await _ping(device_b, ip_a, interface_b)
+
+    def _state_line(device: str, interface: str, row: dict[str, Any], detail: dict[str, Any]) -> str:
+        ip = row.get("primary_ip")
+        plen = row.get("prefix_len")
+        ip_text = f" {ip}/{plen}" if ip and plen is not None else ""
+        admin = detail.get("oper_status") or row.get("oper_status") or "unknown"
+        proto = detail.get("line_protocol") or row.get("line_protocol") or "unknown"
+        state = "UP" if row.get("up") else f"DOWN ({admin})"
+        return f"  {device} {interface}:{ip_text} state={state}, line_protocol={proto}"
+
+    lines = [
+        f"OSPF peering inspection for {device_a} {interface_a} <-> {device_b} {interface_b}:",
+        _state_line(device_a, interface_a, row_a, detail_a),
+        _state_line(device_b, interface_b, row_b, detail_b),
+    ]
+    for line in correlations:
+        lines.append(f"  {line}")
+
+    if ping_a is not None:
+        lines.append(
+            f"  Ping {device_a} {interface_a} -> {ip_b}: "
+            f"{'SUCCESS' if ping_a.get('success') else 'FAILED'}"
+        )
+    if ping_b is not None:
+        lines.append(
+            f"  Ping {device_b} {interface_b} -> {ip_a}: "
+            f"{'SUCCESS' if ping_b.get('success') else 'FAILED'}"
+        )
+
+    both_down = row_a.get("up") is False and row_b.get("up") is False
+    one_down = row_a.get("up") is False or row_b.get("up") is False
+    if both_down:
+        lines.append(
+            f"  Evidence summary: both ends of the peering are down/admin-down ({device_a} {interface_a} and {device_b} {interface_b}). "
+            "This is sufficient to explain the OSPF adjacency loss and route withdrawal."
+        )
+    elif one_down:
+        down_side = f"{device_a} {interface_a}" if row_a.get("up") is False else f"{device_b} {interface_b}"
+        lines.append(
+            f"  Evidence summary: {down_side} is down/admin-down. That is sufficient to explain the OSPF adjacency loss."
+        )
+    elif ping_a is not None and ping_b is not None and not ping_a.get("success") and not ping_b.get("success"):
+        lines.append(
+            "  Evidence summary: both interfaces are up but bidirectional peer-IP reachability fails on the peering. "
+            "This points to a peering/link problem rather than the destination LAN interface."
+        )
+    elif correlations:
+        lines.append(
+            "  Evidence summary: syslog/IP correlation identifies the exact OSPF-facing interface(s); use that evidence directly in Root Cause."
+        )
+
+    _store(session_id)["peering_inspections"].append({
+        "device_a": device_a,
+        "interface_a": interface_a,
+        "device_b": device_b,
+        "interface_b": interface_b,
+        "ip_a": ip_a,
+        "ip_b": ip_b,
+        "row_a": row_a,
+        "row_b": row_b,
+        "detail_a": detail_a,
+        "detail_b": detail_b,
+        "correlations": correlations,
+        "ping_a": ping_a,
+        "ping_b": ping_b,
+        "summary": lines[-1] if lines else "",
+    })
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -760,12 +1006,14 @@ async def check_ospf_neighbors(devices: list[str], config: RunnableConfig) -> st
 @tool
 async def check_ospf_interfaces(devices: list[str], config: RunnableConfig) -> str:
     """
-    Check which interfaces have OSPF enabled (via 'network' command or 'ip ospf area') on each device.
-    A device with ospf_interface_count=0 has an OSPF process but NO interfaces participating
-    — this is an OSPF misconfiguration that will break routing.
+    Check which interfaces are currently reported by 'show ip ospf interface brief' on each device.
+    A device with ospf_interface_count=0 has no interfaces currently reported by that command, but
+    this is NOT by itself proof of misconfiguration: an interface-down condition can also result in 0.
+    Correlate with get_all_interfaces, get_device_syslog, and lookup_ospf_history before concluding
+    whether the issue is misconfiguration or a physical/link failure.
     Call in parallel with check_ospf_neighbors and lookup_ospf_history.
 
-    Returns: per-device ospf_interface_count and the list of OSPF-enabled interfaces.
+    Returns: per-device ospf_interface_count and the list of interfaces currently reported by OSPF.
     """
     session_id = _sid(config)
     await _push_status(session_id, f"Checking OSPF interface config on {', '.join(devices)}...")
@@ -785,7 +1033,8 @@ async def check_ospf_interfaces(devices: list[str], config: RunnableConfig) -> s
         if count == 0:
             lines.append(
                 f"  {device}: ospf_interface_count=0 — "
-                f"NO interfaces participating in OSPF (missing 'network' or 'ip ospf area')"
+                f"no interfaces currently reported by 'show ip ospf interface brief'; "
+                f"correlate with interface state, syslog, and history before calling this a config issue"
             )
         else:
             lines.append(f"  {device}: {count} OSPF interface(s) — {', '.join(ifaces)}")
@@ -900,11 +1149,48 @@ async def lookup_routing_history(destination_ip: str, config: RunnableConfig) ->
             """,
             destination_ip,
         )
+
+        # Most recent upstream learned route with a next-hop. This is more useful
+        # than the destination gateway's connected route when we need to identify
+        # the actual OSPF peering pair carrying the advertisement.
+        last_upstream_route = await _fetchrow(
+            """
+            SELECT device, egress_interface, next_hop::text, protocol, prefix::text, collected_at
+            FROM routing_history
+            WHERE $1::inet << prefix
+              AND egress_interface NOT ILIKE 'management%'
+              AND next_hop IS NOT NULL
+            ORDER BY collected_at DESC LIMIT 1
+            """,
+            destination_ip,
+        )
     except Exception as exc:
         return f"Routing history query error: {exc}"
 
+    peer_hint: dict[str, Any] | None = None
+    peering_source = last_upstream_route or last_route
+    if peering_source and peering_source.get("next_hop"):
+        try:
+            peer_data = await _nornir_post("/find-device", {"ip": str(peering_source["next_hop"]).split("/")[0]}, timeout=15.0)
+            if peer_data.get("found"):
+                peer_hint = {
+                    "from_device": peering_source.get("device"),
+                    "from_interface": peering_source.get("egress_interface"),
+                    "next_hop_ip": peering_source.get("next_hop"),
+                    "to_device": peer_data.get("device"),
+                    "to_interface": peer_data.get("interface"),
+                }
+        except Exception:
+            peer_hint = None
+
     store = _store(session_id)
     store["historical_devices"] = historical_devices
+    store["routing_history"] = {
+        "historical_devices": historical_devices,
+        "last_route": dict(last_route) if last_route else None,
+        "last_upstream_route": dict(last_upstream_route) if last_upstream_route else None,
+        "peer_hint": peer_hint,
+    }
 
     lines = [f"Routing history for {destination_ip}:"]
     if historical_devices:
@@ -912,6 +1198,28 @@ async def lookup_routing_history(destination_ip: str, config: RunnableConfig) ->
         lines.append(f"  (Include these in OSPF checks even if not in current path)")
     else:
         lines.append("  No routing history found in DB.")
+
+    if last_upstream_route:
+        import datetime
+        try:
+            delta = datetime.datetime.now(datetime.timezone.utc) - \
+                    datetime.datetime.fromisoformat(str(last_upstream_route["collected_at"]))
+            age = f"{int(delta.total_seconds() // 3600)}h ago"
+        except Exception:
+            age = "unknown age"
+        lines.append(
+            f"  Primary upstream clue ({age}): {last_upstream_route['device']} learned "
+            f"{destination_ip} via {last_upstream_route['egress_interface']} next-hop "
+            f"{last_upstream_route['next_hop']} ({last_upstream_route['protocol']})"
+        )
+        if peer_hint:
+            lines.append(
+                f"  Primary OSPF peering to troubleshoot: {peer_hint['from_device']} {peer_hint['from_interface']} "
+                f"<-> {peer_hint['to_device']} {peer_hint['to_interface']} (via {peer_hint['next_hop_ip']})"
+            )
+            lines.append(
+                "  Troubleshoot this bilateral peering first. Do not stop at the destination gateway alone."
+            )
 
     if last_route:
         import datetime
@@ -1338,6 +1646,7 @@ ALL_TOOLS = [
     get_interface_detail,
     get_all_interfaces,
     get_device_syslog,
+    inspect_ospf_peering,
     check_ospf_neighbors,
     check_ospf_interfaces,
     lookup_ospf_history,
