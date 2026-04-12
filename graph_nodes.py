@@ -365,13 +365,17 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     """Build and invoke the troubleshoot ReAct agent; collect session data."""
     try:
         from atlas.agents.troubleshoot_agent import build_agent
-        from atlas.tools.all_tools import pop_session_data
+        from atlas.tools.all_tools import pop_session_data, clear_session_cache
     except ImportError:
         from agents.troubleshoot_agent import build_agent                # type: ignore
-        from tools.all_tools import pop_session_data                     # type: ignore
+        from tools.all_tools import pop_session_data, clear_session_cache  # type: ignore
 
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
+
+    # Start each troubleshoot run from fresh live tool state.
+    clear_session_cache(session_id)
+    pop_session_data(session_id)
 
     await _push_status(session_id, "Investigating...")
 
@@ -424,42 +428,14 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
         result = await agent.ainvoke({"messages": [HumanMessage(content=agent_input)]}, config=config)
     except Exception as exc:
         logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
+        clear_session_cache(session_id)
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Troubleshooting failed: {exc}"}}}
 
     final_text    = _extract_final_text(result.get("messages", []))
     session_data  = pop_session_data(session_id)
-    if _needs_forced_peering_inspection(session_data):
-        peer_hint = (session_data.get("routing_history") or {}).get("peer_hint") or {}
-        await _push_status(session_id, "Gathering required peering evidence...")
-        follow_up = (
-            f"{full_prompt}\n\n"
-            "Required follow-up before answering:\n"
-            f"- Routing history identified a concrete OSPF peering pair: {peer_hint.get('from_device')} {peer_hint.get('from_interface')} "
-            f"<-> {peer_hint.get('to_device')} {peer_hint.get('to_interface')} via {peer_hint.get('next_hop_ip')}\n"
-            "- You must call inspect_ospf_peering(...) for that exact pair before writing Root Cause or Recommendation.\n"
-            "- Base the conclusion on that fresh inspection evidence, not prior runs or generic OSPF wording."
-        )
-        agent = build_agent(full_prompt, issue_type)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
-        final_text = _extract_final_text(result.get("messages", []))
-        session_data = _merge_session_data(session_data, pop_session_data(session_id))
 
     src_ip, dst_ip = _extract_ips(full_prompt)
     port = _extract_port(full_prompt)
-    if _missing_path_visuals(session_data, src_ip, dst_ip):
-        await _push_status(session_id, "Gathering required path visualizations...")
-        follow_up = (
-            f"{full_prompt}\n\n"
-            "Required follow-up before answering:\n"
-            f"- Call trace_path(source_ip={src_ip}, dest_ip={dst_ip}) and trace_reverse_path(source_ip={src_ip}, dest_ip={dst_ip}).\n"
-            "- Both forward and reverse structured hops are required for the final answer.\n"
-            "- Do not finalize until both path visualizations are present or you explicitly state which trace failed and why."
-        )
-        agent = build_agent(full_prompt, issue_type)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
-        final_text = _extract_final_text(result.get("messages", []))
-        session_data = _merge_session_data(session_data, pop_session_data(session_id))
-
     if _needs_connectivity_snapshot(session_data, src_ip, dst_ip):
         await _push_status(session_id, "Gathering holistic connectivity evidence...")
         follow_up = (
@@ -474,6 +450,19 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
         result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
         final_text = _extract_final_text(result.get("messages", []))
         session_data = _merge_session_data(session_data, pop_session_data(session_id))
+
+    if _missing_path_visuals(session_data, src_ip, dst_ip):
+        await _push_status(session_id, "Gathering required path visualizations...")
+        try:
+            try:
+                from atlas.tools.all_tools import trace_path, trace_reverse_path
+            except ImportError:
+                from tools.all_tools import trace_path, trace_reverse_path  # type: ignore
+            await trace_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
+            await trace_reverse_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
+            session_data = _merge_session_data(session_data, pop_session_data(session_id))
+        except Exception as exc:
+            logger.warning("mandatory path visualization collection failed: %s", exc)
 
     path_hops     = session_data.get("path_hops", [])
     rev_hops      = session_data.get("reverse_path_hops", [])
@@ -504,6 +493,7 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
             pass
 
     logger.info("troubleshoot done: keys=%s hops=%d counters=%d", list(content.keys()), len(path_hops), len(counters))
+    clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
 
 
@@ -515,13 +505,16 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     """Build and invoke the network-ops ReAct agent; collect session data."""
     try:
         from atlas.agents.network_ops_agent import build_agent
-        from atlas.tools.all_tools import pop_session_data
+        from atlas.tools.all_tools import pop_session_data, clear_session_cache
     except ImportError:
         from agents.network_ops_agent import build_agent                 # type: ignore
-        from tools.all_tools import pop_session_data                     # type: ignore
+        from tools.all_tools import pop_session_data, clear_session_cache  # type: ignore
 
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
+
+    clear_session_cache(session_id)
+    pop_session_data(session_id)
 
     await _push_status(session_id, "Processing network ops request...")
 
@@ -532,6 +525,7 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
         result = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]}, config=config)
     except Exception as exc:
         logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
+        clear_session_cache(session_id)
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Network ops agent failed: {exc}"}}}
 
     final_text = _extract_final_text(result.get("messages", []))
@@ -548,6 +542,7 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
         content["destination"] = dst_ip
     if rev_hops:   content["reverse_path_hops"] = rev_hops
 
+    clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
 
 

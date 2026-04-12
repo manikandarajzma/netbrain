@@ -11,6 +11,8 @@ import {
 } from '../utils/api.js'
 
 let nextId = 1
+const nowMs = () => (typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now())
+const stepSeconds = (start, end = nowMs()) => Math.max((end - start) / 1000, 0.001)
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -145,7 +147,7 @@ export const useChatStore = create((set, get) => ({
     pushHistory('user', text)
 
     const ctrl = new AbortController()
-    set({ isLoading: true, currentStatus: 'Identifying query', statusSteps: [], _stepStart: Date.now(), abortController: ctrl })
+    set({ isLoading: true, currentStatus: 'Identifying query', statusSteps: [], _stepStart: nowMs(), abortController: ctrl })
     const signal = ctrl.signal
     const historySlice = get().conversationHistory
     const parentIdForNew = nextConversationParentId || null
@@ -159,11 +161,11 @@ export const useChatStore = create((set, get) => ({
         .then(d => {
           toolDisplayName = d.tool_display_name
           const newStatus = toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing'
-          const now = Date.now()
+          const now = nowMs()
           const { currentStatus, statusSteps, _stepStart } = get()
           if (currentStatus && _stepStart) {
             set({
-              statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+              statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
               currentStatus: newStatus,
               _stepStart: now,
             })
@@ -177,11 +179,11 @@ export const useChatStore = create((set, get) => ({
         })
 
       const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew, (msg) => {
-        const now = Date.now()
+        const now = nowMs()
         const { currentStatus, statusSteps, _stepStart } = get()
         if (currentStatus && _stepStart) {
           set({
-            statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+            statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
             currentStatus: msg,
             _stepStart: now,
           })
@@ -192,11 +194,11 @@ export const useChatStore = create((set, get) => ({
       await discoverPromise
 
       if (toolDisplayName) {
-        const now = Date.now()
+        const now = nowMs()
         const { currentStatus, statusSteps, _stepStart } = get()
         if (currentStatus && _stepStart) {
           set({
-            statusSteps: [...statusSteps, { label: currentStatus, duration: (now - _stepStart) / 1000 }],
+            statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
             currentStatus: 'Processing results from ' + toolDisplayName,
             _stepStart: now,
           })
@@ -236,7 +238,7 @@ export const useChatStore = create((set, get) => ({
       // Push the last in-progress step as completed before clearing
       const { currentStatus: lastStatus, statusSteps: lastSteps, _stepStart: lastStart } = get()
       const finalSteps = lastStatus && lastStart
-        ? [...lastSteps, { label: lastStatus, duration: (Date.now() - lastStart) / 1000 }]
+        ? [...lastSteps, { label: lastStatus, duration: stepSeconds(lastStart) }]
         : lastSteps
       set({ isLoading: false, currentStatus: '', statusSteps: finalSteps, _stepStart: null, abortController: null })
     }

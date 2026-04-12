@@ -21,6 +21,8 @@ export default function PathVisualization({ content }) {
     if (!hops || !hops.length) return []
 
     const h0 = hops[0]
+    const lastHop = hops[hops.length - 1]
+    const endsOnHost = lastHop?.to_device_type === 'host'
     // Use a Map so we can update nodes after inserting them
     const nodeMap = new Map()
 
@@ -59,7 +61,7 @@ export default function PathVisualization({ content }) {
     }
 
     const result = [...nodeMap.values()]
-    if (result.length > 1) result[result.length - 1].isDest = true
+    if (endsOnHost && result.length > 1) result[result.length - 1].isDest = true
     return result
   }, [content])
 

@@ -31,6 +31,7 @@ export default function StatusMessage({ text, steps = [] }) {
   }, [text])
 
   const phase = getPhase(displayText)
+  const formatDuration = (duration) => (duration <= 0.1 ? '<0.1s' : `${duration.toFixed(1)}s`)
 
   return (
     <div className={styles.bubble}>
@@ -38,7 +39,7 @@ export default function StatusMessage({ text, steps = [] }) {
         <div key={i} className={`${styles.completedStep} ${step.duration >= 5 ? styles.stepSlow : ''}`}>
           <span className={styles.checkMark}>✓</span>
           <span className={styles.completedLabel}>{step.label}</span>
-          <span className={styles.stepDuration}>{step.duration.toFixed(1)}s</span>
+          <span className={styles.stepDuration}>{formatDuration(step.duration)}</span>
         </div>
       ))}
       {displayText && (

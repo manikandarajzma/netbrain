@@ -8,6 +8,7 @@ Uses NetBox IPAM to identify the first-hop gateway for a given source IP.
 Used as a NetBrain alternative when the user explicitly requests it.
 """
 import asyncio
+import concurrent.futures
 import ipaddress
 import json
 import logging
@@ -227,6 +228,60 @@ def find_device_for_ip(ip: str) -> dict:
     return {"found": False, "ip": ip}
 
 
+def _collect_ip_owners(devices: list[str] | None = None) -> dict:
+    """
+    Collect exact live interface IP ownership across the requested devices.
+    Returns a mapping suitable for fast next-hop resolution during one run.
+    """
+    registry = _registry()
+    device_list = [d for d in (devices or list(registry.keys())) if d in registry]
+    owners: dict[str, dict] = {}
+
+    def _one_device(hostname: str) -> dict[str, dict]:
+        conn = registry.get(hostname)
+        if not conn:
+            return {}
+        found: dict[str, dict] = {}
+        try:
+            raw = _run_show(hostname, conn["host"], conn["port"], "show interfaces | json")
+            data = json.loads(raw)
+            for intf_name, intf_data in data.get("interfaces", {}).items():
+                for addr_entry in intf_data.get("interfaceAddress", []) or []:
+                    primary = addr_entry.get("primaryIp", {}) or {}
+                    primary_ip = primary.get("address")
+                    if primary_ip:
+                        found[primary_ip] = {
+                            "device": hostname,
+                            "interface": intf_name,
+                            "host": conn["host"],
+                            "port": conn["port"],
+                            "ip": primary_ip,
+                        }
+                    for secondary in addr_entry.get("secondaryIpsOrderedList", []) or []:
+                        sec_ip = secondary.get("address")
+                        if sec_ip:
+                            found[sec_ip] = {
+                                "device": hostname,
+                                "interface": intf_name,
+                                "host": conn["host"],
+                                "port": conn["port"],
+                                "ip": sec_ip,
+                            }
+        except Exception as e:
+            logger.debug("collect_ip_owners: skipping %s: %s", hostname, e)
+        return found
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(len(device_list), 16))) as executor:
+        futures = [executor.submit(_one_device, hostname) for hostname in device_list]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                owners.update(future.result())
+            except Exception as e:
+                logger.debug("collect_ip_owners: worker failed: %s", e)
+
+    return {"owners": owners, "devices": device_list, "count": len(owners)}
+
+
 def _best_matching_route(routes: dict, destination_ip: str) -> tuple[str, dict] | tuple[None, None]:
     """Return the most specific route whose prefix actually contains destination_ip."""
     try:
@@ -263,6 +318,43 @@ def _extract_best_via(route: dict) -> dict:
     return vias[0] if vias else {}
 
 
+def _route_result_from_json(device: str, destination_ip: str, data: dict) -> dict:
+    for vrf_name, vrf_data in data.get("vrfs", {}).items():
+        routes = vrf_data.get("routes", {})
+        if not routes:
+            continue
+
+        best_prefix, route = _best_matching_route(routes, destination_ip)
+        if not best_prefix or not route:
+            continue
+
+        protocol = route.get("routeType", "").lower()
+        via = _extract_best_via(route)
+        next_hop = via.get("nexthopAddr") or None
+        interface = via.get("interface") or route.get("interface")
+
+        if protocol in {"connected", "local"} and interface and not next_hop:
+            return {
+                "found": True,
+                "device": device,
+                "prefix": best_prefix,
+                "next_hop": None,
+                "egress_interface": interface,
+                "protocol": protocol,
+                "vrf": vrf_name,
+            }
+        return {
+            "found": True,
+            "device": device,
+            "prefix": best_prefix,
+            "next_hop": next_hop,
+            "egress_interface": interface,
+            "protocol": protocol,
+            "vrf": vrf_name,
+        }
+    return {"found": False, "device": device, "destination": destination_ip, "reason": "no route"}
+
+
 @tool
 def get_route(device: str, destination_ip: str) -> dict:
     """
@@ -280,41 +372,7 @@ def get_route(device: str, destination_ip: str) -> dict:
         )
         data = json.loads(raw)
 
-        # Arista: vrfs -> default -> routes -> <prefix> -> vias
-        for vrf_name, vrf_data in data.get("vrfs", {}).items():
-            routes = vrf_data.get("routes", {})
-            if not routes:
-                continue
-
-            best_prefix, route = _best_matching_route(routes, destination_ip)
-            if not best_prefix or not route:
-                continue
-
-            protocol = route.get("routeType", "").lower()
-            via = _extract_best_via(route)
-            next_hop = via.get("nexthopAddr") or None
-            interface = via.get("interface") or route.get("interface")
-
-            if protocol in {"connected", "local"} and interface and not next_hop:
-                return {
-                    "found": True,
-                    "device": device,
-                    "prefix": best_prefix,
-                    "next_hop": None,
-                    "egress_interface": interface,
-                    "protocol": protocol,
-                    "vrf": vrf_name,
-                }
-            return {
-                "found": True,
-                "device": device,
-                "prefix": best_prefix,
-                "next_hop": next_hop,
-                "egress_interface": interface,
-                "protocol": protocol,
-                "vrf": vrf_name,
-            }
-        return {"found": False, "device": device, "destination": destination_ip, "reason": "no route"}
+        return _route_result_from_json(device, destination_ip, data)
     except Exception as e:
         return {"found": False, "device": device, "destination": destination_ip, "error": str(e)}
 
@@ -557,6 +615,188 @@ def _parse_stp_summary(raw: str) -> dict:
         "enabled": enabled,
         "summary_lines": relevant,
     }
+
+
+def _parse_show_interfaces_snapshot(data: dict, relevant_interfaces: set[str] | None = None) -> tuple[list[dict], dict[str, dict]]:
+    interfaces = []
+    relevant_details: dict[str, dict] = {}
+    for intf_name, intf_data in data.get("interfaces", {}).items():
+        if intf_name.lower().startswith("management"):
+            continue
+        primary_ip = {}
+        for addr_entry in intf_data.get("interfaceAddress", []):
+            primary_ip = addr_entry.get("primaryIp", {}) or {}
+            if primary_ip.get("address"):
+                break
+        counters = intf_data.get("interfaceCounters", {}) or {}
+        row = {
+            "interface": intf_name,
+            "up": intf_data.get("lineProtocolStatus") == "up",
+            "line_protocol": intf_data.get("lineProtocolStatus", "unknown"),
+            "oper_status": intf_data.get("interfaceStatus", "unknown"),
+            "description": intf_data.get("description", ""),
+            "primary_ip": primary_ip.get("address"),
+            "prefix_len": primary_ip.get("maskLen"),
+        }
+        interfaces.append(row)
+        if relevant_interfaces and intf_name in relevant_interfaces:
+            relevant_details[intf_name] = {
+                "device": None,
+                "interface": intf_name,
+                "line_protocol": row["line_protocol"],
+                "oper_status": row["oper_status"],
+                "last_status_change": intf_data.get("lastStatusChangeTimestamp"),
+                "description": row["description"],
+                "input_errors": counters.get("inputErrorsDetail", {}).get("totalIn", counters.get("totalInErrors", 0)),
+                "output_errors": counters.get("outputErrorsDetail", {}).get("totalOut", counters.get("totalOutErrors", 0)),
+                "input_discards": counters.get("inDiscards", 0),
+                "output_discards": counters.get("outDiscards", 0),
+                "raw": intf_data,
+            }
+    return interfaces, relevant_details
+
+
+def _extract_relevant_syslog_lines(raw: str, lines: int = 80) -> tuple[list[str], list[str]]:
+    all_lines = [l.rstrip() for l in raw.splitlines()]
+    msg_start = 0
+    for i, l in enumerate(all_lines):
+        if l.startswith("----") or (i > 0 and all_lines[i - 1].startswith("----")):
+            msg_start = i + 1
+    log_lines = [l for l in all_lines[msg_start:] if l.strip()]
+    log_lines = log_lines[-lines:]
+    relevant = [l for l in log_lines if any(k in l.lower() for k in ("down", "up", "flap", "ospf", "bgp", "eigrp", "isis", "spanning-tree", "crc", "discard", "err"))][-12:]
+    return log_lines, relevant
+
+
+def _connecthandler_kwargs(conn: dict) -> dict:
+    return {
+        "device_type": "arista_eos",
+        "host": conn["host"],
+        "port": conn["port"],
+        "username": SSH_USER,
+        "password": SSH_PASSWORD,
+        "secret": SSH_PASSWORD,
+        "timeout": 30,
+    }
+
+
+def _collect_device_snapshot(
+    device: str,
+    source_ip: str,
+    dest_ip: str,
+    relevant_interfaces: list[str] | None = None,
+    include_syslog: bool = False,
+) -> dict:
+    conn = _registry().get(device)
+    if not conn:
+        return {"device": device, "error": f"Device '{device}' not in inventory"}
+
+    from netmiko import ConnectHandler
+
+    relevant_set = set(relevant_interfaces or [])
+    sem = _device_semaphore(device)
+    with sem:
+        with ConnectHandler(**_connecthandler_kwargs(conn)) as nc:
+            route_dest_raw = nc.send_command(f"show ip route {dest_ip} | json", read_timeout=10)
+            route_dest = _route_result_from_json(device, dest_ip, json.loads(route_dest_raw))
+            route_src_raw = nc.send_command(f"show ip route {source_ip} | json", read_timeout=10)
+            route_src = _route_result_from_json(device, source_ip, json.loads(route_src_raw))
+
+            interfaces_raw = nc.send_command("show interfaces | json", read_timeout=20)
+            interfaces_data = json.loads(interfaces_raw)
+            interfaces, interface_details = _parse_show_interfaces_snapshot(interfaces_data, relevant_set)
+            for detail in interface_details.values():
+                detail["device"] = device
+
+            router_cfg = nc.send_command("show running-config | section router", read_timeout=10)
+            configured_protocols = _parse_router_protocols(router_cfg)
+            observed_route_types = sorted({
+                str(route_dest.get("protocol") or "").lower(),
+                str(route_src.get("protocol") or "").lower(),
+            } - {""})
+
+            stp_raw = nc.send_command("show spanning-tree summary", read_timeout=8)
+            stp = _parse_stp_summary(stp_raw)
+
+            routing_protocols = sorted({
+                *configured_protocols,
+                *(p for p in observed_route_types if p not in {"connected", "local", "static"}),
+            })
+
+            ospf_neighbors = {"device": device, "count": 0, "neighbors": []}
+            ospf_interfaces = {"device": device, "ospf_enabled_interfaces": [], "ospf_interface_count": 0}
+            if "ospf" in routing_protocols:
+                try:
+                    raw = nc.send_command("show ip ospf neighbor | json", read_timeout=10)
+                    data = json.loads(raw)
+                    neighbors = []
+                    for vrf_data in data.get("vrfs", {}).values():
+                        for inst_data in vrf_data.get("instList", {}).values():
+                            for nbr in inst_data.get("ospfNeighborEntries", []):
+                                neighbors.append({
+                                    "router_id": nbr.get("routerId"),
+                                    "interface": nbr.get("interfaceName"),
+                                    "neighbor_ip": nbr.get("interfaceAddress"),
+                                    "state": nbr.get("adjacencyState"),
+                                    "area": nbr.get("details", {}).get("areaId"),
+                                })
+                    ospf_neighbors = {"device": device, "count": len(neighbors), "neighbors": neighbors}
+                except Exception as exc:
+                    ospf_neighbors = {"device": device, "error": str(exc), "count": 0, "neighbors": []}
+                try:
+                    raw = nc.send_command("show ip ospf interface brief | json", read_timeout=10)
+                    data = json.loads(raw)
+                    intfs = []
+                    for vrf_data in data.get("vrfs", {}).values():
+                        for inst_data in vrf_data.get("instList", {}).values():
+                            for intf_name, intf_info in inst_data.get("interfaces", {}).items():
+                                intfs.append({
+                                    "interface": intf_name,
+                                    "area": intf_info.get("areaId"),
+                                    "state": intf_info.get("interfaceState"),
+                                    "cost": intf_info.get("cost"),
+                                })
+                    ospf_interfaces = {
+                        "device": device,
+                        "ospf_enabled_interfaces": intfs,
+                        "ospf_interface_count": len(intfs),
+                    }
+                except Exception as exc:
+                    ospf_interfaces = {
+                        "device": device,
+                        "error": str(exc),
+                        "ospf_enabled_interfaces": [],
+                        "ospf_interface_count": 0,
+                    }
+
+            logs: list[str] = []
+            relevant_logs: list[str] = []
+            if include_syslog:
+                logging_raw = nc.send_command("show logging", read_timeout=10)
+                logs, relevant_logs = _extract_relevant_syslog_lines(logging_raw)
+
+            return {
+                "device": device,
+                "route_to_destination": route_dest,
+                "route_to_source": route_src,
+                "protocol_discovery": {
+                    "device": device,
+                    "routing_protocols": routing_protocols,
+                    "configured_routing_protocols": configured_protocols,
+                    "observed_route_types": observed_route_types,
+                    "l2_control_plane": {
+                        "spanning_tree_mode": stp["mode"],
+                        "spanning_tree_enabled": stp["enabled"],
+                        "summary_lines": stp["summary_lines"],
+                    },
+                    "errors": {},
+                },
+                "all_interfaces": {"device": device, "interfaces": interfaces},
+                "interface_details": interface_details,
+                "syslog": {"device": device, "logs": logs, "relevant": relevant_logs},
+                "ospf_neighbors": ospf_neighbors,
+                "ospf_interfaces": ospf_interfaces,
+            }
 
 
 @tool
@@ -1207,6 +1447,48 @@ async def handle_protocol_discovery(request: Request) -> JSONResponse:
             lambda d=device: discover_device_protocols.invoke({"device": d}),
         )
     return JSONResponse({"protocol_discovery": results})
+
+
+@app.post("/device-snapshot")
+async def handle_device_snapshot(request: Request) -> JSONResponse:
+    """Collect a broad per-device snapshot in one SSH session."""
+    body = await request.json()
+    device = body.get("device", "")
+    source_ip = body.get("source_ip", "")
+    dest_ip = body.get("dest_ip", "")
+    relevant_interfaces = body.get("relevant_interfaces") or []
+    include_syslog = bool(body.get("include_syslog", False))
+    if not device or not source_ip or not dest_ip:
+        return JSONResponse({"error": "device, source_ip and dest_ip required"}, status_code=400)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: _collect_device_snapshot(
+                device=device,
+                source_ip=source_ip,
+                dest_ip=dest_ip,
+                relevant_interfaces=relevant_interfaces,
+                include_syslog=include_syslog,
+            ),
+        )
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"device": device, "error": str(exc)}, status_code=200)
+
+
+@app.post("/ip-owners")
+async def handle_ip_owners(request: Request) -> JSONResponse:
+    """Collect exact live interface-IP ownership across devices in parallel."""
+    body = await request.json()
+    devices = body.get("devices") or []
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: _collect_ip_owners(devices))
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"owners": {}, "devices": devices, "error": str(exc)}, status_code=200)
 
 
 @app.post("/find-device")

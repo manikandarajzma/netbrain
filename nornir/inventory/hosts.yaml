@@ -5,7 +5,7 @@ arista-ai1:
     - arista_eos
 
 arista-ai2:
-  hostname: 192.168.15.157
+  hostname: 192.168.15.152
   groups:
     - arista_eos
 
