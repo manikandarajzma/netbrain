@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+from datetime import date, datetime
 from typing import Any
 
 import httpx
@@ -57,6 +58,8 @@ def _store(session_id: str) -> dict[str, Any]:
         "all_interfaces":     {},
         "interface_details":  {},
         "syslog":             {},
+        "protocol_discovery": {},
+        "connectivity_snapshot": {},
     })
 
 
@@ -67,6 +70,18 @@ def pop_session_data(session_id: str) -> dict[str, Any]:
 
 def _sid(config: RunnableConfig) -> str:
     return (config or {}).get("configurable", {}).get("session_id", "default")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +258,7 @@ async def _live_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list[dict], d
             f"Protocol: {protocol} | Prefix: {prefix} | Next-hop: {next_hop or 'directly connected'}"
         )
 
-        if not next_hop:
+        if not next_hop and str(protocol).lower() in {"connected", "local"}:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as c:
                     r = await c.post(f"{NORNIR_AGENT_URL}/arp",
@@ -261,9 +276,19 @@ async def _live_path_trace(src_ip: str, dst_ip: str) -> tuple[str, list[dict], d
             })
             break
 
+        if not next_hop:
+            text_hops.append(
+                f"  ⚠️  Hop {len(text_hops)+1}: {current_device} returned route {prefix} via {egress} "
+                f"({protocol}) but no resolvable next-hop was provided"
+            )
+            flags["missing_next_hop_device"] = current_device
+            flags["missing_next_hop_prefix"] = prefix
+            break
+
         next_dev = await _find_device(next_hop)
         if not next_dev.get("found"):
             text_hops.append(f"  Next-hop {next_hop} not found — path ends here")
+            flags["next_hop_resolution_failed"] = next_hop
             break
 
         next_device = next_dev["device"]
@@ -350,6 +375,41 @@ def _extract_path_metadata(hops: list[dict]) -> dict:
     return meta
 
 
+def _extract_reverse_path_metadata(hops: list[dict]) -> dict:
+    """
+    Extract reverse-side metadata from a reverse trace where structured_hops[0]
+    is dest_ip -> first_router_on_return_path.
+    """
+    meta: dict[str, Any] = {
+        "reverse_first_hop_device": "",
+        "reverse_first_hop_lan_interface": "",
+        "reverse_first_hop_egress_interface": "",
+        "reverse_last_hop_device": "",
+        "reverse_last_hop_egress_interface": "",
+    }
+    if not hops:
+        return meta
+
+    _ip_re = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+
+    first_h = hops[0]
+    meta["reverse_first_hop_device"] = first_h.get("to_device", "")
+    meta["reverse_first_hop_lan_interface"] = first_h.get("in_interface", "") or ""
+    first_dev = meta["reverse_first_hop_device"]
+    for h in hops:
+        if h.get("from_device") == first_dev and h.get("out_interface"):
+            meta["reverse_first_hop_egress_interface"] = h["out_interface"]
+            break
+
+    for h in reversed(hops):
+        if _ip_re.match(h.get("to_device", "")) and not _ip_re.match(h.get("from_device", "")):
+            meta["reverse_last_hop_device"] = h.get("from_device", "")
+            meta["reverse_last_hop_egress_interface"] = h.get("out_interface", "")
+            break
+
+    return meta
+
+
 async def _infer_vrf(src_ip: str, device: str) -> str:
     """Query DB for the VRF containing src_ip on the given device."""
     if not src_ip or not device:
@@ -430,7 +490,17 @@ async def trace_reverse_path(source_ip: str, dest_ip: str, config: RunnableConfi
     text, hops, _ = await _live_path_trace(dest_ip, source_ip)
 
     if hops:
-        _store(session_id)["reverse_path_hops"] = hops
+        store = _store(session_id)
+        store["reverse_path_hops"] = hops
+        meta = _extract_reverse_path_metadata(hops)
+        store["reverse_path_meta"] = meta
+        if meta["reverse_first_hop_device"]:
+            text += f"\n\nreverse_first_hop_device: {meta['reverse_first_hop_device']}"
+            text += f"\nreverse_first_hop_lan_interface: {meta['reverse_first_hop_lan_interface']}"
+            text += f"\nreverse_first_hop_egress_interface: {meta['reverse_first_hop_egress_interface']}"
+        if meta["reverse_last_hop_device"]:
+            text += f"\nreverse_last_hop_device: {meta['reverse_last_hop_device']}"
+            text += f"\nreverse_last_hop_egress_interface: {meta['reverse_last_hop_egress_interface']}"
 
     return text
 
@@ -451,19 +521,31 @@ async def ping_device(
     Send ICMP pings from a network device to a destination IP via live SSH.
 
     Forward ping:  device=first_hop_device, destination=dest_ip, source_interface=first_hop_lan_interface, vrf=src_vrf
-    Reverse ping:  device=last_hop_device,  destination=src_ip,  source_interface=last_hop_lan_interface,  vrf=dst_vrf
+    Reverse ping:  device=reverse_first_hop_device,  destination=src_ip,  source_interface=reverse_first_hop_lan_interface,  vrf=dst_vrf
 
     Returns: success/failure, packet loss %, RTT.
     """
     session_id = _sid(config)
     await _push_status(session_id, f"Pinging {device} → {destination}...")
 
+    store = _store(session_id)
+    path_meta = store.get("path_meta") or {}
+    reverse_meta = store.get("reverse_path_meta") or {}
+    resolved_source_interface = source_interface
+    if not resolved_source_interface:
+        if device == path_meta.get("first_hop_device"):
+            resolved_source_interface = str(path_meta.get("first_hop_lan_interface") or "").strip()
+        elif device == reverse_meta.get("reverse_first_hop_device"):
+            resolved_source_interface = str(reverse_meta.get("reverse_first_hop_lan_interface") or "").strip()
+        elif device == path_meta.get("last_hop_device"):
+            resolved_source_interface = str(path_meta.get("last_hop_egress_interface") or "").strip()
+
     cb = CircuitBreaker.for_endpoint(NORNIR_AGENT_URL + "/ping")
     async def _do():
         async with httpx.AsyncClient(timeout=60.0) as c:
             r = await c.post(f"{NORNIR_AGENT_URL}/ping",
                              json={"device": device, "destination": destination,
-                                   "source_interface": source_interface, "vrf": vrf})
+                                   "source_interface": resolved_source_interface, "vrf": vrf})
             r.raise_for_status()
             return r.json()
     try:
@@ -472,22 +554,23 @@ async def ping_device(
     except Exception as exc:
         result = {"success": False, "error": str(exc)}
 
-    _store(session_id)["ping_result"] = result
-    _store(session_id)["ping_results"].append({
+    store["ping_result"] = result
+    store["ping_results"].append({
         "device": device,
         "destination": destination,
-        "source_interface": source_interface,
+        "source_interface": resolved_source_interface,
         "vrf": vrf or "default",
         **result,
     })
 
+    src_note = f", source {resolved_source_interface}" if resolved_source_interface else ""
     if result.get("success"):
         rtt = result.get("rtt_avg_ms")
         rtt_str = f", RTT avg {rtt}ms" if rtt else ""
-        return f"✓ Ping {device} → {destination} (VRF: {vrf or 'default'}): SUCCESS, 0% loss{rtt_str}"
+        return f"✓ Ping {device} → {destination} (VRF: {vrf or 'default'}{src_note}): SUCCESS, 0% loss{rtt_str}"
     loss = result.get("loss_pct", 100)
     err  = result.get("error", "")
-    return f"✗ Ping {device} → {destination} (VRF: {vrf or 'default'}): FAILED — {loss}% packet loss{(' — ' + err) if err else ''}"
+    return f"✗ Ping {device} → {destination} (VRF: {vrf or 'default'}{src_note}): FAILED — {loss}% packet loss{(' — ' + err) if err else ''}"
 
 
 @tool
@@ -811,30 +894,55 @@ async def inspect_ospf_peering(
 
     Returns:
       - interface state and primary IP on both sides
+      - interface counters on both sides
       - interface detail on both sides
       - recent syslog with OSPF/IP correlation on both sides
       - bilateral ping results across the peering IPs when provided
-      - a short evidence summary the LLM can reason from directly
+      - an explicit diagnosis class and recommended next action
     """
     session_id = _sid(config)
     await _push_status(session_id, f"Inspecting OSPF peering {device_a}/{interface_a} <-> {device_b}/{interface_b}...")
 
     async def _all_interfaces(device: str) -> dict[str, Any]:
-        data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
+        try:
+            data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
+        except Exception as exc:
+            data = {"device": device, "interfaces": [], "error": str(exc)}
         _store(session_id)["all_interfaces"][device] = data
         return data
 
     async def _interface_detail(device: str, interface: str) -> dict[str, Any]:
-        data = await _nornir_post("/interface-detail", {"device": device, "interface": interface}, timeout=15.0)
+        try:
+            data = await _nornir_post("/interface-detail", {"device": device, "interface": interface}, timeout=15.0)
+        except Exception as exc:
+            data = {"device": device, "interface": interface, "error": str(exc)}
         _store(session_id)["interface_details"][f"{device}:{interface}"] = data
         return data
 
+    async def _interface_counters(device: str, interface: str) -> dict[str, Any]:
+        try:
+            data = await _nornir_post("/interface-counters", {"device": device, "interfaces": [interface]}, timeout=20.0)
+        except Exception as exc:
+            return {"device": device, "ssh_error": str(exc), "active_errors": [], "clean_interfaces": []}
+
+        structured = {
+            "device": device,
+            "window_s": data.get("poll_interval_s", 3) * max(0, data.get("iterations", 3) - 1),
+            "active": data.get("active_errors", []),
+            "clean": data.get("clean_interfaces", []),
+        }
+        _store(session_id)["interface_counters"].append(structured)
+        return data
+
     async def _syslog(device: str) -> dict[str, Any]:
-        data = await _nornir_post("/show-logging", {"device": device, "lines": 100}, timeout=15.0)
+        try:
+            data = await _nornir_post("/show-logging", {"device": device, "lines": 100}, timeout=15.0)
+        except Exception as exc:
+            data = {"device": device, "logs": [], "relevant": [], "error": str(exc)}
         logs = data.get("logs", [])
         kw = ["link", "down", "flap", "err-disable", "lineproto", "ospf", "adjacency"]
         relevant = [l for l in logs if any(k in l.lower() for k in kw)][-30:]
-        return {"logs": logs, "relevant": relevant}
+        return {"logs": logs, "relevant": relevant, **({"error": data["error"]} if data.get("error") else {})}
 
     async def _ping(device: str, destination: str, source_interface: str) -> dict[str, Any]:
         try:
@@ -854,11 +962,13 @@ async def inspect_ospf_peering(
         })
         return result
 
-    all_a, all_b, detail_a, detail_b, syslog_a, syslog_b = await asyncio.gather(
+    all_a, all_b, detail_a, detail_b, counters_a, counters_b, syslog_a, syslog_b = await asyncio.gather(
         _all_interfaces(device_a),
         _all_interfaces(device_b),
         _interface_detail(device_a, interface_a),
         _interface_detail(device_b, interface_b),
+        _interface_counters(device_a, interface_a),
+        _interface_counters(device_b, interface_b),
         _syslog(device_a),
         _syslog(device_b),
     )
@@ -871,6 +981,8 @@ async def inspect_ospf_peering(
 
     row_a = _pick_interface(all_a, interface_a)
     row_b = _pick_interface(all_b, interface_b)
+    live_ip_a = str(row_a.get("primary_ip") or ip_a or "").strip()
+    live_ip_b = str(row_b.get("primary_ip") or ip_b or "").strip()
 
     def _correlate_syslog(device: str, row: dict[str, Any], syslog_data: dict[str, Any]) -> list[str]:
         ip = str(row.get("primary_ip") or "").strip()
@@ -889,10 +1001,10 @@ async def inspect_ospf_peering(
     _store(session_id)["syslog"][device_b] = {**syslog_b, "interface": interface_b, "correlations": correlations}
 
     ping_a = ping_b = None
-    if ip_b and row_a.get("up"):
-        ping_a = await _ping(device_a, ip_b, interface_a)
-    if ip_a and row_b.get("up"):
-        ping_b = await _ping(device_b, ip_a, interface_b)
+    if live_ip_b and row_a.get("up"):
+        ping_a = await _ping(device_a, live_ip_b, interface_a)
+    if live_ip_a and row_b.get("up"):
+        ping_b = await _ping(device_b, live_ip_a, interface_b)
 
     def _state_line(device: str, interface: str, row: dict[str, Any], detail: dict[str, Any]) -> str:
         ip = row.get("primary_ip")
@@ -913,44 +1025,115 @@ async def inspect_ospf_peering(
 
     if ping_a is not None:
         lines.append(
-            f"  Ping {device_a} {interface_a} -> {ip_b}: "
+            f"  Ping {device_a} {interface_a} -> {live_ip_b}: "
             f"{'SUCCESS' if ping_a.get('success') else 'FAILED'}"
         )
     if ping_b is not None:
         lines.append(
-            f"  Ping {device_b} {interface_b} -> {ip_a}: "
+            f"  Ping {device_b} {interface_b} -> {live_ip_a}: "
             f"{'SUCCESS' if ping_b.get('success') else 'FAILED'}"
         )
 
     both_down = row_a.get("up") is False and row_b.get("up") is False
     one_down = row_a.get("up") is False or row_b.get("up") is False
+    active_a = counters_a.get("active_errors", []) or []
+    active_b = counters_b.get("active_errors", []) or []
+    diagnosis_class = "unknown"
+    recommended_action = ""
+
     if both_down:
+        diagnosis_class = "peering_admin_down_both_sides"
+        recommended_action = (
+            f"Re-enable {interface_a} on {device_a} and {interface_b} on {device_b}, then verify the OSPF adjacency reforms "
+            "and the route is readvertised upstream."
+        )
         lines.append(
             f"  Evidence summary: both ends of the peering are down/admin-down ({device_a} {interface_a} and {device_b} {interface_b}). "
             "This is sufficient to explain the OSPF adjacency loss and route withdrawal."
         )
     elif one_down:
+        diagnosis_class = "peering_admin_down_one_side"
         down_side = f"{device_a} {interface_a}" if row_a.get("up") is False else f"{device_b} {interface_b}"
+        recommended_action = (
+            f"Re-enable {down_side}, then verify the OSPF adjacency reforms and the route is readvertised upstream."
+        )
         lines.append(
             f"  Evidence summary: {down_side} is down/admin-down. That is sufficient to explain the OSPF adjacency loss."
         )
+    elif active_a or active_b:
+        diagnosis_class = "peering_interface_errors"
+        noisy_side = f"{device_a} {interface_a}" if active_a else f"{device_b} {interface_b}"
+        recommended_action = (
+            f"Treat {noisy_side} as a physical-layer suspect: inspect/reseat or replace the cable/optic/transceiver, "
+            "check CRC/error counters and port health, then verify peer-IP reachability and confirm the OSPF adjacency reforms."
+        )
+        lines.append(
+            f"  Evidence summary: {noisy_side} shows active interface errors while the peering is failing. "
+            "This points to a physical/link-quality problem on the peering."
+        )
     elif ping_a is not None and ping_b is not None and not ping_a.get("success") and not ping_b.get("success"):
+        diagnosis_class = "peering_bidirectional_reachability_failure"
+        recommended_action = (
+            f"Treat the {device_a} {interface_a} <-> {device_b} {interface_b} peering as a physical/link-path suspect: "
+            "inspect and reseat or replace the cable/optic/transceiver on both ends, verify interface counters and port health, "
+            "then re-test direct peer-IP reachability before changing OSPF timers or policy."
+        )
         lines.append(
             "  Evidence summary: both interfaces are up but bidirectional peer-IP reachability fails on the peering. "
             "This points to a peering/link problem rather than the destination LAN interface."
         )
+    elif ping_a is not None and ping_a.get("success") is False:
+        diagnosis_class = "peering_one_way_reachability_failure"
+        recommended_action = (
+            f"Start on {device_a} {interface_a} as the likely physical-layer suspect: inspect/reseat or replace the local cable/optic/transceiver, "
+            f"check interface counters and port health, then re-test peer-IP reachability toward {live_ip_b} before changing OSPF settings."
+        )
+        lines.append(
+            f"  Evidence summary: both peering interfaces are currently up, but {device_a} {interface_a} cannot reach peer IP {live_ip_b}. "
+            "This localizes the failure to the peering itself and makes a generic route recommendation inappropriate."
+        )
+        lines.append(
+            f"  OSPF impact: the OSPF adjacency on {device_a} {interface_a} <-> {device_b} {interface_b} is down/lost because peer-IP reachability failed on that peering."
+        )
+    elif ping_b is not None and ping_b.get("success") is False:
+        diagnosis_class = "peering_one_way_reachability_failure"
+        recommended_action = (
+            f"Start on {device_b} {interface_b} as the likely physical-layer suspect: inspect/reseat or replace the local cable/optic/transceiver, "
+            f"check interface counters and port health, then re-test peer-IP reachability toward {live_ip_a} before changing OSPF settings."
+        )
+        lines.append(
+            f"  Evidence summary: both peering interfaces are currently up, but {device_b} {interface_b} cannot reach peer IP {live_ip_a}. "
+            "This localizes the failure to the peering itself and makes a generic route recommendation inappropriate."
+        )
+        lines.append(
+            f"  OSPF impact: the OSPF adjacency on {device_a} {interface_a} <-> {device_b} {interface_b} is down/lost because peer-IP reachability failed on that peering."
+        )
     elif correlations:
+        diagnosis_class = "peering_correlated_syslog_only"
+        recommended_action = (
+            f"Use the correlated OSPF-facing interfaces ({device_a} {interface_a} and {device_b} {interface_b}) as the investigation focus, "
+            "then verify peer-IP reachability and current OSPF neighbor state on that exact peering."
+        )
         lines.append(
             "  Evidence summary: syslog/IP correlation identifies the exact OSPF-facing interface(s); use that evidence directly in Root Cause."
         )
+    else:
+        diagnosis_class = "peering_unresolved_after_inspection"
+        recommended_action = (
+            f"Continue on the {device_a} {interface_a} <-> {device_b} {interface_b} peering with targeted OSPF neighbor/parameter checks; "
+            "the current evidence identifies the failing adjacency but not yet the exact trigger."
+        )
+
+    lines.append(f"  Diagnosis class: {diagnosis_class}")
+    lines.append(f"  Recommended next action: {recommended_action}")
 
     _store(session_id)["peering_inspections"].append({
         "device_a": device_a,
         "interface_a": interface_a,
         "device_b": device_b,
         "interface_b": interface_b,
-        "ip_a": ip_a,
-        "ip_b": ip_b,
+        "ip_a": live_ip_a,
+        "ip_b": live_ip_b,
         "row_a": row_a,
         "row_b": row_b,
         "detail_a": detail_a,
@@ -958,6 +1141,10 @@ async def inspect_ospf_peering(
         "correlations": correlations,
         "ping_a": ping_a,
         "ping_b": ping_b,
+        "counters_a": counters_a,
+        "counters_b": counters_b,
+        "diagnosis_class": diagnosis_class,
+        "recommended_action": recommended_action,
         "summary": lines[-1] if lines else "",
     })
 
@@ -1234,6 +1421,494 @@ async def lookup_routing_history(destination_ip: str, config: RunnableConfig) ->
             f"{last_route['egress_interface']} via {last_route['next_hop']} "
             f"({last_route['protocol']}, {last_route['prefix']})"
         )
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Holistic connectivity snapshot
+# ---------------------------------------------------------------------------
+
+def _is_device_name(value: str) -> bool:
+    value = str(value or "").strip()
+    return bool(value) and bool(_HOSTNAME_RE.match(value)) and not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value)
+
+
+def _extract_devices_from_hops(hops: list[dict[str, Any]]) -> list[str]:
+    devices: list[str] = []
+    for hop in hops or []:
+        if not isinstance(hop, dict):
+            continue
+        for key in ("from_device", "to_device"):
+            value = str(hop.get(key) or "").strip()
+            if _is_device_name(value) and value not in devices:
+                devices.append(value)
+    return devices
+
+
+def _extract_relevant_interfaces(hops: list[dict[str, Any]]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for hop in hops or []:
+        if not isinstance(hop, dict):
+            continue
+        from_device = str(hop.get("from_device") or "").strip()
+        to_device = str(hop.get("to_device") or "").strip()
+        out_interface = str(hop.get("out_interface") or "").strip()
+        in_interface = str(hop.get("in_interface") or "").strip()
+        if _is_device_name(from_device) and out_interface:
+            result.setdefault(from_device, set()).add(out_interface)
+        if _is_device_name(to_device) and in_interface:
+            result.setdefault(to_device, set()).add(in_interface)
+    return result
+
+
+def _pick_interface_row(data: dict[str, Any], interface: str) -> dict[str, Any]:
+    for row in (data.get("interfaces") or []):
+        if row.get("interface") == interface:
+            return row
+    return {}
+
+
+def _infer_destination_side_device_from_store(store: dict[str, Any]) -> str:
+    reverse_hops = store.get("reverse_path_hops") or []
+    if reverse_hops and isinstance(reverse_hops, list):
+        first = reverse_hops[0]
+        if isinstance(first, dict):
+            candidate = str(first.get("to_device") or "").strip()
+            if _is_device_name(candidate):
+                return candidate
+    meta = store.get("path_meta") or {}
+    candidate = str(meta.get("last_hop_device") or "").strip()
+    return candidate if _is_device_name(candidate) else ""
+
+
+@tool
+async def collect_connectivity_snapshot(
+    source_ip: str,
+    dest_ip: str,
+    config: RunnableConfig,
+    port: str = "",
+) -> str:
+    """
+    Collect a holistic connectivity snapshot for the current incident.
+
+    This is a discovery-first evidence bundle for the agent:
+    - current forward and reverse topology clues
+    - historical devices / primary peering hint
+    - per-device routing protocol discovery
+    - spanning-tree mode when relevant
+    - route status toward source/destination
+    - relevant interface state/detail/counters
+    - protocol-specific OSPF evidence only when OSPF is actually discovered
+    - destination-side TCP check when a port is provided
+
+    Use this before writing the final report when you need to reason about
+    multiple simultaneous issues across the path.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, "Collecting holistic connectivity snapshot...")
+    store = _store(session_id)
+
+    if not store.get("path_hops"):
+        text, hops, flags = await _live_path_trace(source_ip, dest_ip)
+        store["path_hops"] = hops
+        store["path_flags"] = flags
+        meta = _extract_path_metadata(hops)
+        meta["src_vrf"] = await _infer_vrf(source_ip, meta.get("first_hop_device", ""))
+        store["path_meta"] = meta
+        store["path_text"] = text
+    if not store.get("reverse_path_hops"):
+        text, hops, _ = await _live_path_trace(dest_ip, source_ip)
+        store["reverse_path_hops"] = hops
+        store["reverse_path_text"] = text
+
+    if not store.get("routing_history"):
+        try:
+            try:
+                from atlas.db import fetch as _fetch, fetchrow as _fetchrow
+            except ImportError:
+                from db import fetch as _fetch, fetchrow as _fetchrow  # type: ignore
+
+            hist_devs = await _fetch(
+                """
+                SELECT DISTINCT device FROM routing_history
+                WHERE $1::inet << prefix
+                  AND egress_interface IS NOT NULL
+                  AND egress_interface NOT ILIKE 'management%'
+                """,
+                dest_ip,
+            )
+            last_route = await _fetchrow(
+                """
+                SELECT device, egress_interface, next_hop::text, protocol, prefix::text, collected_at
+                FROM routing_history
+                WHERE $1::inet << prefix
+                  AND egress_interface NOT ILIKE 'management%'
+                ORDER BY collected_at DESC LIMIT 1
+                """,
+                dest_ip,
+            )
+            last_upstream_route = await _fetchrow(
+                """
+                SELECT device, egress_interface, next_hop::text, protocol, prefix::text, collected_at
+                FROM routing_history
+                WHERE $1::inet << prefix
+                  AND egress_interface NOT ILIKE 'management%'
+                  AND next_hop IS NOT NULL
+                ORDER BY collected_at DESC LIMIT 1
+                """,
+                dest_ip,
+            )
+            peer_hint = None
+            peering_source = last_upstream_route or last_route
+            if peering_source and peering_source.get("next_hop"):
+                try:
+                    peer_data = await _nornir_post("/find-device", {"ip": str(peering_source["next_hop"]).split("/")[0]}, timeout=15.0)
+                    if peer_data.get("found"):
+                        peer_hint = {
+                            "from_device": peering_source.get("device"),
+                            "from_interface": peering_source.get("egress_interface"),
+                            "next_hop_ip": peering_source.get("next_hop"),
+                            "to_device": peer_data.get("device"),
+                            "to_interface": peer_data.get("interface"),
+                        }
+                except Exception:
+                    peer_hint = None
+            store["routing_history"] = _json_safe({
+                "historical_devices": [r["device"] for r in hist_devs],
+                "last_route": dict(last_route) if last_route else None,
+                "last_upstream_route": dict(last_upstream_route) if last_upstream_route else None,
+                "peer_hint": peer_hint,
+            })
+        except Exception as exc:
+            store["routing_history"] = {"error": str(exc)}
+
+    path_hops = store.get("path_hops") or []
+    reverse_hops = store.get("reverse_path_hops") or []
+    routing_history = store.get("routing_history") or {}
+    peer_hint = routing_history.get("peer_hint") or {}
+
+    devices: list[str] = []
+    for device in (
+        _extract_devices_from_hops(path_hops)
+        + _extract_devices_from_hops(reverse_hops)
+        + list(routing_history.get("historical_devices") or [])
+        + [peer_hint.get("from_device"), peer_hint.get("to_device")]
+    ):
+        device = str(device or "").strip()
+        if _is_device_name(device) and device not in devices:
+            devices.append(device)
+
+    if not devices:
+        return "Connectivity snapshot unavailable: no in-scope devices were discovered from live path or history."
+
+    relevant_interfaces = _extract_relevant_interfaces(path_hops)
+    for device, interfaces in _extract_relevant_interfaces(reverse_hops).items():
+        relevant_interfaces.setdefault(device, set()).update(interfaces)
+    if peer_hint.get("from_device") and peer_hint.get("from_interface"):
+        relevant_interfaces.setdefault(str(peer_hint["from_device"]), set()).add(str(peer_hint["from_interface"]))
+    if peer_hint.get("to_device") and peer_hint.get("to_interface"):
+        relevant_interfaces.setdefault(str(peer_hint["to_device"]), set()).add(str(peer_hint["to_interface"]))
+
+    async def _protocol(device: str) -> dict[str, Any]:
+        try:
+            data = await _nornir_post("/protocol-discovery", {"device": device}, timeout=20.0)
+            result = (data.get("protocol_discovery") or {}).get(device, data)
+        except Exception as exc:
+            result = {
+                "device": device,
+                "routing_protocols": [],
+                "configured_routing_protocols": [],
+                "observed_route_types": [],
+                "l2_control_plane": {
+                    "spanning_tree_mode": "unknown",
+                    "spanning_tree_enabled": None,
+                    "summary_lines": [],
+                },
+                "errors": {"protocol_discovery": str(exc)},
+            }
+        store["protocol_discovery"][device] = result
+        return result
+
+    async def _all_interfaces(device: str) -> dict[str, Any]:
+        if device in store.get("all_interfaces", {}):
+            return store["all_interfaces"][device]
+        try:
+            data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
+        except Exception as exc:
+            data = {"device": device, "interfaces": [], "error": str(exc)}
+        store["all_interfaces"][device] = data
+        return data
+
+    async def _syslog(device: str) -> dict[str, Any]:
+        if device in store.get("syslog", {}):
+            return store["syslog"][device]
+        try:
+            data = await _nornir_post("/show-logging", {"device": device, "lines": 80}, timeout=15.0)
+        except Exception as exc:
+            data = {"device": device, "logs": [], "error": str(exc)}
+        logs = data.get("logs", [])
+        relevant = [l for l in logs if any(k in l.lower() for k in ("down", "up", "flap", "ospf", "bgp", "eigrp", "isis", "spanning-tree", "crc", "discard", "err"))][-12:]
+        result = {"logs": logs, "relevant": relevant}
+        store["syslog"][device] = result
+        return result
+
+    protocol_results_list = await asyncio.gather(*(_protocol(device) for device in devices))
+    interface_results_list = await asyncio.gather(*(_all_interfaces(device) for device in devices))
+    syslog_results_list = await asyncio.gather(*(_syslog(device) for device in devices))
+    protocol_results = dict(zip(devices, protocol_results_list))
+    interface_results = dict(zip(devices, interface_results_list))
+    syslog_results = dict(zip(devices, syslog_results_list))
+
+    try:
+        route_to_dest = await _nornir_post("/routing-check", {"devices": devices, "destination": dest_ip, "vrf": ""}, timeout=25.0)
+    except Exception as exc:
+        route_to_dest = {"hops": {}, "error": str(exc)}
+    try:
+        route_to_src = await _nornir_post("/routing-check", {"devices": devices, "destination": source_ip, "vrf": ""}, timeout=25.0)
+    except Exception as exc:
+        route_to_src = {"hops": {}, "error": str(exc)}
+    if not isinstance(route_to_dest, dict):
+        route_to_dest = {"hops": {}, "error": "invalid routing-check response"}
+
+    ospf_devices = [
+        device for device, info in protocol_results.items()
+        if "ospf" in (info.get("routing_protocols") or [])
+    ]
+    ospf_neighbors: dict[str, Any] = {}
+    ospf_interfaces: dict[str, Any] = {}
+    if ospf_devices:
+        ospf_neighbors_resp, ospf_interfaces_resp = await asyncio.gather(
+            _nornir_post("/ospf-neighbors", {"devices": ospf_devices}, timeout=20.0),
+            _nornir_post("/ospf-interfaces", {"devices": ospf_devices}, timeout=20.0),
+        )
+        ospf_neighbors = ospf_neighbors_resp.get("ospf_neighbors", {}) or {}
+        ospf_interfaces = ospf_interfaces_resp.get("ospf_interfaces", {}) or {}
+
+    detail_tasks = []
+    detail_keys: list[tuple[str, str]] = []
+    counter_tasks = []
+    counter_keys: list[tuple[str, str]] = []
+    for device, interfaces in relevant_interfaces.items():
+        for interface in sorted(i for i in interfaces if i):
+            detail_keys.append((device, interface))
+            detail_tasks.append(_nornir_post("/interface-detail", {"device": device, "interface": interface}, timeout=15.0))
+            counter_keys.append((device, interface))
+            counter_tasks.append(_nornir_post("/interface-counters", {"device": device, "interfaces": [interface]}, timeout=20.0))
+
+    details: dict[tuple[str, str], dict[str, Any]] = {}
+    if detail_tasks:
+        detail_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
+        for key, result in zip(detail_keys, detail_results):
+            details[key] = result if isinstance(result, dict) else {"error": str(result)}
+            store["interface_details"][f"{key[0]}:{key[1]}"] = details[key]
+
+    counter_results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    if counter_tasks:
+        counter_results = await asyncio.gather(*counter_tasks, return_exceptions=True)
+        for key, result in zip(counter_keys, counter_results):
+            payload = result if isinstance(result, dict) else {"error": str(result), "active_errors": [], "clean_interfaces": []}
+            counter_results_by_key[key] = payload
+            store["interface_counters"].append({
+                "device": key[0],
+                "window_s": payload.get("poll_interval_s", 3) * max(0, payload.get("iterations", 3) - 1),
+                "active": payload.get("active_errors", []),
+                "clean": payload.get("clean_interfaces", []),
+            })
+
+    destination_side_device = _infer_destination_side_device_from_store(store)
+    service_snapshot: dict[str, Any] | None = None
+    if port and destination_side_device:
+        try:
+            service_snapshot = await _nornir_post(
+                "/tcp-test",
+                {"device": destination_side_device, "destination": dest_ip, "port": int(port), "vrf": ""},
+                timeout=30.0,
+            )
+            service_snapshot["device"] = destination_side_device
+        except Exception as exc:
+            service_snapshot = {
+                "device": destination_side_device,
+                "reachable": False,
+                "error": str(exc),
+                "destination": dest_ip,
+                "port": int(port),
+            }
+
+    findings: list[str] = []
+    link_lines: list[str] = []
+    if peer_hint:
+        a_dev = str(peer_hint.get("from_device") or "")
+        a_int = str(peer_hint.get("from_interface") or "")
+        b_dev = str(peer_hint.get("to_device") or "")
+        b_int = str(peer_hint.get("to_interface") or "")
+        if a_dev and a_int and b_dev and b_int:
+            a_row = _pick_interface_row(interface_results.get(a_dev, {}), a_int)
+            b_row = _pick_interface_row(interface_results.get(b_dev, {}), b_int)
+            a_state = "up" if a_row.get("up") else f"down ({a_row.get('oper_status', 'unknown')})"
+            b_state = "up" if b_row.get("up") else f"down ({b_row.get('oper_status', 'unknown')})"
+            a_ip = a_row.get("primary_ip") or "unknown"
+            b_ip = b_row.get("primary_ip") or str(peer_hint.get("next_hop_ip") or "unknown")
+            link_lines.append(
+                f"- {a_dev} {a_int} ({a_ip}) <-> {b_dev} {b_int} ({b_ip}) | states: {a_state} / {b_state}"
+            )
+
+            inspection = None
+            for item in reversed(store.get("peering_inspections") or []):
+                if not isinstance(item, dict):
+                    continue
+                direct = item.get("device_a") == a_dev and item.get("interface_a") == a_int and item.get("device_b") == b_dev and item.get("interface_b") == b_int
+                reverse = item.get("device_a") == b_dev and item.get("interface_a") == b_int and item.get("device_b") == a_dev and item.get("interface_b") == a_int
+                if direct or reverse:
+                    inspection = item
+                    break
+            if inspection:
+                ping_forward = inspection.get("ping_a_success")
+                ping_reverse = inspection.get("ping_b_success")
+                link_lines.append(
+                    f"  peer-IP reachability: {a_dev}->{b_ip}={'ok' if ping_forward else 'failed'}; "
+                    f"{b_dev}->{a_ip}={'ok' if ping_reverse else 'failed'}"
+                )
+            if a_row.get("up") is False or b_row.get("up") is False:
+                findings.append(
+                    f"[interface] Primary peering {a_dev} {a_int} <-> {b_dev} {b_int} has an interface down/admin-down."
+                )
+
+    for device in devices:
+        route_info = (route_to_dest.get("hops") or {}).get(device, {})
+        if route_info.get("found") is False:
+            findings.append(f"[routing] {device} currently has no route to {dest_ip}.")
+        for line in syslog_results.get(device, {}).get("relevant", []):
+            low = line.lower()
+            if "crc" in low or "fcs" in low or "discard" in low:
+                findings.append(f"[interface] {device} recent syslog mentions physical/interface errors: {line}")
+                break
+
+    if service_snapshot:
+        if service_snapshot.get("reachable") is True:
+            findings.append(f"[service] TCP port {port} is reachable from destination-side device {service_snapshot['device']}.")
+        else:
+            err = str(service_snapshot.get("error") or service_snapshot.get("output") or "").lower()
+            if "refused" in err:
+                findings.append(f"[service] TCP port {port} is actively refused from destination-side device {service_snapshot['device']}.")
+            else:
+                findings.append(f"[service] TCP port {port} could not be validated from destination-side device {service_snapshot['device']}.")
+
+    snapshot = {
+        "source_ip": source_ip,
+        "dest_ip": dest_ip,
+        "port": port,
+        "devices": devices,
+        "routing_history": routing_history,
+        "destination_side_device": destination_side_device,
+        "findings": findings,
+        "service": service_snapshot,
+    }
+    store["connectivity_snapshot"] = _json_safe(snapshot)
+
+    lines = [
+        "Connectivity incident snapshot:",
+        f"  source_ip: {source_ip}",
+        f"  dest_ip: {dest_ip}",
+    ]
+    if port:
+        lines.append(f"  requested_port: {port}")
+    lines.extend([
+        "Topology summary:",
+        f"  forward_path_devices: {', '.join(_extract_devices_from_hops(path_hops)) or 'none'}",
+        f"  reverse_path_devices: {', '.join(_extract_devices_from_hops(reverse_hops)) or 'none'}",
+        f"  historical_devices: {', '.join(routing_history.get('historical_devices') or []) or 'none'}",
+    ])
+    if peer_hint:
+        lines.append(
+            f"  primary_historical_peering: {peer_hint.get('from_device')} {peer_hint.get('from_interface')} "
+            f"<-> {peer_hint.get('to_device')} {peer_hint.get('to_interface')} via {peer_hint.get('next_hop_ip')}"
+        )
+
+    lines.append("Device snapshots:")
+    for device in devices:
+        proto = protocol_results.get(device, {})
+        route_dest = (route_to_dest.get("hops") or {}).get(device, {})
+        route_src = (route_to_src.get("hops") or {}).get(device, {})
+        stp = (proto.get("l2_control_plane") or {})
+        lines.append(f"- {device}")
+        lines.append(f"  routing_protocols: {', '.join(proto.get('routing_protocols') or []) or 'none discovered'}")
+        observed = ", ".join(proto.get("observed_route_types") or []) or "none"
+        lines.append(f"  observed_route_types: {observed}")
+        lines.append(
+            f"  spanning_tree: mode={stp.get('spanning_tree_mode', 'unknown')}, "
+            f"enabled={stp.get('spanning_tree_enabled')}"
+        )
+        if route_dest:
+            if route_dest.get("found"):
+                lines.append(
+                    f"  route_to_destination: {route_dest.get('protocol')} via "
+                    f"{route_dest.get('interface')} next-hop {route_dest.get('next_hop')}"
+                )
+            else:
+                lines.append(f"  route_to_destination: no route ({route_dest.get('error', 'unknown')})")
+        if route_src:
+            if route_src.get("found"):
+                lines.append(
+                    f"  route_to_source: {route_src.get('protocol')} via "
+                    f"{route_src.get('interface')} next-hop {route_src.get('next_hop')}"
+                )
+            else:
+                lines.append(f"  route_to_source: no route ({route_src.get('error', 'unknown')})")
+
+        if device in ospf_devices:
+            neigh = ospf_neighbors.get(device, {})
+            ospf_intf = ospf_interfaces.get(device, {})
+            lines.append(f"  ospf_neighbors: {neigh.get('count', 0)}")
+            lines.append(f"  ospf_interfaces: {ospf_intf.get('ospf_interface_count', 0)}")
+
+        rel_intfs = sorted(relevant_interfaces.get(device, set()))
+        if rel_intfs:
+            lines.append("  relevant_interfaces:")
+            for interface in rel_intfs:
+                row = _pick_interface_row(interface_results.get(device, {}), interface)
+                detail = details.get((device, interface), {})
+                counters = counter_results_by_key.get((device, interface), {})
+                state = "up" if row.get("up") else f"down ({row.get('oper_status', 'unknown')})"
+                ip_text = f"{row.get('primary_ip')}/{row.get('prefix_len')}" if row.get("primary_ip") else "no_ip"
+                lines.append(f"    - {interface}: {ip_text}, state={state}")
+                if detail and not detail.get("error"):
+                    lines.append(
+                        f"      detail: line_protocol={detail.get('line_protocol')}, "
+                        f"input_errors={detail.get('input_errors')}, output_errors={detail.get('output_errors')}, "
+                        f"input_discards={detail.get('input_discards')}, output_discards={detail.get('output_discards')}"
+                    )
+                active_errors = counters.get("active_errors") or []
+                if active_errors:
+                    lines.append(f"      active_counter_errors: {json.dumps(active_errors)}")
+
+        syslog_lines = syslog_results.get(device, {}).get("relevant") or []
+        if syslog_lines:
+            lines.append("  recent_fault_signals:")
+            for line in syslog_lines[-4:]:
+                lines.append(f"    - {line}")
+
+    if link_lines:
+        lines.append("Link snapshots:")
+        lines.extend(link_lines)
+
+    if service_snapshot:
+        lines.append("Service snapshot:")
+        if service_snapshot.get("reachable") is True:
+            lines.append(f"  tcp_port_{port}: reachable from {service_snapshot.get('device')}")
+        else:
+            lines.append(
+                f"  tcp_port_{port}: unreachable/refused from {service_snapshot.get('device')} "
+                f"({service_snapshot.get('error') or service_snapshot.get('output') or 'no detail'})"
+            )
+
+    if findings:
+        lines.append("Candidate issues:")
+        for finding in findings:
+            lines.append(f"  - {finding}")
+    else:
+        lines.append("Candidate issues:")
+        lines.append("  - No explicit candidate issue was derived; reason from the device and link snapshots above.")
 
     return "\n".join(lines)
 
@@ -1647,6 +2322,7 @@ ALL_TOOLS = [
     get_all_interfaces,
     get_device_syslog,
     inspect_ospf_peering,
+    collect_connectivity_snapshot,
     check_ospf_neighbors,
     check_ospf_interfaces,
     lookup_ospf_history,
@@ -1667,4 +2343,30 @@ NETWORK_OPS_TOOLS = [
     check_panorama_policy,
     search_servicenow,
     get_incident_details,
+]
+
+# Connectivity investigations should reason from live tools plus historical
+# routing evidence, but not from recalled past narratives that can overwrite
+# current-state observations.
+CONNECTIVITY_TOOLS = [
+    trace_path,
+    trace_reverse_path,
+    ping_device,
+    test_tcp_port,
+    check_routing,
+    get_interface_counters,
+    get_interface_detail,
+    get_all_interfaces,
+    get_device_syslog,
+    inspect_ospf_peering,
+    collect_connectivity_snapshot,
+    check_ospf_neighbors,
+    check_ospf_interfaces,
+    lookup_ospf_history,
+    lookup_routing_history,
+    search_servicenow,
+    get_incident_details,
+    check_panorama_policy,
+    check_splunk,
+    lookup_vendor_kb,
 ]

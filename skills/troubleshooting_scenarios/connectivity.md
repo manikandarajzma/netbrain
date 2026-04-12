@@ -11,7 +11,10 @@ This file is the authoritative runbook for connectivity investigations. When tro
 - `get_interface_counters(devices_and_interfaces=[...path_hops...])` — mandatory whenever trace_path returns any path_hops_for_counters entries
 - `get_all_interfaces(device=dst_gateway_device)` — mandatory when dst_gateway_device is visible in forward trace_path output
 - `lookup_routing_history(destination_ip=dest_ip)`
-- `recall_similar_cases(query="...", devices=[...all devices...])` — surface past cases; treat as context only, not conclusions
+
+Do NOT use `recall_similar_cases(...)` to establish current device state for connectivity investigations.
+Past cases may help later with remediation ideas, but they are NOT evidence of current interface state, neighbor state, reachability, or service status.
+Never use recalled past cases as support for `## Root Cause`, `## Additional Findings`, or `## Recommendation` unless live tools in this same run independently corroborate them.
 
 **Step 3** — OSPF checks + syslog in parallel on ALL devices (path_hops + dst_gateway_device):
 - `check_ospf_neighbors(devices=[...path_hops + dst_gateway_device...])`
@@ -19,16 +22,22 @@ This file is the authoritative runbook for connectivity investigations. When tro
 - `lookup_ospf_history(devices=[...path_hops + dst_gateway_device...])`
 - `get_device_syslog(device=...)` on EVERY device in path_hops + dst_gateway_device — one call per device, all in parallel
 
-### Step 4 — mandatory calls (all three, in parallel)
+### Step 4 — mandatory reverse trace first
 
-Always call these three simultaneously — do not skip any:
-1. `ping_device(device=first_hop_device, destination=dest_ip, ...)` — forward ping
-2. `ping_device(device=last_hop_device, destination=src_ip, source_interface=last_hop_lan_interface, vrf=dst_vrf)` — reverse ping
-3. `trace_reverse_path(source_ip=source_ip, dest_ip=dest_ip)` — reverse path trace
+Call this before any reverse ping:
+1. `trace_reverse_path(source_ip=source_ip, dest_ip=dest_ip)` — reverse path trace
 
 Always write a `## Reverse Path` section in the report based on `trace_reverse_path` output.
+Do NOT guess the reverse-side device from the forward path.
+The reverse ping source device must come from `trace_reverse_path` metadata (`reverse_first_hop_device`), not from `last_hop_device` in the forward trace.
 
-### Step 5 — mandatory tool calls after ping / reverse trace
+### Step 5 — mandatory pings after reverse trace
+
+After `trace_reverse_path(...)` returns, call both:
+1. `ping_device(device=first_hop_device, destination=dest_ip, ...)` — forward ping
+2. `ping_device(device=reverse_first_hop_device, destination=src_ip, source_interface=reverse_first_hop_lan_interface, vrf=dst_vrf)` — reverse ping
+
+### Step 6 — mandatory tool calls after ping / reverse trace
 
 **Ping FAILED:**
 Call `check_routing(devices=[...all path devices...], destination=dest_ip, vrf=src_vrf)` immediately.
@@ -54,7 +63,7 @@ Do not finalize the report until the `## Interface Errors` section reflects eith
 
 If `lookup_routing_history` reports a "Primary upstream clue" or "Primary OSPF peering to troubleshoot" such as "`ai3 EthernetX <-> ai4 EthernetY`", that pair becomes the primary OSPF investigation target.
 Before writing Root Cause, you MUST troubleshoot the peering on BOTH devices in that hint, even if the forward trace only named one side:
-- `inspect_ospf_peering(device_a=from_device, interface_a=from_interface, device_b=to_device, interface_b=to_interface, ip_a=from_ip_if_known, ip_b=next_hop_ip)` — preferred first call because it bundles both interface states, syslog correlation, and bilateral peer-IP tests
+- `inspect_ospf_peering(device_a=from_device, interface_a=from_interface, device_b=to_device, interface_b=to_interface, ip_a=from_ip_if_known, ip_b=next_hop_ip)` — preferred first call because it bundles interface states, counters, syslog correlation, bilateral peer-IP tests, and returns a `Diagnosis class` plus `Recommended next action`
 - `check_ospf_neighbors(devices=[from_device, to_device])`
 - `check_ospf_interfaces(devices=[from_device, to_device])`
 - `lookup_ospf_history(devices=[from_device, to_device])`
@@ -65,27 +74,68 @@ Before writing Root Cause, you MUST troubleshoot the peering on BOTH devices in 
 - `ping_device(device=from_device, destination=next_hop_ip, source_interface=from_interface)` and, if the peer IP is known from tools/history, `ping_device(device=to_device, destination=peer_ip, source_interface=to_interface)`
 
 If that bilateral peering evidence exists, base the root cause and recommendation on that specific adjacency rather than on generic destination-subnet wording.
+When `inspect_ospf_peering(...)` returns `Diagnosis class:` and `Recommended next action:`, treat those as the primary reasoning anchor. Do not invent a different recommendation unless another tool returned stronger contradictory evidence later in the same run.
 If `inspect_ospf_peering(...)` reports `Evidence summary: both ends of the peering are down/admin-down` or that one named side is down/admin-down, treat that as the primary root cause and say so directly.
-When the evidence shows one or both peering interfaces are administratively down, use explicit operator language in Recommendation:
-- If both sides are admin down: `Re-enable {from_interface} on {from_device} and {to_interface} on {to_device}, then verify the OSPF adjacency reforms and {dest_subnet} is readvertised upstream.`
-- If one side is admin down: `Re-enable {interface} on {device}, then verify the OSPF adjacency reforms and {dest_subnet} is readvertised upstream.`
-Do not dilute this into vague wording like `bring it back up` or `restore the physical/administrative link` when the tool evidence already proves `admin down`.
+If `inspect_ospf_peering(...)` returns `Diagnosis class: peering_one_way_reachability_failure` or `Diagnosis class: peering_bidirectional_reachability_failure` while the interfaces are UP, prefer a physical-layer recommendation first:
+- inspect/reseat or replace the cable
+- inspect/reseat or replace the optic/transceiver
+- check interface counters / CRC / port health
+- only after that, revisit OSPF timers or policy
+If `Diagnosis class: peering_one_way_reachability_failure`, Root Cause MUST explicitly preserve both facts:
+- both peering interfaces are currently UP
+- one side cannot reach the peer IP
+- the OSPF adjacency on that peering is down/lost as a consequence
+Preferred phrasing:
+`Both peering interfaces are currently up, but {device} {interface} cannot reach peer IP {peer_ip}. This indicates a one-way or intermittent failure on that side of the peering link, and the OSPF adjacency on that peering is down/lost as a consequence.`
+Do not compress this into only `cannot reach the peer IP`; keep the `interfaces are up` fact in the final Root Cause.
 If the final report only discusses `dst_gateway_device` and does not mention the upstream learner from the routing-history clue, the investigation is incomplete.
 
-**Ping PASSED + port is known — CALL test_tcp_port BEFORE WRITING ANY REPORT:**
-You MUST call `test_tcp_port(device=last_hop_device, destination=dest_ip, port=port, vrf=src_vrf)`.
-The investigation is not complete until test_tcp_port has returned a result.
-Do NOT write Root Cause or Recommendation before this call returns.
-Do NOT use any TCP root cause pattern below unless test_tcp_port has been called and returned.
+**Port is known — CALL test_tcp_port FROM THE CLOSEST DESTINATION-SIDE DEVICE BEFORE WRITING ANY REPORT:**
+If `port` is known and you have a destination-adjacent device (`last_hop_device`, `dst_gateway_device`, or the device physically connected to the destination subnet), you MUST call:
+`test_tcp_port(device=closest_destination_side_device, destination=dest_ip, port=port, vrf=dst_vrf_or_default)`
 
-**Reverse ping FAILED (last_hop_device → src_ip), forward ping passed:**
-Call `check_routing(devices=[last_hop_device], destination=src_ip)` to confirm the missing return route.
+This remains REQUIRED even if the source-side ping failed.
+Reason: there can be multiple simultaneous blockers, for example:
+- the network path is broken
+- and the destination service is also not listening on the requested TCP port
+
+The investigation is not complete until test_tcp_port has returned a result whenever a destination-adjacent device is known.
+Do NOT write the final report before this call returns.
+If Layer 3 is broken and TCP testing from the destination side shows the service is also unavailable, report the Layer 3 issue as the primary root cause and the TCP/service result as an additional finding in `## Connectivity Test`.
+Do NOT suppress the TCP finding just because routing is already broken.
+
+**Reverse ping FAILED (reverse_first_hop_device → src_ip), forward ping passed:**
+Call `check_routing(devices=[reverse_first_hop_device], destination=src_ip)` to confirm the missing return route.
+
+### Step 7 — mandatory holistic snapshot before Root Cause / Recommendation
+
+Before writing the final report, call:
+
+`collect_connectivity_snapshot(source_ip=src_ip, dest_ip=dest_ip, port=port_if_known)`
+
+Treat that snapshot as the primary evidence bundle for final reasoning.
+
+The snapshot is discovery-first. It is expected to:
+- discover which routing protocols are actually present on each device instead of assuming OSPF
+- discover L2 control-plane mode (for example MSTP / RSTP) when relevant instead of assuming generic STP
+- summarize topology, route status, relevant interfaces, counters, syslog, protocol state, and service checks in one place
+- surface more than one independent blocker when they exist
+
+Do not collapse the investigation into a single story too early.
+If the snapshot surfaces multiple independent problems, write:
+- `## Root Cause` for the primary blocker that best explains the end-to-end failure
+- and preserve the other blockers under `## Additional Findings` or `## Connectivity Test`
+
+When live evidence and historical evidence disagree, prefer live evidence.
+If a device or interface could not be queried live in this run, say that explicitly and avoid asserting its current state.
+
+`test_tcp_port(...)` is only one possible service-layer check. Treat it as part of the holistic snapshot when a port is known, not as the only additional blocker worth reporting.
 
 ---
 
 ### Root cause patterns
 
-> **TCP patterns (refused / timed out / passed) REQUIRE test_tcp_port to have been called first.**
+> **TCP patterns (refused / timed out / passed) REQUIRE test_tcp_port to have been called first whenever a destination-side device is available.**
 > If you have not called test_tcp_port, go back and call it now. Do not use these patterns otherwise.
 
 **Ping FAILED — management routing fallback (⚠️ Mgmt fallback in path trace):**
@@ -138,7 +188,7 @@ Never claim the same OSPF misconfiguration simultaneously on every device in the
 "Layer 3 and Layer 4 are fully reachable. The problem is at the application or service layer on the destination."
 
 **Reverse ping FAILED:**
-"The return path from {dst_ip} to {src_ip} is broken. {last_hop_device} has no route back to {src_ip}."
+"The return path from {dst_ip} to {src_ip} is broken. {reverse_first_hop_device} has no route back to {src_ip}."
 
 ---
 
@@ -153,5 +203,6 @@ Use these exact headers (omit any with nothing to report):
 ## OSPF Analysis
 ## Routing Analysis
 ## Connectivity Test
+## Additional Findings
 ## Root Cause
 ## Recommendation

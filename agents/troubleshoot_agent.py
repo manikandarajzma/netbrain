@@ -17,9 +17,11 @@ from langgraph.prebuilt import create_react_agent
 
 try:
     from atlas.tools.all_tools import ALL_TOOLS
+    from atlas.tools.all_tools import CONNECTIVITY_TOOLS
     from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
 except ImportError:
     from tools.all_tools import ALL_TOOLS          # type: ignore
+    from tools.all_tools import CONNECTIVITY_TOOLS  # type: ignore
     from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL  # type: ignore
 
 logger = logging.getLogger("atlas.troubleshoot_agent")
@@ -76,4 +78,6 @@ def build_agent(prompt: str = "", issue_type: str = "general"):
         api_key="docker",
     )
     system_prompt = load_system_prompt(prompt, issue_type)
-    return create_react_agent(llm, ALL_TOOLS, prompt=SystemMessage(content=system_prompt))
+    scenario_path = _pick_scenario(prompt, issue_type) or ""
+    tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
+    return create_react_agent(llm, tools, prompt=SystemMessage(content=system_prompt))

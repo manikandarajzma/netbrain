@@ -8,6 +8,7 @@ Uses NetBox IPAM to identify the first-hop gateway for a given source IP.
 Used as a NetBrain alternative when the user explicitly requests it.
 """
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -81,32 +82,36 @@ def _run_privileged(hostname: str, host: str, port: int, command: str) -> str:
         "secret": SSH_PASSWORD,
         "timeout": 30,
     }
-    with ConnectHandler(**device) as conn:
-        conn.enable()
-        return conn.send_command(command, read_timeout=30)
+    sem = _device_semaphore(hostname)
+    with sem:
+        with ConnectHandler(**device) as conn:
+            conn.enable()
+            return conn.send_command(command, read_timeout=30)
 
 
 def _run_show(hostname: str, host: str, port: int, command: str) -> str:
     """SSH into a device and run a single show command. Returns raw output."""
     from nornir_netmiko.tasks import netmiko_send_command
 
-    nr = _build_nornir(hostname, host, port)
-    try:
-        result = nr.run(task=netmiko_send_command, command_string=command)
-        for _, multi in result.items():
-            task_result = multi[0]
-            if task_result.failed or task_result.exception:
-                exc = task_result.exception
-                raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
-            r = task_result.result
-            logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
-            if r and not r.strip().startswith("Traceback"):
-                return r
-            if r and r.strip().startswith("Traceback"):
-                raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
-        raise RuntimeError(f"Empty output from {hostname} for '{command}'")
-    finally:
-        nr.close_connections()
+    sem = _device_semaphore(hostname)
+    with sem:
+        nr = _build_nornir(hostname, host, port)
+        try:
+            result = nr.run(task=netmiko_send_command, command_string=command)
+            for _, multi in result.items():
+                task_result = multi[0]
+                if task_result.failed or task_result.exception:
+                    exc = task_result.exception
+                    raise exc if exc else RuntimeError(f"Task failed on {hostname}: {task_result.result}")
+                r = task_result.result
+                logger.debug("_run_show %s %r → %r", hostname, command, (r or "")[:200])
+                if r and not r.strip().startswith("Traceback"):
+                    return r
+                if r and r.strip().startswith("Traceback"):
+                    raise RuntimeError(f"Task failed on {hostname}: {r[:200]}")
+            raise RuntimeError(f"Empty output from {hostname} for '{command}'")
+        finally:
+            nr.close_connections()
 
 
 
@@ -142,6 +147,7 @@ def _load_device_registry() -> dict[str, dict]:
 
 
 _DEVICE_REGISTRY: dict[str, dict] | None = None
+_DEVICE_REGISTRY_MTIME: float | None = None
 
 # Limit concurrent SSH sessions per device to avoid banner/connection errors.
 # Uses threading.Semaphore so it works across thread-pool executor threads
@@ -159,9 +165,21 @@ def _device_semaphore(device: str) -> threading.Semaphore:
 
 
 def _registry() -> dict[str, dict]:
-    global _DEVICE_REGISTRY
-    if _DEVICE_REGISTRY is None:
+    global _DEVICE_REGISTRY, _DEVICE_REGISTRY_MTIME
+    hosts_file = Path(__file__).parent / "inventory" / "hosts.yaml"
+    try:
+        mtime = hosts_file.stat().st_mtime
+    except Exception:
+        mtime = None
+
+    if (
+        _DEVICE_REGISTRY is None
+        or _DEVICE_REGISTRY_MTIME is None
+        or mtime is None
+        or mtime != _DEVICE_REGISTRY_MTIME
+    ):
         _DEVICE_REGISTRY = _load_device_registry()
+        _DEVICE_REGISTRY_MTIME = mtime
     return _DEVICE_REGISTRY
 
 
@@ -173,7 +191,7 @@ def _registry() -> dict[str, dict]:
 def find_device_for_ip(ip: str) -> dict:
     """
     Find which device in the inventory owns a given IP address.
-    Checks each device's interface IPs by running 'show interfaces | json'.
+    Checks each device's live interface inventory for an exact primary-IP match.
     Use this to resolve a gateway or next-hop IP to a device hostname and SSH details.
     Returns: {found, device, interface, host, port} or {found: false}.
     """
@@ -184,18 +202,65 @@ def find_device_for_ip(ip: str) -> dict:
             data = json.loads(raw)
             for intf_name, intf_data in data.get("interfaces", {}).items():
                 for addr_entry in intf_data.get("interfaceAddress", []):
-                    primary = addr_entry.get("primaryIp", {})
-                    if primary.get("address") == ip:
-                        return {
-                            "found": True,
-                            "device": hostname,
-                            "interface": intf_name,
-                            "host": conn["host"],
-                            "port": conn["port"],
-                        }
+                    primary = addr_entry.get("primaryIp", {}) or {}
+                    if primary.get("address") != ip:
+                        continue
+                    return {
+                        "found": True,
+                        "device": hostname,
+                        "interface": intf_name,
+                        "host": conn["host"],
+                        "port": conn["port"],
+                    }
+                for addr_entry in intf_data.get("interfaceAddress", []):
+                    for secondary in addr_entry.get("secondaryIpsOrderedList", []) or []:
+                        if secondary.get("address") == ip:
+                            return {
+                                "found": True,
+                                "device": hostname,
+                                "interface": intf_name,
+                                "host": conn["host"],
+                                "port": conn["port"],
+                            }
         except Exception as e:
             logger.debug("find_device_for_ip: skipping %s: %s", hostname, e)
     return {"found": False, "ip": ip}
+
+
+def _best_matching_route(routes: dict, destination_ip: str) -> tuple[str, dict] | tuple[None, None]:
+    """Return the most specific route whose prefix actually contains destination_ip."""
+    try:
+        dest = ipaddress.ip_address(destination_ip)
+    except ValueError:
+        return None, None
+
+    best_prefix: str | None = None
+    best_route: dict | None = None
+    best_plen = -1
+
+    for prefix, route in routes.items():
+        try:
+            network = ipaddress.ip_network(prefix, strict=False)
+        except ValueError:
+            continue
+        if dest in network and network.prefixlen > best_plen:
+            best_prefix = prefix
+            best_route = route
+            best_plen = network.prefixlen
+
+    return best_prefix, best_route
+
+
+def _extract_best_via(route: dict) -> dict:
+    """Choose the most informative EOS via entry."""
+    vias = route.get("vias", []) or []
+    for via in vias:
+        if via.get("nexthopAddr"):
+            return via
+    for via in vias:
+        if via.get("interface"):
+            return via
+    return vias[0] if vias else {}
 
 
 @tool
@@ -214,33 +279,39 @@ def get_route(device: str, destination_ip: str) -> dict:
             f"show ip route {destination_ip} | json",
         )
         data = json.loads(raw)
+
         # Arista: vrfs -> default -> routes -> <prefix> -> vias
         for vrf_name, vrf_data in data.get("vrfs", {}).items():
             routes = vrf_data.get("routes", {})
             if not routes:
                 continue
-            # Pick the most specific prefix
-            best_prefix = max(routes.keys(), key=lambda p: int(p.split("/")[1]) if "/" in p else 0)
-            route = routes[best_prefix]
-            vias = route.get("vias", [])
-            if not vias:
+
+            best_prefix, route = _best_matching_route(routes, destination_ip)
+            if not best_prefix or not route:
+                continue
+
+            protocol = route.get("routeType", "").lower()
+            via = _extract_best_via(route)
+            next_hop = via.get("nexthopAddr") or None
+            interface = via.get("interface") or route.get("interface")
+
+            if protocol in {"connected", "local"} and interface and not next_hop:
                 return {
                     "found": True,
                     "device": device,
                     "prefix": best_prefix,
                     "next_hop": None,
-                    "egress_interface": route.get("interface"),
-                    "protocol": route.get("routeType", "").lower(),
+                    "egress_interface": interface,
+                    "protocol": protocol,
                     "vrf": vrf_name,
                 }
-            via = vias[0]
             return {
                 "found": True,
                 "device": device,
                 "prefix": best_prefix,
-                "next_hop": via.get("nexthopAddr") or None,
-                "egress_interface": via.get("interface"),
-                "protocol": route.get("routeType", "").lower(),
+                "next_hop": next_hop,
+                "egress_interface": interface,
+                "protocol": protocol,
                 "vrf": vrf_name,
             }
         return {"found": False, "device": device, "destination": destination_ip, "reason": "no route"}
@@ -430,6 +501,120 @@ def get_ospf_neighbors(device: str) -> dict:
         return {"found": False, "device": device, "error": str(e)}
 
 
+def _parse_router_protocols(raw: str) -> list[str]:
+    protocols: set[str] = set()
+    for line in raw.splitlines():
+        stripped = line.strip().lower()
+        if not stripped.startswith("router "):
+            continue
+        if stripped.startswith("router ospf"):
+            protocols.add("ospf")
+        elif stripped.startswith("router bgp"):
+            protocols.add("bgp")
+        elif stripped.startswith("router eigrp"):
+            protocols.add("eigrp")
+        elif stripped.startswith("router isis"):
+            protocols.add("isis")
+        elif stripped.startswith("router rip"):
+            protocols.add("rip")
+    return sorted(protocols)
+
+
+def _parse_route_protocols(raw_json: str) -> list[str]:
+    observed: set[str] = set()
+    try:
+        data = json.loads(raw_json)
+    except Exception:
+        return []
+
+    for vrf_data in data.get("vrfs", {}).values():
+        for route in vrf_data.get("routes", {}).values():
+            route_type = str(route.get("routeType", "")).strip().lower()
+            if route_type:
+                observed.add(route_type)
+    return sorted(observed)
+
+
+def _parse_stp_summary(raw: str) -> dict:
+    lower = raw.lower()
+    mode = "unknown"
+    for candidate in ("mstp", "rstp", "rapid-pvst", "rapid pvst", "pvst", "stp"):
+        if candidate in lower:
+            mode = candidate.replace("rapid ", "rapid-")
+            break
+
+    enabled = None
+    if "% invalid" in lower or "unavailable" in lower:
+        enabled = False
+    elif "disabled" in lower and "spanning" in lower:
+        enabled = False
+    elif raw.strip():
+        enabled = True
+
+    relevant = [line.strip() for line in raw.splitlines() if line.strip()][:12]
+    return {
+        "mode": mode,
+        "enabled": enabled,
+        "summary_lines": relevant,
+    }
+
+
+@tool
+def discover_device_protocols(device: str) -> dict:
+    """
+    Discover which control-plane protocols appear to be active on a device.
+    Uses running-config and live show commands so callers do not need to assume
+    OSPF/BGP/EIGRP/STP ahead of time.
+    """
+    conn = _registry().get(device)
+    if not conn:
+        return {"device": device, "error": f"Device '{device}' not in inventory"}
+
+    configured_protocols: list[str] = []
+    observed_route_types: list[str] = []
+    stp = {"mode": "unknown", "enabled": None, "summary_lines": []}
+    errors: dict[str, str] = {}
+
+    try:
+        router_cfg = _run_show(device, conn["host"], conn["port"], "show running-config | section router")
+        configured_protocols = _parse_router_protocols(router_cfg)
+    except Exception as exc:
+        router_cfg = ""
+        errors["router_config"] = str(exc)
+
+    try:
+        route_raw = _run_show(device, conn["host"], conn["port"], "show ip route vrf all | json")
+        observed_route_types = _parse_route_protocols(route_raw)
+    except Exception as exc:
+        route_raw = ""
+        errors["routing_table"] = str(exc)
+
+    try:
+        stp_raw = _run_show(device, conn["host"], conn["port"], "show spanning-tree summary")
+        stp = _parse_stp_summary(stp_raw)
+    except Exception as exc:
+        stp_raw = ""
+        errors["spanning_tree"] = str(exc)
+
+    routing_protocols = sorted({
+        *configured_protocols,
+        *(p for p in observed_route_types if p not in {"connected", "local", "static"}),
+    })
+
+    return {
+        "device": device,
+        "routing_protocols": routing_protocols,
+        "configured_routing_protocols": configured_protocols,
+        "observed_route_types": observed_route_types,
+        "l2_control_plane": {
+            "spanning_tree_mode": stp["mode"],
+            "spanning_tree_enabled": stp["enabled"],
+            "summary_lines": stp["summary_lines"],
+        },
+        "errors": errors,
+    }
+
+
 def _read_counters_via_conn(conn, intf: str) -> dict:
     """Read one snapshot of error counters for a single interface using an existing connection."""
     raw = conn.send_command(f"show interfaces {intf} | json", read_timeout=15)
@@ -479,27 +664,29 @@ def get_interface_counters(device: str, interfaces: list[str]) -> dict:
                      "fcsErrors", "runtFrames", "giantFrames")
 
     snapshots: list[dict] = []
-    netmiko_conn = ConnectHandler(
-        device_type="arista_eos",
-        host=conn_info["host"],
-        port=conn_info["port"],
-        username=SSH_USER,
-        password=SSH_PASSWORD,
-        timeout=30,
-    )
-    try:
-        for i in range(ITERATIONS):
-            if i > 0:
-                time.sleep(POLL_INTERVAL)
-            snap = {}
-            for intf in interfaces:
-                try:
-                    snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
-                except Exception as exc:
-                    snap[intf] = {"error": str(exc)}
-            snapshots.append(snap)
-    finally:
-        netmiko_conn.disconnect()
+    sem = _device_semaphore(device)
+    with sem:
+        netmiko_conn = ConnectHandler(
+            device_type="arista_eos",
+            host=conn_info["host"],
+            port=conn_info["port"],
+            username=SSH_USER,
+            password=SSH_PASSWORD,
+            timeout=30,
+        )
+        try:
+            for i in range(ITERATIONS):
+                if i > 0:
+                    time.sleep(POLL_INTERVAL)
+                snap = {}
+                for intf in interfaces:
+                    try:
+                        snap[intf] = _read_counters_via_conn(netmiko_conn, intf)
+                    except Exception as exc:
+                        snap[intf] = {"error": str(exc)}
+                snapshots.append(snap)
+        finally:
+            netmiko_conn.disconnect()
 
     # Report only interfaces with at least one incrementing counter
     active = []
@@ -627,16 +814,18 @@ def test_tcp_port(
             "username": SSH_USER, "password": SSH_PASSWORD,
             "secret": SSH_PASSWORD, "timeout": 30,
         }
-        with ConnectHandler(**device_cfg) as nc:
-            nc.enable()
-            raw = nc.send_command_timing(cmd, delay_factor=timeout)
-            if "Connected" in raw or "Escape" in raw:
-                nc.send_command_timing("quit", delay_factor=2)
-                reachable = True
-            elif "refused" in raw.lower():
-                reachable = False
-            else:
-                reachable = False
+        sem = _device_semaphore(device)
+        with sem:
+            with ConnectHandler(**device_cfg) as nc:
+                nc.enable()
+                raw = nc.send_command_timing(cmd, delay_factor=timeout)
+                if "Connected" in raw or "Escape" in raw:
+                    nc.send_command_timing("quit", delay_factor=2)
+                    reachable = True
+                elif "refused" in raw.lower():
+                    reachable = False
+                else:
+                    reachable = False
         return {"reachable": reachable, "device": device, "destination": destination, "port": port, "output": raw[:300]}
     except Exception as exc:
         return {"reachable": False, "error": str(exc), "device": device, "destination": destination, "port": port}
@@ -863,7 +1052,7 @@ async def handle_all_interfaces_status(request: Request) -> JSONResponse:
             })
         return JSONResponse({"device": device, "interfaces": results})
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"device": device, "interfaces": [], "error": str(e)}, status_code=200)
 
 
 @app.post("/interface-detail")
@@ -900,7 +1089,7 @@ async def handle_interface_detail(request: Request) -> JSONResponse:
             "raw": intf,
         })
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"device": device, "interface": interface, "error": str(e)}, status_code=200)
 
 
 @app.post("/show-logging")
@@ -931,7 +1120,7 @@ async def handle_show_logging(request: Request) -> JSONResponse:
         log_lines = log_lines[-lines:]  # keep last N
         return JSONResponse({"device": device, "logs": log_lines})
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"device": device, "logs": [], "error": str(e)}, status_code=200)
 
 
 @app.get("/devices")
@@ -997,6 +1186,27 @@ async def handle_ospf_interfaces(request: Request) -> JSONResponse:
     for device in devices:
         results[device] = await loop.run_in_executor(None, lambda d=device: _get_ospf_interfaces(d))
     return JSONResponse({"ospf_interfaces": results})
+
+
+@app.post("/protocol-discovery")
+async def handle_protocol_discovery(request: Request) -> JSONResponse:
+    """Discover routing and L2 control-plane protocols on one or more devices."""
+    body = await request.json()
+    devices = body.get("devices") or []
+    single = body.get("device")
+    if single and not devices:
+        devices = [single]
+    if not devices:
+        return JSONResponse({"error": "device or devices required"}, status_code=400)
+
+    loop = asyncio.get_event_loop()
+    results = {}
+    for device in devices:
+        results[device] = await loop.run_in_executor(
+            None,
+            lambda d=device: discover_device_protocols.invoke({"device": d}),
+        )
+    return JSONResponse({"protocol_discovery": results})
 
 
 @app.post("/find-device")

@@ -574,15 +574,35 @@ async def api_chat(request: Request, body: ChatRequest):
         )
         try:
             while not task.done():
+                if await request.is_disconnected():
+                    _sse_log.info("SSE: client disconnected, cancelling task")
+                    task.cancel()
+                    break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    if await request.is_disconnected():
+                        _sse_log.info("SSE: client disconnected after status event, cancelling task")
+                        task.cancel()
+                        break
                     yield f"data: {_json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        _sse_log.info("SSE: client disconnected on heartbeat, cancelling task")
+                        task.cancel()
+                        break
                     # Send SSE comment as heartbeat so the proxy doesn't drop idle connections
                     yield ": keep-alive\n\n"
 
+            if task.cancelled():
+                return
+
             # Drain any remaining status events pushed before task completed
             while not queue.empty():
+                if await request.is_disconnected():
+                    _sse_log.info("SSE: client disconnected while draining queue, cancelling task")
+                    if not task.done():
+                        task.cancel()
+                    return
                 event = queue.get_nowait()
                 yield f"data: {_json.dumps(event)}\n\n"
 
@@ -643,6 +663,8 @@ async def api_chat(request: Request, body: ChatRequest):
             error_event = {"type": "done", "result": {"role": "assistant", "content": f"Error: {exc}"}}
             yield f"data: {_json.dumps(error_event)}\n\n"
         finally:
+            if not task.done():
+                task.cancel()
             status_bus.deregister(sid)
 
     return StreamingResponse(
