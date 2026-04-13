@@ -126,7 +126,7 @@ _ACKNOWLEDGEMENTS = {"yes", "yeah", "sure", "ok", "okay", "great", "thanks",
 # misclassified as "something is broken" investigations.
 #
 # Covers:
-#   - Explicit request phrases (firewall request, change request, fw request…)
+#   - Explicit ops request phrases (firewall request, change request, fw request…)
 #   - Port/access opening ("open port 443", "need port … open", "whitelist")
 #   - Rule operations (add/create/remove/update/modify rule)
 #   - Traffic directives that are actionable, not diagnostic (allow/block/permit/deny traffic)
@@ -137,6 +137,12 @@ _NETWORK_OPS_RE = re.compile(
     # Explicit ops request phrases
     r"firewall\s+request|fw\s+request|change\s+request|network\s+change|"
     r"access\s+request|request\s+access|security\s+review|policy\s+review|"
+    r"create\s+an?\s+incident|open\s+an?\s+incident|raise\s+an?\s+incident|"
+    r"create\s+a\s+ticket|open\s+a\s+ticket|raise\s+a\s+ticket|"
+    r"details?\s+about\s+(inc|chg)\d+|show\s+(inc|chg)\d+|get\s+(inc|chg)\d+|"
+    r"status\s+of\s+(inc|chg)\d+|close\s+inc\d+|update\s+inc\d+|"
+    r"inc\d+|chg\d+|"
+    r"close\s+chg\d+|update\s+chg\d+|close\s+change\s+request|update\s+change\s+request|"
     r"spreadsheet|change\s+ticket|"
     # Port opening / whitelisting
     r"open\s+port|need\s+port|port\s+\d+\s+(open|allowed|whitelisted)|"
@@ -150,6 +156,11 @@ _NETWORK_OPS_RE = re.compile(
     # Panorama / firewall policy work
     r"firewall\s+policy|fw\s+policy|panorama\s+rule|security\s+policy"
     r")\b",
+    re.IGNORECASE,
+)
+
+_TROUBLESHOOT_RE = re.compile(
+    r"\b(troubleshoot|investigate|diagnose|debug|connectivity|packet\s+loss|latency|slow|unreachable|can't\s+reach|cannot\s+reach|ping|ospf|bgp|eigrp|isis|route|routing|tcp\s+port|port\s+\d+)\b",
     re.IGNORECASE,
 )
 
@@ -191,11 +202,14 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
                                    "content": "Sure, let me know if you need anything else."},
             }
 
-    # Reply to a pending clarification (short, no IPs) → continue whichever flow is pending
+    # Reply to a pending clarification → continue whichever flow is pending.
+    # Network-ops follow-ups are often long structured field lists, so do not
+    # require them to be short.
     if _pending_ts_exists(session_id):
+        pending_prompt, pending_issue_type = _pending_ts_get(session_id)
+        if pending_issue_type == "network_ops":
+            return {"intent": "network_ops"}
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
-            # Preserve the original intent stored in the pending payload
-            _, pending_issue_type = _pending_ts_get(session_id)
             intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
             return {"intent": intent}
         _pending_ts_delete(session_id)
@@ -228,7 +242,8 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     _ACTION_RE = re.compile(
         r"\b(open\s+port|need\s+port|whitelist|"
         r"(add|create|submit|raise)\s+(a\s+)?(new\s+)?(firewall\s+)?rule|"
-        r"allow\s+access|grant\s+access|new\s+rule)\b",
+        r"allow\s+access|grant\s+access|new\s+rule|"
+        r"(create|open|raise)\s+(an?\s+)?(incident|ticket))\b",
         re.IGNORECASE,
     )
 
@@ -237,8 +252,16 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             return {"intent": "troubleshoot"}
         return {"intent": "network_ops"}
 
-    # Everything else is a troubleshooting query
-    return {"intent": "troubleshoot"}
+    if _TROUBLESHOOT_RE.search(prompt):
+        return {"intent": "troubleshoot"}
+
+    return {
+        "intent": "dismiss",
+        "final_response": {
+            "role": "assistant",
+            "content": "Atlas is not equipped to help with it.",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +269,7 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _INC_RE = re.compile(r'\bINC\d+\b', re.IGNORECASE)
+_CHG_RE = re.compile(r'\bCHG\d+\b', re.IGNORECASE)
 _IP_RE  = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 
@@ -268,6 +292,19 @@ def _extract_final_text(messages: list) -> str:
     text = re.sub(r"<plan>.*?</plan>",             "", text, flags=re.DOTALL)
     text = re.sub(r"<reflection>.*?</reflection>", "", text, flags=re.DOTALL)
     return text.strip()
+
+
+def _looks_like_clarification_request(text: str) -> bool:
+    t = (text or "").lower()
+    cues = (
+        "please provide the following",
+        "i need more details",
+        "to proceed, please provide",
+        "once i have these details",
+        "please provide the following information",
+        "i need the following information",
+    )
+    return any(cue in t for cue in cues)
 
 
 def _needs_forced_peering_inspection(session_data: dict[str, Any]) -> bool:
@@ -513,10 +550,15 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
 
+    await _push_status(session_id, "Processing network ops request...")
+
+    pending, pending_issue_type = _pending_ts_get(session_id)
+    if pending_issue_type == "network_ops" and pending:
+        _pending_ts_delete(session_id)
+        prompt = f"{pending}\n\nUser clarification: {prompt}"
+
     clear_session_cache(session_id)
     pop_session_data(session_id)
-
-    await _push_status(session_id, "Processing network ops request...")
 
     config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
 
@@ -529,6 +571,8 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Network ops agent failed: {exc}"}}}
 
     final_text = _extract_final_text(result.get("messages", []))
+    if _looks_like_clarification_request(final_text):
+        _pending_ts_set(session_id, prompt, "network_ops")
     session_data = pop_session_data(session_id)
     path_hops    = session_data.get("path_hops", [])
     rev_hops     = session_data.get("reverse_path_hops", [])

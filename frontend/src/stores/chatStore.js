@@ -155,12 +155,12 @@ export const useChatStore = create((set, get) => ({
     const conversationIdToUse = null
 
     try {
-      // Start both calls simultaneously — discover only drives the status label
+      // Start both calls simultaneously — discover only drives a neutral routing label
       let toolDisplayName = null
       const discoverPromise = discoverTool(textToSend, historySlice, signal)
         .then(d => {
           toolDisplayName = d.tool_display_name
-          const newStatus = toolDisplayName ? 'Querying ' + toolDisplayName : 'Processing'
+          const newStatus = 'Routing request'
           const now = nowMs()
           const { currentStatus, statusSteps, _stepStart } = get()
           if (currentStatus && _stepStart) {
@@ -175,7 +175,7 @@ export const useChatStore = create((set, get) => ({
         })
         .catch(err => {
           if (err && err.name === 'AbortError') throw err
-          set({ currentStatus: 'Processing' })
+          set({ currentStatus: 'Routing request' })
         })
 
       const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew, (msg) => {
@@ -199,11 +199,11 @@ export const useChatStore = create((set, get) => ({
         if (currentStatus && _stepStart) {
           set({
             statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
-            currentStatus: 'Processing results from ' + toolDisplayName,
+            currentStatus: 'Preparing response',
             _stepStart: now,
           })
         } else {
-          set({ currentStatus: 'Processing results from ' + toolDisplayName, _stepStart: now })
+          set({ currentStatus: 'Preparing response', _stepStart: now })
         }
       }
 

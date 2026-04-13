@@ -44,7 +44,7 @@ class AtlasState(TypedDict, total=False):
     session_id: str | None
 
     # ── Routing signals (set by classify_intent) ──────────────────────────
-    intent: Literal["troubleshoot", "dismiss"] | None
+    intent: Literal["troubleshoot", "network_ops", "dismiss"] | None
     rbac_error: str | None
 
     # ── Output (set by troubleshoot_orchestrator / classify_intent) ───────

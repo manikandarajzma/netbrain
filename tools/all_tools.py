@@ -2142,12 +2142,11 @@ async def get_incident_details(incident_number: str, config: RunnableConfig) -> 
     await _push_status(session_id, f"Fetching {incident_number}...")
 
     try:
-        try:
-            from atlas.tools.servicenow_tools import get_servicenow_incident as _t
-        except ImportError:
-            from tools.servicenow_tools import get_servicenow_incident as _t  # type: ignore
-        _fn = getattr(_t, "fn", None) or _t
-        data = await _fn(incident_number.upper().strip())
+        data = await call_mcp_tool(
+            "get_servicenow_incident",
+            {"number": incident_number.upper().strip()},
+            timeout=20.0,
+        )
     except Exception as exc:
         return f"Incident lookup error: {exc}"
 
@@ -2164,6 +2163,207 @@ async def get_incident_details(incident_number: str, config: RunnableConfig) -> 
     if notes := r.get("close_notes"):
         lines.append(f"Resolution: {notes}")
     return "\n".join(lines)
+
+
+@tool
+async def get_change_request_details(change_number: str, config: RunnableConfig) -> str:
+    """
+    Fetch full details for a specific ServiceNow change request by number (e.g. CHG0010001).
+    Use when the user references a specific change request and wants its details or current state.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, f"Fetching {change_number}...")
+
+    try:
+        data = await call_mcp_tool(
+            "get_servicenow_change_request",
+            {"number": change_number.upper().strip()},
+            timeout=20.0,
+        )
+    except Exception as exc:
+        return f"Change request lookup error: {exc}"
+
+    if "error" in data:
+        return f"Change request not found: {data['error']}"
+    r = data.get("result", {})
+    lines = [
+        f"**{r.get('number')}** — {r.get('short_description', '')}",
+        f"State: {r.get('state')} | Risk: {r.get('risk', 'Unknown')}",
+        f"Assignment group: {(r.get('assignment_group') or {}).get('display_value', 'Unassigned')}",
+        f"Configuration Item: {(r.get('cmdb_ci') or {}).get('display_value', r.get('cmdb_ci', 'Unknown'))}",
+    ]
+    if desc := r.get("description") or r.get("short_description"):
+        lines.append(f"Description: {desc}")
+    if just := r.get("justification"):
+        lines.append(f"Justification: {just}")
+    if plan := r.get("implementation_plan"):
+        lines.append(f"Implementation plan: {plan}")
+    if notes := r.get("close_notes"):
+        lines.append(f"Close notes: {notes}")
+    return "\n".join(lines)
+
+
+@tool
+async def create_servicenow_incident(
+    short_description: str,
+    config: RunnableConfig,
+    description: str = "",
+    urgency: str = "2",
+    impact: str = "2",
+    ci_name: str = "",
+) -> str:
+    """
+    Create a ServiceNow incident.
+    Use for explicit requests to create/open/raise an incident or ticket.
+    Returns the created incident number and key details.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, "Creating ServiceNow incident...")
+
+    try:
+        result = await call_mcp_tool(
+            "create_servicenow_incident",
+            {
+                "short_description": short_description,
+                "description": description,
+                "urgency": urgency,
+                "impact": impact,
+                "category": "network",
+                "ci_name": ci_name,
+            },
+            timeout=20.0,
+        )
+    except Exception as exc:
+        return f"Incident creation failed: {exc}"
+
+    if not isinstance(result, dict):
+        return f"Incident creation failed: unexpected response {result!r}"
+    if "error" in result:
+        return f"Incident creation failed: {result['error']}"
+
+    r = result.get("result", {}) if isinstance(result.get("result"), dict) else result
+    number = r.get("number") or r.get("display_value") or "unknown"
+    sys_id = r.get("sys_id") or "unknown"
+    if number != "unknown":
+        verify = await call_mcp_tool(
+            "get_servicenow_incident",
+            {"number": str(number).upper().strip()},
+            timeout=20.0,
+        )
+        if isinstance(verify, dict) and "error" in verify:
+            return (
+                f"Incident creation could not be verified for {number}.\n"
+                f"lookup_error: {verify['error']}"
+            )
+    return (
+        f"Created ServiceNow incident {number}.\n"
+        f"sys_id: {sys_id}\n"
+        f"short_description: {short_description}"
+    )
+
+
+@tool
+async def create_servicenow_change_request(
+    short_description: str,
+    config: RunnableConfig,
+    description: str = "",
+    risk: str = "3",
+    assignment_group: str = "",
+    justification: str = "",
+    implementation_plan: str = "",
+    ci_name: str = "",
+) -> str:
+    """
+    Create a ServiceNow change request.
+    Use for explicit requests to create/open/submit a change request.
+    Returns the created change number and key details.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, "Creating ServiceNow change request...")
+
+    try:
+        result = await call_mcp_tool(
+            "create_servicenow_change_request",
+            {
+                "short_description": short_description,
+                "description": description,
+                "risk": risk,
+                "assignment_group": assignment_group,
+                "justification": justification,
+                "implementation_plan": implementation_plan,
+                "ci_name": ci_name,
+            },
+            timeout=20.0,
+        )
+    except Exception as exc:
+        return f"Change request creation failed: {exc}"
+
+    if not isinstance(result, dict):
+        return f"Change request creation failed: unexpected response {result!r}"
+    if "error" in result:
+        return f"Change request creation failed: {result['error']}"
+
+    r = result.get("result", {}) if isinstance(result.get("result"), dict) else result
+    number = r.get("number") or r.get("display_value") or "unknown"
+    sys_id = r.get("sys_id") or "unknown"
+    if number != "unknown":
+        verify = await call_mcp_tool(
+            "get_servicenow_change_request",
+            {"number": str(number).upper().strip()},
+            timeout=20.0,
+        )
+        if isinstance(verify, dict) and "error" in verify:
+            return (
+                f"Change request creation could not be verified for {number}.\n"
+                f"lookup_error: {verify['error']}"
+            )
+    return (
+        f"Created ServiceNow change request {number}.\n"
+        f"sys_id: {sys_id}\n"
+        f"short_description: {short_description}"
+    )
+
+
+@tool
+async def update_servicenow_change_request(
+    number: str,
+    config: RunnableConfig,
+    state: str = "",
+    work_notes: str = "",
+    assigned_to: str = "",
+    close_notes: str = "",
+) -> str:
+    """
+    Update an existing ServiceNow change request.
+    Use for explicit requests to close/update a change request such as CHG0030001.
+    """
+    session_id = _sid(config)
+    await _push_status(session_id, f"Updating ServiceNow change request {number}...")
+
+    args: dict[str, Any] = {"number": number}
+    if state:
+        args["state"] = state
+    if work_notes:
+        args["work_notes"] = work_notes
+    if assigned_to:
+        args["assigned_to"] = assigned_to
+    if close_notes:
+        args["close_notes"] = close_notes
+
+    try:
+        result = await call_mcp_tool("update_servicenow_change_request", args, timeout=20.0)
+    except Exception as exc:
+        return f"Change request update failed: {exc}"
+
+    if not isinstance(result, dict):
+        return f"Change request update failed: unexpected response {result!r}"
+    if "error" in result:
+        return f"Change request update failed: {result['error']}"
+
+    r = result.get("result", {}) if isinstance(result.get("result"), dict) else result
+    out_number = r.get("number") or number
+    out_state = r.get("state") or state or "updated"
+    return f"Updated ServiceNow change request {out_number}.\nstate: {out_state}"
 
 
 # ---------------------------------------------------------------------------
@@ -2465,6 +2665,10 @@ NETWORK_OPS_TOOLS = [
     check_panorama_policy,
     search_servicenow,
     get_incident_details,
+    get_change_request_details,
+    create_servicenow_incident,
+    create_servicenow_change_request,
+    update_servicenow_change_request,
 ]
 
 # Connectivity investigations should reason from live tools plus historical

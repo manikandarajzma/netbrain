@@ -38,7 +38,7 @@ except ImportError:
 
 
 def _route_intent(state: AtlasState) -> str:
-    return state.get("intent", "troubleshoot")
+    return state.get("intent") or "dismiss"
 
 
 def build_graph(checkpointer=None):

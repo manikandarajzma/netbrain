@@ -477,9 +477,10 @@ async def api_discover(request: Request, body: ChatRequest):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    # Return immediately without any LLM call — the label is always the same
-    # for this app (single troubleshooting flow).
-    return {"tool_display_name": "Network troubleshooter"}
+    # Keep this label neutral. The real intent routing happens in the backend
+    # graph, and a hardcoded troubleshooter label is misleading for ops/ticket
+    # requests before classification completes.
+    return {"tool_display_name": "Atlas"}
 
 
 @app.get("/api/chat/history")
