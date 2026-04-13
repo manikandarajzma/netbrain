@@ -65,6 +65,7 @@ def _store(session_id: str) -> dict[str, Any]:
         "protocol_discovery": {},
         "connectivity_snapshot": {},
         "ip_owners":          {},
+        "servicenow_summary": "",
     })
 
 
@@ -2046,7 +2047,8 @@ async def search_servicenow(
     """
     Search ServiceNow for incidents AND change requests related to devices in the path.
     ALWAYS call this after trace_path. Pass every device hostname from the path.
-    Change requests look back further (7× hours_back) since changes predate incidents.
+    Change requests look back further than incidents because relevant changes often
+    predate the resulting outage by more than a week.
 
     Args:
         device_names: All device hostnames from trace_path (e.g. ["arista1", "arista2"])
@@ -2056,9 +2058,59 @@ async def search_servicenow(
         hours_back:   Window for incidents (default 24h)
     """
     session_id = _sid(config)
-    await _push_status(session_id, f"Checking ServiceNow for {', '.join(device_names)}...")
+    store = _store(session_id)
 
-    terms = [str(d).strip() for d in device_names if d]
+    discovered_devices: list[str] = []
+    for device in device_names or []:
+        device = str(device or "").strip()
+        if _is_device_name(device) and device not in discovered_devices:
+            discovered_devices.append(device)
+
+    for device in _extract_devices_from_hops(store.get("path_hops") or []):
+        if device not in discovered_devices:
+            discovered_devices.append(device)
+    for device in _extract_devices_from_hops(store.get("reverse_path_hops") or []):
+        if device not in discovered_devices:
+            discovered_devices.append(device)
+
+    routing_history = store.get("routing_history") or {}
+    for device in (routing_history.get("historical_devices") or []):
+        device = str(device or "").strip()
+        if _is_device_name(device) and device not in discovered_devices:
+            discovered_devices.append(device)
+
+    peer_hint = routing_history.get("peer_hint") or {}
+    for key in ("from_device", "to_device"):
+        device = str(peer_hint.get(key) or "").strip()
+        if _is_device_name(device) and device not in discovered_devices:
+            discovered_devices.append(device)
+
+    if not discovered_devices and dest_ip:
+        try:
+            try:
+                from atlas.db import fetch as _fetch
+            except ImportError:
+                from db import fetch as _fetch  # type: ignore
+            hist_rows = await _fetch(
+                """
+                SELECT DISTINCT device FROM routing_history
+                WHERE $1::inet << prefix
+                  AND egress_interface IS NOT NULL
+                  AND egress_interface NOT ILIKE 'management%'
+                ORDER BY device
+                """,
+                dest_ip,
+            )
+            for row in hist_rows or []:
+                device = str((row or {}).get("device") or "").strip()
+                if _is_device_name(device) and device not in discovered_devices:
+                    discovered_devices.append(device)
+        except Exception:
+            pass
+
+    await _push_status(session_id, f"Checking ServiceNow for {', '.join(discovered_devices)}...")
+
+    terms = [str(d).strip() for d in discovered_devices if d]
     for ip in (source_ip, dest_ip):
         if ip and ip.strip():
             terms.append(ip.strip())
@@ -2070,7 +2122,7 @@ async def search_servicenow(
         return "ServiceNow skipped: no device names or IPs provided."
 
     query     = " OR ".join(terms)
-    chg_hours = max(hours_back * 7, 168)
+    chg_hours = max(hours_back * 30, 720)
 
     try:
         inc_result, chg_result = await asyncio.wait_for(
@@ -2089,6 +2141,16 @@ async def search_servicenow(
     except Exception as exc:
         return f"ServiceNow unavailable: {exc}"
 
+    inc_error = inc_result.get("error") if isinstance(inc_result, dict) else None
+    chg_error = chg_result.get("error") if isinstance(chg_result, dict) else None
+    if inc_error or chg_error:
+        parts = []
+        if inc_error:
+            parts.append(f"incident search failed: {inc_error}")
+        if chg_error:
+            parts.append(f"change search failed: {chg_error}")
+        return "ServiceNow unavailable: " + "; ".join(parts)
+
     def _cell(v, n=60):
         s = str(v or "—").strip().replace("|", "/").replace("\n", " ")
         return s[:n] if len(s) > n else s
@@ -2096,40 +2158,58 @@ async def search_servicenow(
     def _fmt_incidents(rows):
         if not rows:
             return "No incidents found."
-        lines = ["| Number | CI | Description | State | Priority |",
-                 "|--------|----|-------------|-------|----------|"]
+        lines = []
         for r in rows:
             ci = r.get("cmdb_ci") or {}
             ci_name = (ci.get("display_value") or ci.get("value") or "—") if isinstance(ci, dict) else str(ci or "—")
             lines.append(
-                f"| {_cell(r.get('number'))} | {_cell(ci_name)} | "
-                f"{_cell(r.get('short_description'))} | {_cell(r.get('state'))} | "
-                f"{_cell(r.get('priority'))} |"
+                f"- **{_cell(r.get('number'))}**\n"
+                f"  CI: {_cell(ci_name)}\n"
+                f"  Description: {_cell(r.get('short_description'), 120)}\n"
+                f"  State: {_cell(r.get('state'))}\n"
+                f"  Priority: {_cell(r.get('priority'))}"
             )
         return "\n".join(lines)
 
     def _fmt_changes(rows):
         if not rows:
             return "No change requests found."
-        lines = ["| Number | CI | Description | State | Risk | Scheduled |",
-                 "|--------|----|-------------|-------|------|-----------|"]
+        lines = []
         for r in rows:
             ci = r.get("cmdb_ci") or {}
             ci_name = (ci.get("display_value") or ci.get("value") or "—") if isinstance(ci, dict) else str(ci or "—")
             lines.append(
-                f"| {_cell(r.get('number'))} | {_cell(ci_name)} | "
-                f"{_cell(r.get('short_description'))} | {_cell(r.get('state'))} | "
-                f"{_cell(r.get('risk'))} | {_cell((r.get('start_date') or '—')[:16])} |"
+                f"- **{_cell(r.get('number'))}**\n"
+                f"  CI: {_cell(ci_name)}\n"
+                f"  Description: {_cell(r.get('short_description'), 120)}\n"
+                f"  State: {_cell(r.get('state'))}\n"
+                f"  Risk: {_cell(r.get('risk'))}\n"
+                f"  Scheduled: {_cell((r.get('start_date') or '—')[:16])}"
             )
         return "\n".join(lines)
 
     inc_rows = (inc_result or {}).get("result", [])
     chg_rows = (chg_result or {}).get("result", [])
 
-    return (
-        f"INCIDENTS:\n{_fmt_incidents(inc_rows)}\n\n"
-        f"CHANGE REQUESTS:\n{_fmt_changes(chg_rows)}"
+    logger.info(
+        "search_servicenow: session=%s devices=%s terms=%s incidents=%s changes=%s",
+        session_id,
+        discovered_devices,
+        terms,
+        len(inc_rows),
+        len(chg_rows),
     )
+
+    summary = (
+        f"Incidents found: {len(inc_rows)}\n"
+        f"Change requests found: {len(chg_rows)}\n\n"
+        "### Incidents\n"
+        f"{_fmt_incidents(inc_rows)}\n\n"
+        "### Change Requests\n"
+        f"{_fmt_changes(chg_rows)}"
+    )
+    _store(session_id)["servicenow_summary"] = summary
+    return summary
 
 
 @tool

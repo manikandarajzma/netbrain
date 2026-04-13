@@ -13,10 +13,51 @@ const COUNTER_LABELS = {
 export default function InterfaceCounters({ counters }) {
   if (!counters || counters.length === 0) return null
 
+  const groupedCounters = Array.from(
+    counters.reduce((acc, entry) => {
+      const deviceName = entry?.device || 'Unknown device'
+      const current = acc.get(deviceName) || {
+        device: deviceName,
+        window_s: 0,
+        ssh_error: '',
+        activeByInterface: new Map(),
+        cleanSet: new Set(),
+      }
+
+      current.window_s = Math.max(current.window_s || 0, entry?.window_s || 0)
+      if (!current.ssh_error && entry?.ssh_error) {
+        current.ssh_error = entry.ssh_error
+      }
+
+      for (const intf of entry?.active || []) {
+        const key = intf?.interface || `active-${current.activeByInterface.size}`
+        current.activeByInterface.set(key, intf)
+      }
+
+      for (const intf of entry?.clean || []) {
+        if (intf) current.cleanSet.add(intf)
+      }
+
+      acc.set(deviceName, current)
+      return acc
+    }, new Map()).values()
+  ).map((device) => {
+    const active = Array.from(device.activeByInterface.values())
+    const activeInterfaces = new Set(active.map((intf) => intf?.interface).filter(Boolean))
+    const clean = Array.from(device.cleanSet).filter((intf) => !activeInterfaces.has(intf))
+    return {
+      device: device.device,
+      window_s: device.window_s,
+      ssh_error: device.ssh_error,
+      active,
+      clean,
+    }
+  })
+
   return (
     <div className={styles.container}>
       <p className={styles.heading}>Interface Error Counters</p>
-      {counters.map((device, di) => {
+      {groupedCounters.map((device, di) => {
         const active = device.active || []
         const clean  = device.clean  || []
         const window = device.window_s || 6

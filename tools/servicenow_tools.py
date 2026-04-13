@@ -425,7 +425,7 @@ async def list_servicenow_change_requests(
             logger.info("list_servicenow_change_requests: no valid keywords in query=%r", q)
             return {"result": []}
         or_clauses = "^OR".join(
-            f"short_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}^ORcmdb_ci.nameLIKE{t}"
+            f"numberLIKE{t}^ORshort_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}^ORcmdb_ciLIKE{t}^ORcmdb_ci.nameLIKE{t}"
             for t in terms
         )
         query_parts.append(or_clauses)
@@ -910,7 +910,7 @@ async def search_servicenow_incidents(
         logger.info("search_servicenow_incidents: empty query, returning no rows")
         return {"result": []}
     or_clauses = "^OR".join(
-        f"short_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}^ORcmdb_ciLIKE{t}"
+        f"numberLIKE{t}^ORshort_descriptionLIKE{t}^ORdescriptionLIKE{t}^ORwork_notesLIKE{t}^ORcmdb_ciLIKE{t}^ORcmdb_ci.nameLIKE{t}"
         for t in terms
     )
     time_filter = ""

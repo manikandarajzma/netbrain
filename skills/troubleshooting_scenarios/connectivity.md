@@ -179,6 +179,11 @@ Use these exact headers (omit any with nothing to report):
 ## Path Summary
 ## Reverse Path
 ## ServiceNow
+In `## ServiceNow`, preserve incidents and change requests as separate groups when both exist.
+Preferred format:
+- `Incidents:` followed by matching INC records
+- `Change Requests:` followed by matching CHG records
+Do NOT collapse a CHG into an INC bullet, and do NOT omit the change-request group when the tool output says `Change requests found:` is greater than zero.
 ## Interface Errors
 ## OSPF Analysis
 ## Routing Analysis

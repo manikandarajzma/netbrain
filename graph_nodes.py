@@ -25,6 +25,18 @@ except ImportError:
 logger = logging.getLogger("atlas.graph_nodes")
 
 
+def _replace_markdown_section(text: str, header: str, body: str) -> str:
+    if not text:
+        return f"## {header}\n{body}"
+    pattern = re.compile(
+        rf"(?ms)^## {re.escape(header)}\n.*?(?=^## |\Z)"
+    )
+    replacement = f"## {header}\n{body}\n"
+    if pattern.search(text):
+        return pattern.sub(replacement, text, count=1).rstrip()
+    return f"{text.rstrip()}\n\n## {header}\n{body}"
+
+
 def _merge_session_data(base: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     """Merge per-pass tool side effects so follow-up passes don't erase earlier evidence."""
     merged = dict(base or {})
@@ -51,6 +63,63 @@ def _merge_session_data(base: dict[str, Any], new: dict[str, Any]) -> dict[str, 
 
 def _missing_path_visuals(session_data: dict[str, Any], src_ip: str, dst_ip: str) -> bool:
     return bool(src_ip and dst_ip and (not session_data.get("path_hops") or not session_data.get("reverse_path_hops")))
+
+
+def _group_interface_counters(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Collapse per-interface counter rows into one payload per device."""
+    if not entries:
+        return []
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        device = str(entry.get("device") or "Unknown device")
+        current = grouped.setdefault(
+            device,
+            {
+                "device": device,
+                "window_s": 0,
+                "ssh_error": "",
+                "active_by_interface": {},
+                "clean_set": set(),
+            },
+        )
+
+        current["window_s"] = max(current["window_s"], int(entry.get("window_s") or 0))
+        if not current["ssh_error"] and entry.get("ssh_error"):
+            current["ssh_error"] = str(entry["ssh_error"])
+
+        for active in entry.get("active") or []:
+            if not isinstance(active, dict):
+                continue
+            interface = str(active.get("interface") or f"active-{len(current['active_by_interface'])}")
+            current["active_by_interface"][interface] = active
+
+        for clean in entry.get("clean") or []:
+            if clean:
+                current["clean_set"].add(str(clean))
+
+    normalized: list[dict[str, Any]] = []
+    for device, payload in grouped.items():
+        active = list(payload["active_by_interface"].values())
+        active_interfaces = {
+            str(item.get("interface"))
+            for item in active
+            if isinstance(item, dict) and item.get("interface")
+        }
+        clean = sorted(i for i in payload["clean_set"] if i not in active_interfaces)
+        normalized.append(
+            {
+                "device": device,
+                "window_s": payload["window_s"],
+                "ssh_error": payload["ssh_error"],
+                "active": active,
+                "clean": clean,
+            }
+        )
+
+    return sorted(normalized, key=lambda item: item.get("device", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +572,11 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 
     path_hops     = session_data.get("path_hops", [])
     rev_hops      = session_data.get("reverse_path_hops", [])
-    counters      = session_data.get("interface_counters", [])
+    counters      = _group_interface_counters(session_data.get("interface_counters", []))
+    servicenow_summary = session_data.get("servicenow_summary") or ""
+
+    if final_text and servicenow_summary:
+        final_text = _replace_markdown_section(final_text, "ServiceNow", servicenow_summary)
 
     content: dict = {}
     if final_text:    content["direct_answer"]      = final_text
