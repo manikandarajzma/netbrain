@@ -122,6 +122,32 @@ def _group_interface_counters(entries: list[dict[str, Any]] | None) -> list[dict
     return sorted(normalized, key=lambda item: item.get("device", ""))
 
 
+_NETWORK_OPS_PATH_KEYWORDS = (
+    "firewall",
+    "policy",
+    "rule",
+    "path",
+    "trace",
+    "allow",
+    "zone",
+)
+
+
+def _should_include_network_ops_path(prompt: str) -> bool:
+    text = (prompt or "").lower()
+    if re.search(
+        r"\b(create|open|raise|close|update)\s+(an?\s+)?(incident|ticket|change request)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.search(r"\b(details?|status|show|get)\s+(about\s+)?(inc|chg)\d+\b", text, re.IGNORECASE):
+        return False
+    if re.search(r"\b(close|update)\s+(inc|chg)\d+\b", text, re.IGNORECASE):
+        return False
+    return any(keyword in text for keyword in _NETWORK_OPS_PATH_KEYWORDS)
+
+
 # ---------------------------------------------------------------------------
 # Pending clarification state (Redis-backed with in-memory fallback)
 # ---------------------------------------------------------------------------
@@ -376,38 +402,6 @@ def _looks_like_clarification_request(text: str) -> bool:
     return any(cue in t for cue in cues)
 
 
-def _needs_forced_peering_inspection(session_data: dict[str, Any]) -> bool:
-    routing = session_data.get("routing_history") or {}
-    peer_hint = routing.get("peer_hint") or {}
-    if not all((
-        str(peer_hint.get("from_device", "")).strip(),
-        str(peer_hint.get("from_interface", "")).strip(),
-        str(peer_hint.get("to_device", "")).strip(),
-        str(peer_hint.get("to_interface", "")).strip(),
-    )):
-        return False
-
-    inspections = session_data.get("peering_inspections") or []
-    for item in inspections:
-        if not isinstance(item, dict):
-            continue
-        same_forward = (
-            item.get("device_a") == peer_hint.get("from_device")
-            and item.get("interface_a") == peer_hint.get("from_interface")
-            and item.get("device_b") == peer_hint.get("to_device")
-            and item.get("interface_b") == peer_hint.get("to_interface")
-        )
-        same_reverse = (
-            item.get("device_b") == peer_hint.get("from_device")
-            and item.get("interface_b") == peer_hint.get("from_interface")
-            and item.get("device_a") == peer_hint.get("to_device")
-            and item.get("interface_a") == peer_hint.get("to_interface")
-        )
-        if same_forward or same_reverse:
-            return False
-    return True
-
-
 def _needs_connectivity_snapshot(session_data: dict[str, Any], src_ip: str, dst_ip: str) -> bool:
     if not src_ip or not dst_ip:
         return False
@@ -433,25 +427,35 @@ async def _resolve_inc(prompt: str) -> tuple[str, dict | None]:
     inc_num = m.group(0).upper()
     try:
         try:
-            from atlas.tools.servicenow_tools import get_servicenow_incident as _t
+            from atlas.mcp_client import call_mcp_tool
         except ImportError:
-            from tools.servicenow_tools import get_servicenow_incident as _t  # type: ignore
-        fn   = getattr(_t, "fn", None) or _t
-        data = await fn(inc_num)
+            from mcp_client import call_mcp_tool  # type: ignore
+        data = await call_mcp_tool(
+            "get_servicenow_incident",
+            {"number": inc_num},
+            timeout=20.0,
+        )
         if "error" in data:
             return prompt, None
-        r    = data.get("result", {})
-        desc = r.get("description") or r.get("short_description") or ""
-        ips  = _IP_RE.findall(desc)
+        r = data.get("result", {})
+        short_desc = str(r.get("short_description") or "")
+        description = str(r.get("description") or "")
+        work_notes = str(r.get("work_notes") or "")
+        comments = str(r.get("comments") or "")
+        combined = " ".join(part for part in (short_desc, description, work_notes, comments) if part)
+        ips = _IP_RE.findall(combined)
         if len(ips) < 2:
             return prompt, None
-        port_hit = re.search(r'\bport\s+(\d+)\b', desc, re.IGNORECASE)
+        port_hit = re.search(r'\b(?:tcp\s+port|udp\s+port|port)\s+(\d+)\b', combined, re.IGNORECASE)
         port_str = f" port {port_hit.group(1)}" if port_hit else ""
-        new_prompt = f"{prompt} (source: {ips[0]}, destination: {ips[1]}{port_str})"
+        new_prompt = (
+            f"help me troubleshoot connectivity from {ips[0]} to {ips[1]}{port_str} "
+            f"based on incident {inc_num}"
+        )
         logger.info("INC→IP resolved: %s → %s", inc_num, new_prompt[-60:])
         inc_summary = {
             "number":            r.get("number", inc_num),
-            "short_description": r.get("short_description", ""),
+            "short_description": short_desc,
             "state":             r.get("state", ""),
             "priority":          r.get("priority", ""),
             "opened_at":         r.get("opened_at", ""),
@@ -524,6 +528,10 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 
     # INC→IP expansion
     full_prompt, inc_summary = await _resolve_inc(full_prompt)
+    if inc_summary:
+        src_ip_hint, dst_ip_hint = _extract_ips(full_prompt)
+        if src_ip_hint and dst_ip_hint:
+            issue_type = "connectivity"
 
     agent_input = full_prompt
 
@@ -650,14 +658,16 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     path_hops    = session_data.get("path_hops", [])
     rev_hops     = session_data.get("reverse_path_hops", [])
     src_ip, dst_ip = _extract_ips(prompt)
+    include_path = _should_include_network_ops_path(prompt)
 
     content: dict = {}
     if final_text: content["direct_answer"] = final_text
-    if path_hops:
+    if include_path and path_hops:
         content["path_hops"]   = path_hops
         content["source"]      = src_ip
         content["destination"] = dst_ip
-    if rev_hops:   content["reverse_path_hops"] = rev_hops
+    if include_path and rev_hops:
+        content["reverse_path_hops"] = rev_hops
 
     clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
