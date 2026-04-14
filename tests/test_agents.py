@@ -14,9 +14,6 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         result = troubleshoot_agent.build_agent(
             "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200 on tcp port 443",
             "connectivity",
-            checkpointer="cp",
-            stream_mode="values",
-            debug=True,
         )
 
         self.assertEqual(result, "agent")
@@ -25,9 +22,7 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         self.assertEqual(args[0], "llm")
         self.assertIs(args[1], troubleshoot_agent.CONNECTIVITY_TOOLS)
         self.assertEqual(args[3], "troubleshoot")
-        self.assertEqual(kwargs["checkpointer"], "cp")
-        self.assertEqual(kwargs["stream_mode"], "values")
-        self.assertTrue(kwargs["debug"])
+        self.assertEqual(kwargs, {})
 
 
 class NetworkOpsAgentBuilderTests(unittest.TestCase):
@@ -37,11 +32,7 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
 
-        result = network_ops_agent.build_agent(
-            checkpointer="cp",
-            stream_mode="messages",
-            debug=True,
-        )
+        result = network_ops_agent.build_agent()
 
         self.assertEqual(result, "agent")
         mock_create_specialized_agent.assert_called_once()
@@ -49,9 +40,7 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         self.assertEqual(args[0], "llm")
         self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS)
         self.assertEqual(args[3], "network_ops")
-        self.assertEqual(kwargs["checkpointer"], "cp")
-        self.assertEqual(kwargs["stream_mode"], "messages")
-        self.assertTrue(kwargs["debug"])
+        self.assertEqual(kwargs, {})
 
 
 if __name__ == "__main__":

@@ -65,26 +65,10 @@ def load_system_prompt(prompt: str = "", issue_type: str = "general") -> str:
     return core
 
 
-def build_agent(
-    prompt: str = "",
-    issue_type: str = "general",
-    *,
-    llm=None,
-    checkpointer=None,
-    stream_mode: str | list[str] | None = None,
-    **agent_kwargs,
-):
+def build_agent(prompt: str = "", issue_type: str = "general", *, llm=None):
     """Return a pure specialized troubleshoot agent ready for ainvoke."""
     llm = llm or build_default_llm()
     system_prompt = load_system_prompt(prompt, issue_type)
     scenario_path = _pick_scenario(prompt, issue_type) or ""
     tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
-    return create_specialized_agent(
-        llm,
-        tools,
-        system_prompt,
-        "troubleshoot",
-        checkpointer=checkpointer,
-        stream_mode=stream_mode,
-        **agent_kwargs,
-    )
+    return create_specialized_agent(llm, tools, system_prompt, "troubleshoot")

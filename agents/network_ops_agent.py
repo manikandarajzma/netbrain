@@ -29,21 +29,7 @@ def load_system_prompt() -> str:
     return _SKILL_PATH.read_text(encoding="utf-8").strip() if _SKILL_PATH.exists() else ""
 
 
-def build_agent(
-    *,
-    llm=None,
-    checkpointer=None,
-    stream_mode: str | list[str] | None = None,
-    **agent_kwargs,
-):
+def build_agent(*, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
     llm = llm or build_default_llm()
-    return create_specialized_agent(
-        llm,
-        NETWORK_OPS_TOOLS,
-        load_system_prompt(),
-        "network_ops",
-        checkpointer=checkpointer,
-        stream_mode=stream_mode,
-        **agent_kwargs,
-    )
+    return create_specialized_agent(llm, NETWORK_OPS_TOOLS, load_system_prompt(), "network_ops")
