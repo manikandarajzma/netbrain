@@ -1,6 +1,10 @@
 import unittest
 
-from services.graph_runtime import build_graph_config, build_initial_state, extract_final_response
+from services.graph_runtime import (
+    build_graph_config,
+    build_initial_state,
+    extract_final_response,
+)
 
 
 class GraphRuntimeHelperTests(unittest.TestCase):

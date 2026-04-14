@@ -22,11 +22,9 @@ from typing import Any
 _IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 try:
-    from atlas.services.graph_invoker import invoke_atlas_graph
-    from atlas.services.graph_payloads import extract_final_response
+    from atlas.services.graph_runtime import extract_final_response, invoke_atlas_graph
 except ImportError:
-    from services.graph_invoker import invoke_atlas_graph  # type: ignore
-    from services.graph_payloads import extract_final_response  # type: ignore
+    from services.graph_runtime import extract_final_response, invoke_atlas_graph  # type: ignore
 
 async def process_message(
     prompt: str,

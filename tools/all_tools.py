@@ -80,6 +80,108 @@ def _backend_unavailable(backend: str, action: str, detail: Any, *, subject: str
     return f"{backend} unavailable during {action}{context}: {reason}"
 
 
+def _memory_recall_signals(store: dict[str, Any]) -> list[str]:
+    signals: list[str] = []
+
+    path_flags = store.get("path_flags") or {}
+    if any(
+        path_flags.get(key)
+        for key in (
+            "no_route_device",
+            "next_hop_resolution_failed",
+            "mgmt_routing_detected",
+            "missing_next_hop_device",
+        )
+    ):
+        signals.append("path anomaly")
+
+    for counter in store.get("interface_counters") or []:
+        if isinstance(counter, dict):
+            if counter.get("ssh_error"):
+                signals.append("interface counter collection failure")
+                break
+            if counter.get("active"):
+                signals.append("active interface errors")
+                break
+
+    interface_details = store.get("interface_details") or {}
+    if isinstance(interface_details, dict):
+        for detail in interface_details.values():
+            if not isinstance(detail, dict):
+                continue
+            if detail.get("error"):
+                signals.append("interface detail lookup failure")
+                break
+            if str(detail.get("oper_status") or "").lower() not in {"", "up"}:
+                signals.append("interface state anomaly")
+                break
+            if str(detail.get("line_protocol") or "").lower() not in {"", "up"}:
+                signals.append("line protocol anomaly")
+                break
+            if any((detail.get(k) or 0) > 0 for k in ("input_errors", "output_errors", "input_discards", "output_discards")):
+                signals.append("interface error counters")
+                break
+
+    syslog = store.get("syslog") or {}
+    if isinstance(syslog, dict):
+        for payload in syslog.values():
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("error"):
+                signals.append("syslog collection failure")
+                break
+            if payload.get("relevant"):
+                signals.append("recent device events")
+                break
+
+    ospf_history = store.get("ospf_history") or {}
+    if isinstance(ospf_history, dict):
+        for info in ospf_history.values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("error"):
+                signals.append("OSPF history lookup failure")
+                break
+            counts = [snap.get("neighbor_count") for snap in info.get("history", []) if isinstance(snap, dict)]
+            if counts and len(set(counts)) > 1:
+                signals.append("OSPF instability")
+                break
+
+    for inspection in store.get("peering_inspections") or []:
+        if not isinstance(inspection, dict):
+            continue
+        diagnosis = str(inspection.get("diagnosis_class") or "").strip().lower()
+        if diagnosis and diagnosis not in {"healthy", "clean"}:
+            signals.append("peer diagnosis anomaly")
+            break
+        if inspection.get("ping_a_success") is False or inspection.get("ping_b_success") is False:
+            signals.append("peer reachability failure")
+            break
+
+    for ping in store.get("ping_results") or []:
+        if isinstance(ping, dict) and ping.get("success") is False:
+            signals.append("failed reachability test")
+            break
+
+    connectivity_snapshot = store.get("connectivity_snapshot") or {}
+    if isinstance(connectivity_snapshot, dict):
+        findings = connectivity_snapshot.get("findings") or []
+        if findings:
+            signals.append("unresolved connectivity findings")
+        errors = connectivity_snapshot.get("errors") or {}
+        if errors:
+            signals.append("partial evidence gaps")
+        service = connectivity_snapshot.get("service") or {}
+        if isinstance(service, dict) and service and service.get("reachable") is False:
+            signals.append("service reachability failure")
+
+    deduped: list[str] = []
+    for signal in signals:
+        if signal not in deduped:
+            deduped.append(signal)
+    return deduped
+
+
 def pop_session_data(session_id: str) -> dict[str, Any]:
     """Read and remove all side-effect data after the agent completes."""
     return _session_store.pop(session_id, {})
@@ -2568,14 +2670,22 @@ async def recall_similar_cases(
     Search long-term memory for past troubleshooting sessions and closed incidents
     semantically similar to the current query.
 
-    Call this early in the investigation — similar past cases often reveal the
-    root cause before running live diagnostic tools.
+    Use this only after the current investigation has produced live evidence
+    that suggests recurrence, instability, or an unresolved pattern.
 
     Args:
         query:   The current issue description (e.g. "10.0.100.100 can't reach 10.0.200.200 port 443").
         devices: Device hostnames in the path — used to match device-tagged incidents.
     """
     session_id = _sid(config)
+    store = _store(session_id)
+    signals = _memory_recall_signals(store)
+    if not signals:
+        return (
+            "Memory recall deferred: gather live evidence first. "
+            "Use recall only after live results show recurrence, instability, or an unresolved pattern."
+        )
+
     await _push_status(session_id, "Searching past cases...")
 
     try:
@@ -2589,8 +2699,9 @@ async def recall_similar_cases(
 
         combined = past_sessions + [i for i in past_incidents if i not in past_sessions]
         if not combined:
-            return "No similar past cases found in memory."
-        return format_memory_context(combined)
+            return f"No similar past cases found in memory for signals: {', '.join(signals)}."
+        context = format_memory_context(combined)
+        return f"Memory recall triggered by live signals: {', '.join(signals)}.\n\n{context}"
     except Exception as exc:
         return f"Memory recall unavailable: {exc}"
 

@@ -7,7 +7,7 @@ from chat_service import process_message
 class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
     @patch("chat_service.extract_final_response")
     @patch("chat_service.invoke_atlas_graph", new_callable=AsyncMock)
-    async def test_process_message_delegates_to_graph_runtime(self, mock_invoke, mock_extract):
+    async def test_process_message_delegates_to_graph_execution_runtime(self, mock_invoke, mock_extract):
         mock_invoke.return_value = {"final_response": {"role": "assistant", "content": "done"}}
         mock_extract.return_value = {"role": "assistant", "content": "done"}
 

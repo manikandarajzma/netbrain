@@ -1,7 +1,14 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from tools.all_tools import check_routing, get_all_interfaces, pop_session_data, search_servicenow
+from tools.all_tools import (
+    _store,
+    check_routing,
+    get_all_interfaces,
+    pop_session_data,
+    recall_similar_cases,
+    search_servicenow,
+)
 
 
 class ServiceNowToolTests(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +98,61 @@ class ServiceNowToolTests(unittest.IsolatedAsyncioTestCase):
             result,
             "Nornir unavailable during interface inventory lookup for arista-ai1: device access failed",
         )
+
+    @patch("tools.all_tools._push_status", new_callable=AsyncMock)
+    @patch("tools.all_tools.recall_memory", new_callable=AsyncMock, create=True)
+    @patch("tools.all_tools.recall_incidents_by_devices", new_callable=AsyncMock, create=True)
+    @patch("tools.all_tools.format_memory_context", create=True)
+    async def test_recall_similar_cases_defers_without_live_evidence(
+        self,
+        mock_format_memory_context,
+        mock_recall_incidents,
+        mock_recall_memory,
+        _mock_push_status,
+    ):
+        result = await recall_similar_cases.coroutine(
+            query="same issue again",
+            devices=["arista-ai1"],
+            config={"configurable": {"session_id": "tool-test"}},
+        )
+
+        self.assertIn("Memory recall deferred", result)
+        mock_recall_memory.assert_not_awaited()
+        mock_recall_incidents.assert_not_awaited()
+        mock_format_memory_context.assert_not_called()
+
+    @patch("tools.all_tools._push_status", new_callable=AsyncMock)
+    @patch("agent_memory.format_memory_context", return_value="Matched prior case")
+    @patch("agent_memory.recall_incidents_by_devices", new_callable=AsyncMock)
+    @patch("agent_memory.recall_memory", new_callable=AsyncMock)
+    async def test_recall_similar_cases_runs_after_live_evidence(
+        self,
+        mock_recall_memory,
+        mock_recall_incidents,
+        mock_format_memory_context,
+        _mock_push_status,
+    ):
+        _store("tool-test")["interface_details"]["arista-ai1:Ethernet1"] = {
+            "device": "arista-ai1",
+            "interface": "Ethernet1",
+            "oper_status": "down",
+            "line_protocol": "down",
+        }
+        mock_recall_memory.return_value = [{"summary": "Prior route map issue"}]
+        mock_recall_incidents.return_value = []
+
+        result = await recall_similar_cases.coroutine(
+            query="same issue again",
+            devices=["arista-ai1"],
+            config={"configurable": {"session_id": "tool-test"}},
+        )
+
+        self.assertIn("Memory recall triggered by live signals", result)
+        self.assertIn("interface state anomaly", result)
+        self.assertIn("Matched prior case", result)
+        mock_recall_memory.assert_awaited_once()
+        mock_recall_incidents.assert_awaited_once_with(["arista-ai1"], query="same issue again", top_k=5)
+        mock_format_memory_context.assert_called_once()
 
 
 if __name__ == "__main__":

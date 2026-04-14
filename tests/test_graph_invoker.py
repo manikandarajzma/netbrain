@@ -2,11 +2,11 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from services.graph_invoker import invoke_atlas_graph
+from services.graph_runtime import invoke_atlas_graph
 
 
 class GraphInvokerTests(unittest.IsolatedAsyncioTestCase):
-    @patch("services.graph_invoker.ensure_checkpointer", new_callable=AsyncMock)
+    @patch("services.graph_runtime.ensure_checkpointer", new_callable=AsyncMock)
     async def test_invoke_atlas_graph_builds_state_and_config_and_calls_graph(self, mock_ensure):
         fake_graph = types.SimpleNamespace(ainvoke=AsyncMock(return_value={"final_response": {"content": "ok"}}))
         fake_module = types.SimpleNamespace(atlas_graph=fake_graph)
