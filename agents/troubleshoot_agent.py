@@ -15,10 +15,12 @@ try:
     from atlas.agents.agent_factory import build_default_llm, create_specialized_agent
     from atlas.tools.all_tools import ALL_TOOLS
     from atlas.tools.all_tools import CONNECTIVITY_TOOLS
+    from atlas.tools.all_tools import recall_similar_cases
 except ImportError:
     from agents.agent_factory import build_default_llm, create_specialized_agent  # type: ignore
     from tools.all_tools import ALL_TOOLS          # type: ignore
     from tools.all_tools import CONNECTIVITY_TOOLS  # type: ignore
+    from tools.all_tools import recall_similar_cases  # type: ignore
 
 logger = logging.getLogger("atlas.troubleshoot_agent")
 
@@ -40,6 +42,14 @@ _SCENARIO_KEYWORDS = [
     (re.compile(r"\b(slow|latency|lag|delay|degraded|throughput|performance|high rtt)\b",          re.IGNORECASE), "performance.md"),
     (re.compile(r"\b(intermittent|flap|unstable|sporadic|random|drops in and out)\b",              re.IGNORECASE), "intermittent.md"),
 ]
+
+_MEMORY_HINT_RE = re.compile(
+    r"\b(again|same\s+issue|similar|recurring|repeated|keeps?\s+happening|previously|last\s+time|history)\b",
+    re.IGNORECASE,
+)
+
+TROUBLESHOOT_BASE_TOOLS = [tool for tool in ALL_TOOLS if tool is not recall_similar_cases]
+MEMORY_AUGMENTED_TOOLS = TROUBLESHOOT_BASE_TOOLS + [recall_similar_cases]
 
 
 def _pick_scenario(prompt: str, issue_type: str) -> str | None:
@@ -65,10 +75,25 @@ def load_system_prompt(prompt: str = "", issue_type: str = "general") -> str:
     return core
 
 
+def _should_enable_memory(prompt: str, issue_type: str, scenario_path: str | None) -> bool:
+    if scenario_path and (
+        scenario_path.endswith("performance.md") or scenario_path.endswith("intermittent.md")
+    ):
+        return True
+    if issue_type in {"performance", "slow", "intermittent", "flapping"}:
+        return True
+    return bool(_MEMORY_HINT_RE.search(prompt or ""))
+
+
 def build_agent(prompt: str = "", issue_type: str = "general", *, llm=None):
     """Return a pure specialized troubleshoot agent ready for ainvoke."""
     llm = llm or build_default_llm()
     system_prompt = load_system_prompt(prompt, issue_type)
     scenario_path = _pick_scenario(prompt, issue_type) or ""
-    tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
+    if scenario_path.endswith("connectivity.md"):
+        tools = CONNECTIVITY_TOOLS
+    elif _should_enable_memory(prompt, issue_type, scenario_path):
+        tools = MEMORY_AUGMENTED_TOOLS
+    else:
+        tools = TROUBLESHOOT_BASE_TOOLS
     return create_specialized_agent(llm, tools, system_prompt, "troubleshoot")

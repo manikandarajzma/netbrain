@@ -69,6 +69,11 @@ def _store(session_id: str) -> dict[str, Any]:
     })
 
 
+def _set_servicenow_summary(session_id: str, summary: str) -> str:
+    _store(session_id)["servicenow_summary"] = summary
+    return summary
+
+
 def pop_session_data(session_id: str) -> dict[str, Any]:
     """Read and remove all side-effect data after the agent completes."""
     return _session_store.pop(session_id, {})
@@ -2119,7 +2124,7 @@ async def search_servicenow(
     terms = list(dict.fromkeys(terms))
 
     if not terms:
-        return "ServiceNow skipped: no device names or IPs provided."
+        return _set_servicenow_summary(session_id, "ServiceNow skipped: no device names or IPs provided.")
 
     query     = " OR ".join(terms)
     chg_hours = max(hours_back * 30, 720)
@@ -2137,9 +2142,9 @@ async def search_servicenow(
             timeout=5.0,
         )
     except asyncio.TimeoutError:
-        return "ServiceNow timed out; continuing without ticket context."
+        return _set_servicenow_summary(session_id, "ServiceNow timed out; continuing without ticket context.")
     except Exception as exc:
-        return f"ServiceNow unavailable: {exc}"
+        return _set_servicenow_summary(session_id, f"ServiceNow unavailable: {exc}")
 
     inc_error = inc_result.get("error") if isinstance(inc_result, dict) else None
     chg_error = chg_result.get("error") if isinstance(chg_result, dict) else None
@@ -2149,7 +2154,7 @@ async def search_servicenow(
             parts.append(f"incident search failed: {inc_error}")
         if chg_error:
             parts.append(f"change search failed: {chg_error}")
-        return "ServiceNow unavailable: " + "; ".join(parts)
+        return _set_servicenow_summary(session_id, "ServiceNow unavailable: " + "; ".join(parts))
 
     def _cell(v, n=60):
         s = str(v or "—").strip().replace("|", "/").replace("\n", " ")
@@ -2208,8 +2213,7 @@ async def search_servicenow(
         "### Change Requests\n"
         f"{_fmt_changes(chg_rows)}"
     )
-    _store(session_id)["servicenow_summary"] = summary
-    return summary
+    return _set_servicenow_summary(session_id, summary)
 
 
 @tool
