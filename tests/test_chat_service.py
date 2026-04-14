@@ -1,31 +1,32 @@
 import unittest
+from unittest.mock import AsyncMock, patch
 
-from chat_service import _build_graph_config, _build_initial_state, _extract_final_response
+from chat_service import process_message
 
 
-class ChatServiceHelperTests(unittest.TestCase):
-    def test_build_initial_state_sets_expected_defaults(self):
-        state = _build_initial_state("hello", [{"role": "user", "content": "prev"}], "alice", "session-1")
-        self.assertEqual(state["prompt"], "hello")
-        self.assertEqual(state["conversation_history"], [{"role": "user", "content": "prev"}])
-        self.assertEqual(state["username"], "alice")
-        self.assertEqual(state["session_id"], "session-1")
-        self.assertIsNone(state["intent"])
-        self.assertIsNone(state["rbac_error"])
-        self.assertIsNone(state["final_response"])
+class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
+    @patch("chat_service.extract_final_response")
+    @patch("chat_service.invoke_atlas_graph", new_callable=AsyncMock)
+    async def test_process_message_delegates_to_graph_runtime(self, mock_invoke, mock_extract):
+        mock_invoke.return_value = {"final_response": {"role": "assistant", "content": "done"}}
+        mock_extract.return_value = {"role": "assistant", "content": "done"}
 
-    def test_build_graph_config_includes_thread_id_only_when_present(self):
-        self.assertEqual(_build_graph_config(None), {"recursion_limit": 50})
-        self.assertEqual(
-            _build_graph_config("session-1"),
-            {"recursion_limit": 50, "configurable": {"thread_id": "session-1"}},
+        result = await process_message(
+            "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200",
+            [{"role": "user", "content": "previous"}],
+            username="alice",
+            session_id="session-1",
+            ignored_flag=True,
         )
 
-    def test_extract_final_response_returns_fallback_message(self):
-        self.assertEqual(
-            _extract_final_response({}),
-            {"role": "assistant", "content": "Something went wrong — please try again."},
+        self.assertEqual(result, {"role": "assistant", "content": "done"})
+        mock_invoke.assert_awaited_once_with(
+            "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200",
+            [{"role": "user", "content": "previous"}],
+            username="alice",
+            session_id="session-1",
         )
+        mock_extract.assert_called_once_with({"final_response": {"role": "assistant", "content": "done"}})
 
 
 if __name__ == "__main__":
