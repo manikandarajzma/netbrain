@@ -1,6 +1,7 @@
 import unittest
 
 from services.response_presenter import (
+    ResponsePresenter,
     build_network_ops_content,
     build_troubleshoot_content,
     group_interface_counters,
@@ -8,6 +9,27 @@ from services.response_presenter import (
 
 
 class ResponsePresenterTests(unittest.TestCase):
+    def test_response_presenter_class_groups_duplicate_devices(self):
+        grouped = ResponsePresenter().group_interface_counters(
+            [
+                {"device": "arista-ai1", "window_s": 6, "clean": ["Ethernet2"], "active": []},
+                {"device": "arista-ai1", "window_s": 6, "clean": ["Ethernet1"], "active": []},
+            ]
+        )
+
+        self.assertEqual(
+            grouped,
+            [
+                {
+                    "device": "arista-ai1",
+                    "window_s": 6,
+                    "ssh_error": "",
+                    "active": [],
+                    "clean": ["Ethernet1", "Ethernet2"],
+                }
+            ],
+        )
+
     def test_group_interface_counters_merges_duplicate_devices(self):
         grouped = group_interface_counters(
             [

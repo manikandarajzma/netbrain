@@ -14,10 +14,10 @@ import logging
 import pathlib
 
 try:
-    from atlas.agents.agent_factory import build_default_llm, create_specialized_agent
+    from atlas.agents.agent_factory import agent_factory
     from atlas.tools.all_tools import NETWORK_OPS_TOOLS
 except ImportError:
-    from agents.agent_factory import build_default_llm, create_specialized_agent  # type: ignore
+    from agents.agent_factory import agent_factory  # type: ignore
     from tools.all_tools import NETWORK_OPS_TOOLS          # type: ignore
 
 logger = logging.getLogger("atlas.network_ops_agent")
@@ -31,5 +31,5 @@ def load_system_prompt() -> str:
 
 def build_agent(*, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
-    llm = llm or build_default_llm()
-    return create_specialized_agent(llm, NETWORK_OPS_TOOLS, load_system_prompt(), "network_ops")
+    llm = llm or agent_factory.build_default_llm()
+    return agent_factory.create_specialized_agent(llm, NETWORK_OPS_TOOLS, load_system_prompt(), "network_ops")

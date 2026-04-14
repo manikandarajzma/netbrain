@@ -5,8 +5,8 @@ from agents import network_ops_agent, troubleshoot_agent
 
 
 class TroubleshootAgentBuilderTests(unittest.TestCase):
-    @patch("agents.troubleshoot_agent.create_specialized_agent")
-    @patch("agents.troubleshoot_agent.build_default_llm")
+    @patch("agents.troubleshoot_agent.agent_factory.create_specialized_agent")
+    @patch("agents.troubleshoot_agent.agent_factory.build_default_llm")
     def test_connectivity_prompt_uses_connectivity_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
@@ -24,8 +24,8 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         self.assertEqual(args[3], "troubleshoot")
         self.assertEqual(kwargs, {})
 
-    @patch("agents.troubleshoot_agent.create_specialized_agent")
-    @patch("agents.troubleshoot_agent.build_default_llm")
+    @patch("agents.troubleshoot_agent.agent_factory.create_specialized_agent")
+    @patch("agents.troubleshoot_agent.agent_factory.build_default_llm")
     def test_general_troubleshoot_prompt_keeps_full_toolset_available(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
@@ -35,8 +35,8 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         args, _kwargs = mock_create_specialized_agent.call_args
         self.assertIs(args[1], troubleshoot_agent.ALL_TOOLS)
 
-    @patch("agents.troubleshoot_agent.create_specialized_agent")
-    @patch("agents.troubleshoot_agent.build_default_llm")
+    @patch("agents.troubleshoot_agent.agent_factory.create_specialized_agent")
+    @patch("agents.troubleshoot_agent.agent_factory.build_default_llm")
     def test_performance_scenario_uses_full_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
@@ -49,8 +49,8 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         args, _kwargs = mock_create_specialized_agent.call_args
         self.assertIs(args[1], troubleshoot_agent.ALL_TOOLS)
 
-    @patch("agents.troubleshoot_agent.create_specialized_agent")
-    @patch("agents.troubleshoot_agent.build_default_llm")
+    @patch("agents.troubleshoot_agent.agent_factory.create_specialized_agent")
+    @patch("agents.troubleshoot_agent.agent_factory.build_default_llm")
     def test_intermittent_scenario_uses_full_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
@@ -65,8 +65,8 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
 
 
 class NetworkOpsAgentBuilderTests(unittest.TestCase):
-    @patch("agents.network_ops_agent.create_specialized_agent")
-    @patch("agents.network_ops_agent.build_default_llm")
+    @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
+    @patch("agents.network_ops_agent.agent_factory.build_default_llm")
     def test_network_ops_builder_uses_network_ops_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"

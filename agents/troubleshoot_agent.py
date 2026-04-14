@@ -12,11 +12,11 @@ import pathlib
 import re
 
 try:
-    from atlas.agents.agent_factory import build_default_llm, create_specialized_agent
+    from atlas.agents.agent_factory import agent_factory
     from atlas.tools.all_tools import ALL_TOOLS
     from atlas.tools.all_tools import CONNECTIVITY_TOOLS
 except ImportError:
-    from agents.agent_factory import build_default_llm, create_specialized_agent  # type: ignore
+    from agents.agent_factory import agent_factory  # type: ignore
     from tools.all_tools import ALL_TOOLS          # type: ignore
     from tools.all_tools import CONNECTIVITY_TOOLS  # type: ignore
 
@@ -66,8 +66,8 @@ def load_system_prompt(prompt: str = "", issue_type: str = "general") -> str:
 
 def build_agent(prompt: str = "", issue_type: str = "general", *, llm=None):
     """Return a pure specialized troubleshoot agent ready for ainvoke."""
-    llm = llm or build_default_llm()
+    llm = llm or agent_factory.build_default_llm()
     system_prompt = load_system_prompt(prompt, issue_type)
     scenario_path = _pick_scenario(prompt, issue_type) or ""
     tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
-    return create_specialized_agent(llm, tools, system_prompt, "troubleshoot")
+    return agent_factory.create_specialized_agent(llm, tools, system_prompt, "troubleshoot")

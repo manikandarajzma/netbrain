@@ -11,28 +11,43 @@ except ImportError:
     from tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL  # type: ignore
 
 
+class AgentFactory:
+    """Owns agent-model defaults and specialized agent creation."""
+
+    def build_default_llm(self) -> ChatOpenAI:
+        """Return the default chat model used by Atlas agents."""
+        return ChatOpenAI(
+            model=OLLAMA_MODEL,
+            base_url=OLLAMA_BASE_URL,
+            temperature=0.0,
+            api_key="docker",
+        )
+
+    def create_specialized_agent(self, llm, tools, system_prompt: str, agent_name: str):
+        """
+        Create a minimal specialized ReAct agent.
+
+        Notes:
+        - The installed LangGraph version in this environment still uses `prompt=`
+          rather than `state_modifier=`.
+        - Runtime/session/presentation behavior stays outside the agent layer.
+        """
+        return create_react_agent(
+            llm,
+            tools,
+            prompt=SystemMessage(content=system_prompt),
+            name=agent_name,
+        )
+
+
+agent_factory = AgentFactory()
+
+
 def build_default_llm() -> ChatOpenAI:
-    """Return the default chat model used by Atlas agents."""
-    return ChatOpenAI(
-        model=OLLAMA_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.0,
-        api_key="docker",
-    )
+    """Compatibility wrapper for the shared AgentFactory."""
+    return agent_factory.build_default_llm()
 
 
 def create_specialized_agent(llm, tools, system_prompt: str, agent_name: str):
-    """
-    Create a minimal specialized ReAct agent.
-
-    Notes:
-    - The installed LangGraph version in this environment still uses `prompt=`
-      rather than `state_modifier=`.
-    - Runtime/session/presentation behavior stays outside the agent layer.
-    """
-    return create_react_agent(
-        llm,
-        tools,
-        prompt=SystemMessage(content=system_prompt),
-        name=agent_name,
-    )
+    """Compatibility wrapper for the shared AgentFactory."""
+    return agent_factory.create_specialized_agent(llm, tools, system_prompt, agent_name)

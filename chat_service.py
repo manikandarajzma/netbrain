@@ -22,9 +22,9 @@ from typing import Any
 _IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 try:
-    from atlas.services.graph_runtime import extract_final_response, invoke_atlas_graph
+    from atlas.services.graph_runtime import atlas_runtime
 except ImportError:
-    from services.graph_runtime import extract_final_response, invoke_atlas_graph  # type: ignore
+    from services.graph_runtime import atlas_runtime  # type: ignore
 
 async def process_message(
     prompt: str,
@@ -58,10 +58,10 @@ async def process_message(
         Always a ``{"role": "assistant", "content": ...}`` dict, optionally
         with a ``path_hops`` key for the PathVisualization frontend component.
     """
-    result_state = await invoke_atlas_graph(
+    result_state = await atlas_runtime.invoke_atlas_graph(
         prompt,
         conversation_history,
         username=username,
         session_id=session_id,
     )
-    return extract_final_response(result_state)
+    return atlas_runtime.extract_final_response(result_state)

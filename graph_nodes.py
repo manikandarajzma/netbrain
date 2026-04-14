@@ -31,8 +31,7 @@ try:
         resolve_incident_prompt,
     )
     from atlas.services.response_presenter import (
-        build_network_ops_content,
-        build_troubleshoot_content,
+        response_presenter,
     )
     from atlas.services.runtime_helpers import (
         merge_session_data,
@@ -58,8 +57,7 @@ except ImportError:
         resolve_incident_prompt,
     )
     from services.response_presenter import (  # type: ignore
-        build_network_ops_content,
-        build_troubleshoot_content,
+        response_presenter,
     )
     from services.runtime_helpers import (  # type: ignore
         merge_session_data,
@@ -329,7 +327,7 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("mandatory path visualization collection failed: %s", exc)
 
-    content = build_troubleshoot_content(final_text, session_data, full_prompt, inc_summary)
+    content = response_presenter.build_troubleshoot_content(final_text, session_data, full_prompt, inc_summary)
 
     # Store findings in long-term memory for future recall
     if final_text:
@@ -385,7 +383,7 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     if looks_like_clarification_request(final_text):
         set_pending_context(session_id, prompt, "network_ops")
     session_data = pop_session_data(session_id)
-    content = build_network_ops_content(final_text, session_data, prompt)
+    content = response_presenter.build_network_ops_content(final_text, session_data, prompt)
 
     clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
