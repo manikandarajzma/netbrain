@@ -1,9 +1,9 @@
 """
 Atlas troubleshooting agent.
 
-Exports build_agent(prompt, issue_type) which returns a ready-to-invoke
-create_react_agent. All infrastructure (status bus, session data, response
-formatting) lives in graph_nodes.py.
+Exports build_agent(prompt, issue_type) which returns a pure specialized
+ReAct agent. Infrastructure (status bus, session data, response formatting)
+lives outside the agent layer.
 """
 from __future__ import annotations
 
@@ -11,18 +11,14 @@ import logging
 import pathlib
 import re
 
-from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
-
 try:
+    from atlas.agents.agent_factory import build_default_llm, create_specialized_agent
     from atlas.tools.all_tools import ALL_TOOLS
     from atlas.tools.all_tools import CONNECTIVITY_TOOLS
-    from atlas.tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL
 except ImportError:
+    from agents.agent_factory import build_default_llm, create_specialized_agent  # type: ignore
     from tools.all_tools import ALL_TOOLS          # type: ignore
     from tools.all_tools import CONNECTIVITY_TOOLS  # type: ignore
-    from tools.shared import OLLAMA_MODEL, OLLAMA_BASE_URL  # type: ignore
 
 logger = logging.getLogger("atlas.troubleshoot_agent")
 
@@ -69,15 +65,26 @@ def load_system_prompt(prompt: str = "", issue_type: str = "general") -> str:
     return core
 
 
-def build_agent(prompt: str = "", issue_type: str = "general"):
-    """Return a create_react_agent ready for ainvoke."""
-    llm = ChatOpenAI(
-        model=OLLAMA_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.0,
-        api_key="docker",
-    )
+def build_agent(
+    prompt: str = "",
+    issue_type: str = "general",
+    *,
+    llm=None,
+    checkpointer=None,
+    stream_mode: str | list[str] | None = None,
+    **agent_kwargs,
+):
+    """Return a pure specialized troubleshoot agent ready for ainvoke."""
+    llm = llm or build_default_llm()
     system_prompt = load_system_prompt(prompt, issue_type)
     scenario_path = _pick_scenario(prompt, issue_type) or ""
     tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
-    return create_react_agent(llm, tools, prompt=SystemMessage(content=system_prompt))
+    return create_specialized_agent(
+        llm,
+        tools,
+        system_prompt,
+        "troubleshoot",
+        checkpointer=checkpointer,
+        stream_mode=stream_mode,
+        **agent_kwargs,
+    )

@@ -87,6 +87,53 @@ async def _ensure_checkpointer() -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
+def _build_initial_state(
+    prompt: str,
+    conversation_history: list[dict[str, str]],
+    username: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "prompt": prompt,
+        "conversation_history": conversation_history or [],
+        "username": username,
+        "session_id": session_id,
+        "intent": None,
+        "rbac_error": None,
+        "final_response": None,
+    }
+
+
+def _build_graph_config(session_id: str | None) -> dict[str, Any]:
+    config: dict[str, Any] = {"recursion_limit": 50}
+    if session_id:
+        # thread_id ties this invocation to the session's checkpoint slot in Redis
+        config["configurable"] = {"thread_id": session_id}
+    return config
+
+
+async def _invoke_atlas_graph(
+    prompt: str,
+    conversation_history: list[dict[str, str]],
+    *,
+    username: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    await _ensure_checkpointer()
+    from atlas.graph_builder import atlas_graph
+
+    initial_state = _build_initial_state(prompt, conversation_history, username, session_id)
+    config = _build_graph_config(session_id)
+    return await atlas_graph.ainvoke(initial_state, config=config)
+
+
+def _extract_final_response(result_state: dict[str, Any]) -> dict[str, Any]:
+    return result_state.get("final_response") or {
+        "role": "assistant",
+        "content": "Something went wrong — please try again.",
+    }
+
 async def process_message(
     prompt: str,
     conversation_history: list[dict[str, str]],
@@ -119,26 +166,10 @@ async def process_message(
         Always a ``{"role": "assistant", "content": ...}`` dict, optionally
         with a ``path_hops`` key for the PathVisualization frontend component.
     """
-    await _ensure_checkpointer()
-    from atlas.graph_builder import atlas_graph
-
-    initial_state = {
-        "prompt": prompt,
-        "conversation_history": conversation_history or [],
-        "username": username,
-        "session_id": session_id,
-        "intent": None,
-        "rbac_error": None,
-        "final_response": None,
-    }
-
-    config: dict = {"recursion_limit": 50}
-    if session_id:
-        # thread_id ties this invocation to the session's checkpoint slot in Redis
-        config["configurable"] = {"thread_id": session_id}
-
-    result_state = await atlas_graph.ainvoke(initial_state, config=config)
-    return result_state.get("final_response") or {
-        "role": "assistant",
-        "content": "Something went wrong — please try again.",
-    }
+    result_state = await _invoke_atlas_graph(
+        prompt,
+        conversation_history,
+        username=username,
+        session_id=session_id,
+    )
+    return _extract_final_response(result_state)
