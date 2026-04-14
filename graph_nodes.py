@@ -7,7 +7,6 @@ Graph shape:
       ├─► call_network_ops_agent    (firewall change requests, policy review, access requests)
       └─► build_final_response      (dismiss / early-exit)
 """
-import json
 import logging
 import re
 import traceback as _tb
@@ -18,193 +17,59 @@ from langchain_core.messages import HumanMessage
 try:
     from atlas.graph_state import AtlasState
     from atlas.chat_service import _IP_OR_CIDR_RE
+    from atlas.services.pending_context import (
+        clear_pending_context,
+        get_pending_context,
+        has_pending_context,
+        set_pending_context,
+    )
+    from atlas.services.request_preprocessor import (
+        extract_final_text,
+        extract_ips,
+        extract_port,
+        looks_like_clarification_request,
+        resolve_incident_prompt,
+    )
+    from atlas.services.response_presenter import (
+        build_network_ops_content,
+        build_troubleshoot_content,
+    )
+    from atlas.services.runtime_helpers import (
+        merge_session_data,
+        missing_path_visuals,
+        needs_connectivity_snapshot,
+        push_status,
+        store_agent_memory_entry,
+    )
 except ImportError:
     from graph_state import AtlasState        # type: ignore[assignment]
     from chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
+    from services.pending_context import (  # type: ignore
+        clear_pending_context,
+        get_pending_context,
+        has_pending_context,
+        set_pending_context,
+    )
+    from services.request_preprocessor import (  # type: ignore
+        extract_final_text,
+        extract_ips,
+        extract_port,
+        looks_like_clarification_request,
+        resolve_incident_prompt,
+    )
+    from services.response_presenter import (  # type: ignore
+        build_network_ops_content,
+        build_troubleshoot_content,
+    )
+    from services.runtime_helpers import (  # type: ignore
+        merge_session_data,
+        missing_path_visuals,
+        needs_connectivity_snapshot,
+        push_status,
+        store_agent_memory_entry,
+    )
 
 logger = logging.getLogger("atlas.graph_nodes")
-
-
-def _replace_markdown_section(text: str, header: str, body: str) -> str:
-    if not text:
-        return f"## {header}\n{body}"
-    pattern = re.compile(
-        rf"(?ms)^## {re.escape(header)}\n.*?(?=^## |\Z)"
-    )
-    replacement = f"## {header}\n{body}\n"
-    if pattern.search(text):
-        return pattern.sub(replacement, text, count=1).rstrip()
-    return f"{text.rstrip()}\n\n## {header}\n{body}"
-
-
-def _merge_session_data(base: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
-    """Merge per-pass tool side effects so follow-up passes don't erase earlier evidence."""
-    merged = dict(base or {})
-    for key, value in (new or {}).items():
-        if key in {"path_hops", "reverse_path_hops", "interface_counters", "ping_results", "peering_inspections"}:
-            existing = merged.get(key)
-            if not existing:
-                merged[key] = value
-                continue
-            if isinstance(existing, list) and isinstance(value, list):
-                merged[key] = existing + [item for item in value if item not in existing]
-            continue
-        if key in {"all_interfaces", "interface_details", "syslog", "protocol_discovery", "routing_history", "connectivity_snapshot"}:
-            existing = merged.get(key)
-            if isinstance(existing, dict) and isinstance(value, dict):
-                merged[key] = {**existing, **value}
-            elif value and not existing:
-                merged[key] = value
-            continue
-        if key not in merged or not merged.get(key):
-            merged[key] = value
-    return merged
-
-
-def _missing_path_visuals(session_data: dict[str, Any], src_ip: str, dst_ip: str) -> bool:
-    return bool(src_ip and dst_ip and (not session_data.get("path_hops") or not session_data.get("reverse_path_hops")))
-
-
-def _group_interface_counters(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Collapse per-interface counter rows into one payload per device."""
-    if not entries:
-        return []
-
-    grouped: dict[str, dict[str, Any]] = {}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        device = str(entry.get("device") or "Unknown device")
-        current = grouped.setdefault(
-            device,
-            {
-                "device": device,
-                "window_s": 0,
-                "ssh_error": "",
-                "active_by_interface": {},
-                "clean_set": set(),
-            },
-        )
-
-        current["window_s"] = max(current["window_s"], int(entry.get("window_s") or 0))
-        if not current["ssh_error"] and entry.get("ssh_error"):
-            current["ssh_error"] = str(entry["ssh_error"])
-
-        for active in entry.get("active") or []:
-            if not isinstance(active, dict):
-                continue
-            interface = str(active.get("interface") or f"active-{len(current['active_by_interface'])}")
-            current["active_by_interface"][interface] = active
-
-        for clean in entry.get("clean") or []:
-            if clean:
-                current["clean_set"].add(str(clean))
-
-    normalized: list[dict[str, Any]] = []
-    for device, payload in grouped.items():
-        active = list(payload["active_by_interface"].values())
-        active_interfaces = {
-            str(item.get("interface"))
-            for item in active
-            if isinstance(item, dict) and item.get("interface")
-        }
-        clean = sorted(i for i in payload["clean_set"] if i not in active_interfaces)
-        normalized.append(
-            {
-                "device": device,
-                "window_s": payload["window_s"],
-                "ssh_error": payload["ssh_error"],
-                "active": active,
-                "clean": clean,
-            }
-        )
-
-    return sorted(normalized, key=lambda item: item.get("device", ""))
-
-
-_NETWORK_OPS_PATH_KEYWORDS = (
-    "firewall",
-    "policy",
-    "rule",
-    "path",
-    "trace",
-    "allow",
-    "zone",
-)
-
-
-def _should_include_network_ops_path(prompt: str) -> bool:
-    text = (prompt or "").lower()
-    if re.search(
-        r"\b(create|open|raise|close|update)\s+(an?\s+)?(incident|ticket|change request)\b",
-        text,
-        re.IGNORECASE,
-    ):
-        return False
-    if re.search(r"\b(details?|status|show|get)\s+(about\s+)?(inc|chg)\d+\b", text, re.IGNORECASE):
-        return False
-    if re.search(r"\b(close|update)\s+(inc|chg)\d+\b", text, re.IGNORECASE):
-        return False
-    return any(keyword in text for keyword in _NETWORK_OPS_PATH_KEYWORDS)
-
-
-# ---------------------------------------------------------------------------
-# Pending clarification state (Redis-backed with in-memory fallback)
-# ---------------------------------------------------------------------------
-
-_pending_ts_mem: dict[str, str] = {}
-_PENDING_TS_TTL = 600
-
-
-def _pending_ts_set(session_id: str, prompt: str, issue_type: str = "general") -> None:
-    payload = json.dumps({"prompt": prompt, "issue_type": issue_type})
-    try:
-        import os, redis as _r
-        _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                    decode_responses=True).setex(f"atlas:pending_ts:{session_id}", _PENDING_TS_TTL, payload)
-        return
-    except Exception:
-        pass
-    _pending_ts_mem[session_id] = payload
-
-
-def _pending_ts_get(session_id: str) -> tuple[str | None, str | None]:
-    try:
-        import os, redis as _r
-        raw = _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                          decode_responses=True).get(f"atlas:pending_ts:{session_id}")
-    except Exception:
-        raw = _pending_ts_mem.get(session_id)
-    if not raw:
-        return None, None
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            return data.get("prompt", ""), data.get("issue_type", "general")
-        return str(data), "general"
-    except Exception:
-        return str(raw), "general"
-
-
-def _pending_ts_exists(session_id: str) -> bool:
-    try:
-        import os, redis as _r
-        return _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                           decode_responses=True).exists(f"atlas:pending_ts:{session_id}") > 0
-    except Exception:
-        pass
-    return session_id in _pending_ts_mem
-
-
-def _pending_ts_delete(session_id: str) -> None:
-    try:
-        import os, redis as _r
-        _r.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-                    decode_responses=True).delete(f"atlas:pending_ts:{session_id}")
-        return
-    except Exception:
-        pass
-    _pending_ts_mem.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -280,17 +145,13 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     prompt     = state["prompt"]
     session_id = state.get("session_id") or "default"
 
-    try:
-        import atlas.status_bus as sb
-        await sb.push(session_id, "Analyzing your query...")
-    except Exception:
-        pass
+    await push_status(session_id, "Analyzing your query...")
 
     prompt_lower = prompt.lower().strip().rstrip("!.")
 
     # Plain acknowledgement / dismissal with nothing pending → dismiss
     if prompt_lower in (_ACKNOWLEDGEMENTS | _DISMISSALS):
-        if not _pending_ts_exists(session_id):
+        if not has_pending_context(session_id):
             return {
                 "intent":         "dismiss",
                 "final_response": {"role": "assistant",
@@ -300,14 +161,14 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     # Reply to a pending clarification → continue whichever flow is pending.
     # Network-ops follow-ups are often long structured field lists, so do not
     # require them to be short.
-    if _pending_ts_exists(session_id):
-        pending_prompt, pending_issue_type = _pending_ts_get(session_id)
+    if has_pending_context(session_id):
+        pending_prompt, pending_issue_type = get_pending_context(session_id)
         if pending_issue_type == "network_ops":
             return {"intent": "network_ops"}
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
             intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
             return {"intent": intent}
-        _pending_ts_delete(session_id)
+        clear_pending_context(session_id)
 
     # Ambiguity guard: diagnostic framing overrides ops keywords.
     #
@@ -357,116 +218,6 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             "content": "Atlas is not equipped to help with it.",
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Shared infrastructure helpers
-# ---------------------------------------------------------------------------
-
-_INC_RE = re.compile(r'\bINC\d+\b', re.IGNORECASE)
-_CHG_RE = re.compile(r'\bCHG\d+\b', re.IGNORECASE)
-_IP_RE  = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-
-
-def _extract_ips(text: str) -> tuple[str, str]:
-    ips = _IP_RE.findall(text)
-    return (ips[0] if ips else ""), (ips[1] if len(ips) > 1 else "")
-
-
-def _extract_port(text: str) -> str:
-    m = re.search(r"\bport\s+(\d{1,5})\b", text, re.IGNORECASE)
-    return m.group(1) if m else ""
-
-
-def _extract_final_text(messages: list) -> str:
-    text = next(
-        (m.content for m in reversed(messages)
-         if hasattr(m, "content") and m.content and not getattr(m, "tool_calls", None)),
-        "",
-    )
-    text = re.sub(r"<plan>.*?</plan>",             "", text, flags=re.DOTALL)
-    text = re.sub(r"<reflection>.*?</reflection>", "", text, flags=re.DOTALL)
-    return text.strip()
-
-
-def _looks_like_clarification_request(text: str) -> bool:
-    t = (text or "").lower()
-    cues = (
-        "please provide the following",
-        "i need more details",
-        "to proceed, please provide",
-        "once i have these details",
-        "please provide the following information",
-        "i need the following information",
-    )
-    return any(cue in t for cue in cues)
-
-
-def _needs_connectivity_snapshot(session_data: dict[str, Any], src_ip: str, dst_ip: str) -> bool:
-    if not src_ip or not dst_ip:
-        return False
-    return not bool(session_data.get("connectivity_snapshot"))
-
-
-async def _push_status(session_id: str, msg: str) -> None:
-    try:
-        try:
-            import atlas.status_bus as sb
-        except ImportError:
-            import status_bus as sb  # type: ignore
-        await sb.push(session_id, msg)
-    except Exception:
-        pass
-
-
-async def _resolve_inc(prompt: str) -> tuple[str, dict | None]:
-    """Expand INC→IPs when the prompt has an INC number but no IPs."""
-    m = _INC_RE.search(prompt)
-    if not m or _IP_RE.search(prompt):
-        return prompt, None
-    inc_num = m.group(0).upper()
-    try:
-        try:
-            from atlas.mcp_client import call_mcp_tool
-        except ImportError:
-            from mcp_client import call_mcp_tool  # type: ignore
-        data = await call_mcp_tool(
-            "get_servicenow_incident",
-            {"number": inc_num},
-            timeout=20.0,
-        )
-        if "error" in data:
-            return prompt, None
-        r = data.get("result", {})
-        short_desc = str(r.get("short_description") or "")
-        description = str(r.get("description") or "")
-        work_notes = str(r.get("work_notes") or "")
-        comments = str(r.get("comments") or "")
-        combined = " ".join(part for part in (short_desc, description, work_notes, comments) if part)
-        ips = _IP_RE.findall(combined)
-        if len(ips) < 2:
-            return prompt, None
-        port_hit = re.search(r'\b(?:tcp\s+port|udp\s+port|port)\s+(\d+)\b', combined, re.IGNORECASE)
-        port_str = f" port {port_hit.group(1)}" if port_hit else ""
-        new_prompt = (
-            f"help me troubleshoot connectivity from {ips[0]} to {ips[1]}{port_str} "
-            f"based on incident {inc_num}"
-        )
-        logger.info("INC→IP resolved: %s → %s", inc_num, new_prompt[-60:])
-        inc_summary = {
-            "number":            r.get("number", inc_num),
-            "short_description": short_desc,
-            "state":             r.get("state", ""),
-            "priority":          r.get("priority", ""),
-            "opened_at":         r.get("opened_at", ""),
-            "assigned_to":       (r.get("assigned_to") or {}).get("display_value") or "Unassigned",
-        }
-        return new_prompt, inc_summary
-    except Exception as exc:
-        logger.warning("INC→IP resolution failed: %s", exc)
-        return prompt, None
-
-
 # ---------------------------------------------------------------------------
 # Node 2: call_troubleshoot_agent
 # ---------------------------------------------------------------------------
@@ -487,12 +238,12 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     clear_session_cache(session_id)
     pop_session_data(session_id)
 
-    await _push_status(session_id, "Investigating...")
+    await push_status(session_id, "Investigating...")
 
     # Recover clarification context if pending
-    pending, pending_issue_type = _pending_ts_get(session_id)
+    pending, pending_issue_type = get_pending_context(session_id)
     if pending:
-        _pending_ts_delete(session_id)
+        clear_pending_context(session_id)
 
     # Fallback: detect clarification reply from conversation history
     if not pending:
@@ -527,9 +278,9 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
             )}}
 
     # INC→IP expansion
-    full_prompt, inc_summary = await _resolve_inc(full_prompt)
+    full_prompt, inc_summary = await resolve_incident_prompt(full_prompt)
     if inc_summary:
-        src_ip_hint, dst_ip_hint = _extract_ips(full_prompt)
+        src_ip_hint, dst_ip_hint = extract_ips(full_prompt)
         if src_ip_hint and dst_ip_hint:
             issue_type = "connectivity"
 
@@ -545,13 +296,13 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
         clear_session_cache(session_id)
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Troubleshooting failed: {exc}"}}}
 
-    final_text    = _extract_final_text(result.get("messages", []))
+    final_text    = extract_final_text(result.get("messages", []))
     session_data  = pop_session_data(session_id)
 
-    src_ip, dst_ip = _extract_ips(full_prompt)
-    port = _extract_port(full_prompt)
-    if _needs_connectivity_snapshot(session_data, src_ip, dst_ip):
-        await _push_status(session_id, "Gathering holistic connectivity evidence...")
+    src_ip, dst_ip = extract_ips(full_prompt)
+    port = extract_port(full_prompt)
+    if needs_connectivity_snapshot(session_data, src_ip, dst_ip):
+        await push_status(session_id, "Gathering holistic connectivity evidence...")
         follow_up = (
             f"{full_prompt}\n\n"
             "Required follow-up before answering:\n"
@@ -562,11 +313,11 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
         )
         agent = build_agent(full_prompt, issue_type)
         result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
-        final_text = _extract_final_text(result.get("messages", []))
-        session_data = _merge_session_data(session_data, pop_session_data(session_id))
+        final_text = extract_final_text(result.get("messages", []))
+        session_data = merge_session_data(session_data, pop_session_data(session_id))
 
-    if _missing_path_visuals(session_data, src_ip, dst_ip):
-        await _push_status(session_id, "Gathering required path visualizations...")
+    if missing_path_visuals(session_data, src_ip, dst_ip):
+        await push_status(session_id, "Gathering required path visualizations...")
         try:
             try:
                 from atlas.tools.all_tools import trace_path, trace_reverse_path
@@ -574,43 +325,22 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
                 from tools.all_tools import trace_path, trace_reverse_path  # type: ignore
             await trace_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
             await trace_reverse_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
-            session_data = _merge_session_data(session_data, pop_session_data(session_id))
+            session_data = merge_session_data(session_data, pop_session_data(session_id))
         except Exception as exc:
             logger.warning("mandatory path visualization collection failed: %s", exc)
 
-    path_hops     = session_data.get("path_hops", [])
-    rev_hops      = session_data.get("reverse_path_hops", [])
-    counters      = _group_interface_counters(session_data.get("interface_counters", []))
-    servicenow_summary = session_data.get("servicenow_summary") or ""
-
-    if final_text and servicenow_summary:
-        final_text = _replace_markdown_section(final_text, "ServiceNow", servicenow_summary)
-
-    content: dict = {}
-    if final_text:    content["direct_answer"]      = final_text
-    if path_hops:
-        content["path_hops"]   = path_hops
-        content["source"]      = src_ip
-        content["destination"] = dst_ip
-    if rev_hops:      content["reverse_path_hops"]  = rev_hops
-    if counters:      content["interface_counters"]  = counters
-    if inc_summary:   content["incident_summary"]    = inc_summary
-    if session_data.get("connectivity_snapshot"):
-        content["connectivity_snapshot"] = session_data["connectivity_snapshot"]
+    content = build_troubleshoot_content(final_text, session_data, full_prompt, inc_summary)
 
     # Store findings in long-term memory for future recall
     if final_text:
-        try:
-            try:
-                from atlas.agent_memory import store_memory
-            except ImportError:
-                from agent_memory import store_memory  # type: ignore
-            import asyncio
-            asyncio.create_task(store_memory(full_prompt, final_text, agent_type="troubleshoot"))
-        except Exception:
-            pass
+        await store_agent_memory_entry(full_prompt, final_text, agent_type="troubleshoot")
 
-    logger.info("troubleshoot done: keys=%s hops=%d counters=%d", list(content.keys()), len(path_hops), len(counters))
+    logger.info(
+        "troubleshoot done: keys=%s hops=%d counters=%d",
+        list(content.keys()),
+        len(content.get("path_hops", []) or []),
+        len(content.get("interface_counters", []) or []),
+    )
     clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
 
@@ -631,11 +361,11 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
     session_id = state.get("session_id") or "default"
     prompt     = state["prompt"]
 
-    await _push_status(session_id, "Processing network ops request...")
+    await push_status(session_id, "Processing network ops request...")
 
-    pending, pending_issue_type = _pending_ts_get(session_id)
+    pending, pending_issue_type = get_pending_context(session_id)
     if pending_issue_type == "network_ops" and pending:
-        _pending_ts_delete(session_id)
+        clear_pending_context(session_id)
         prompt = f"{pending}\n\nUser clarification: {prompt}"
 
     clear_session_cache(session_id)
@@ -651,23 +381,11 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
         clear_session_cache(session_id)
         return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Network ops agent failed: {exc}"}}}
 
-    final_text = _extract_final_text(result.get("messages", []))
-    if _looks_like_clarification_request(final_text):
-        _pending_ts_set(session_id, prompt, "network_ops")
+    final_text = extract_final_text(result.get("messages", []))
+    if looks_like_clarification_request(final_text):
+        set_pending_context(session_id, prompt, "network_ops")
     session_data = pop_session_data(session_id)
-    path_hops    = session_data.get("path_hops", [])
-    rev_hops     = session_data.get("reverse_path_hops", [])
-    src_ip, dst_ip = _extract_ips(prompt)
-    include_path = _should_include_network_ops_path(prompt)
-
-    content: dict = {}
-    if final_text: content["direct_answer"] = final_text
-    if include_path and path_hops:
-        content["path_hops"]   = path_hops
-        content["source"]      = src_ip
-        content["destination"] = dst_ip
-    if include_path and rev_hops:
-        content["reverse_path_hops"] = rev_hops
+    content = build_network_ops_content(final_text, session_data, prompt)
 
     clear_session_cache(session_id)
     return {"final_response": {"role": "assistant", "content": content}}
