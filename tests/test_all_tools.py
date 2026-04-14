@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from tools.all_tools import pop_session_data, search_servicenow
+from tools.all_tools import check_routing, get_all_interfaces, pop_session_data, search_servicenow
 
 
 class ServiceNowToolTests(unittest.IsolatedAsyncioTestCase):
@@ -59,6 +59,37 @@ class ServiceNowToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             session["servicenow_summary"],
             "ServiceNow unavailable: change search failed: User is not authenticated",
+        )
+
+    @patch("tools.all_tools._push_status", new_callable=AsyncMock)
+    @patch("tools.all_tools.retry_async", new_callable=AsyncMock)
+    async def test_check_routing_uses_standardized_nornir_failure_contract(self, mock_retry_async, _mock_push_status):
+        mock_retry_async.side_effect = RuntimeError("route lookup timed out")
+
+        result = await check_routing.coroutine(
+            devices=["arista-ai1"],
+            destination="10.0.200.200",
+            config={"configurable": {"session_id": "tool-test"}},
+        )
+
+        self.assertEqual(
+            result,
+            "Nornir unavailable during routing check: route lookup timed out",
+        )
+
+    @patch("tools.all_tools._push_status", new_callable=AsyncMock)
+    @patch("tools.all_tools._nornir_post", new_callable=AsyncMock)
+    async def test_get_all_interfaces_uses_standardized_nornir_failure_contract(self, mock_nornir_post, _mock_push_status):
+        mock_nornir_post.side_effect = RuntimeError("device access failed")
+
+        result = await get_all_interfaces.coroutine(
+            device="arista-ai1",
+            config={"configurable": {"session_id": "tool-test"}},
+        )
+
+        self.assertEqual(
+            result,
+            "Nornir unavailable during interface inventory lookup for arista-ai1: device access failed",
         )
 
 

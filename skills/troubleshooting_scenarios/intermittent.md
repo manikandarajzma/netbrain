@@ -13,7 +13,6 @@ Intermittent issues are almost never routing misconfigurations — they are stab
 - `get_interface_counters(devices_and_interfaces=[...path_hops...])` — look for CRC/input errors actively incrementing
 - `lookup_routing_history(destination_ip=dest_ip)`
 - `get_device_syslog(devices=[...path_hops...])` — timestamps of link-down/up and OSPF events are the primary signal
-- `recall_similar_cases(query="...", devices=[...path_hops...])` — surface past cases; treat as context only, not conclusions
 
 **Step 3** — OSPF stability checks in parallel:
 - `check_ospf_neighbors(devices=[...])`
@@ -22,6 +21,9 @@ Intermittent issues are almost never routing misconfigurations — they are stab
 
 **Step 4** — Interface detail on suspected devices:
 - `get_interface_detail(device=..., interface=...)` — check carrier-transitions counter
+
+**Step 5** — Memory only if live evidence suggests a recurring or still-unresolved pattern:
+- `recall_similar_cases(query="...", devices=[...path_hops...])` — use as historical context only, never as current-state proof
 
 ---
 

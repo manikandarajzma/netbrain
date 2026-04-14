@@ -26,29 +26,18 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
 
     @patch("agents.troubleshoot_agent.create_specialized_agent")
     @patch("agents.troubleshoot_agent.build_default_llm")
-    def test_general_troubleshoot_prompt_does_not_auto_enable_memory(self, mock_build_default_llm, mock_create_specialized_agent):
+    def test_general_troubleshoot_prompt_keeps_full_toolset_available(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
 
         troubleshoot_agent.build_agent("help me troubleshoot bgp on core-rtr-01", "general")
 
         args, _kwargs = mock_create_specialized_agent.call_args
-        self.assertIs(args[1], troubleshoot_agent.TROUBLESHOOT_BASE_TOOLS)
+        self.assertIs(args[1], troubleshoot_agent.ALL_TOOLS)
 
     @patch("agents.troubleshoot_agent.create_specialized_agent")
     @patch("agents.troubleshoot_agent.build_default_llm")
-    def test_history_hint_enables_memory_augmented_tools(self, mock_build_default_llm, mock_create_specialized_agent):
-        mock_build_default_llm.return_value = "llm"
-        mock_create_specialized_agent.return_value = "agent"
-
-        troubleshoot_agent.build_agent("same issue again on arista-ai1 after last time", "general")
-
-        args, _kwargs = mock_create_specialized_agent.call_args
-        self.assertIs(args[1], troubleshoot_agent.MEMORY_AUGMENTED_TOOLS)
-
-    @patch("agents.troubleshoot_agent.create_specialized_agent")
-    @patch("agents.troubleshoot_agent.build_default_llm")
-    def test_performance_scenario_keeps_memory_available(self, mock_build_default_llm, mock_create_specialized_agent):
+    def test_performance_scenario_uses_full_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
 
@@ -58,7 +47,21 @@ class TroubleshootAgentBuilderTests(unittest.TestCase):
         )
 
         args, _kwargs = mock_create_specialized_agent.call_args
-        self.assertIs(args[1], troubleshoot_agent.MEMORY_AUGMENTED_TOOLS)
+        self.assertIs(args[1], troubleshoot_agent.ALL_TOOLS)
+
+    @patch("agents.troubleshoot_agent.create_specialized_agent")
+    @patch("agents.troubleshoot_agent.build_default_llm")
+    def test_intermittent_scenario_uses_full_toolset(self, mock_build_default_llm, mock_create_specialized_agent):
+        mock_build_default_llm.return_value = "llm"
+        mock_create_specialized_agent.return_value = "agent"
+
+        troubleshoot_agent.build_agent(
+            "the link keeps flapping between arista-ai3 and arista-ai4",
+            "intermittent",
+        )
+
+        args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIs(args[1], troubleshoot_agent.ALL_TOOLS)
 
 
 class NetworkOpsAgentBuilderTests(unittest.TestCase):

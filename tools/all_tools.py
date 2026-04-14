@@ -74,6 +74,12 @@ def _set_servicenow_summary(session_id: str, summary: str) -> str:
     return summary
 
 
+def _backend_unavailable(backend: str, action: str, detail: Any, *, subject: str = "") -> str:
+    reason = str(detail or "unknown error").strip() or "unknown error"
+    context = f" for {subject}" if subject else ""
+    return f"{backend} unavailable during {action}{context}: {reason}"
+
+
 def pop_session_data(session_id: str) -> dict[str, Any]:
     """Read and remove all side-effect data after the agent completes."""
     return _session_store.pop(session_id, {})
@@ -769,7 +775,7 @@ async def check_routing(
         result = await retry_async(cb, _do,
             retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError))
     except Exception as exc:
-        return f"Routing check error: {exc}"
+        return _backend_unavailable("Nornir", "routing check", exc)
 
     lines = [f"Routing check for {destination}:"]
     for device, info in (result.get("hops") or {}).items():
@@ -890,7 +896,7 @@ async def get_interface_detail(
         _store(session_id)["interface_details"][f"{device}:{interface}"] = data
         return json.dumps(data, indent=2)
     except Exception as exc:
-        return f"Interface detail error: {exc}"
+        return _backend_unavailable("Nornir", "interface detail lookup", exc, subject=f"{device}/{interface}")
 
 
 @tool
@@ -908,7 +914,7 @@ async def get_all_interfaces(device: str, config: RunnableConfig) -> str:
     try:
         data = await _nornir_post("/all-interfaces-status", {"device": device}, timeout=15.0)
     except Exception as exc:
-        return f"All-interfaces error: {exc}"
+        return _backend_unavailable("Nornir", "interface inventory lookup", exc, subject=device)
 
     _store(session_id)["all_interfaces"][device] = data
     interfaces = data.get("interfaces", [])
@@ -946,7 +952,7 @@ async def get_device_syslog(device: str, config: RunnableConfig, interface: str 
     try:
         data = await _nornir_post("/show-logging", {"device": device, "lines": 100}, timeout=15.0)
     except Exception as exc:
-        return f"Syslog error on {device}: {exc}"
+        return _backend_unavailable("Nornir", "syslog lookup", exc, subject=device)
 
     logs = data.get("logs", [])
     kw = ["link", "down", "flap", "err-disable", "lineproto", "ospf", "adjacency"]
@@ -1304,7 +1310,7 @@ async def check_ospf_neighbors(devices: list[str], config: RunnableConfig) -> st
     try:
         data = await _nornir_post("/ospf-neighbors", {"devices": devices}, timeout=30.0)
     except Exception as exc:
-        return f"OSPF neighbors error: {exc}"
+        return _backend_unavailable("Nornir", "OSPF neighbor lookup", exc)
 
     _store(session_id)["ospf_neighbors"] = data
 
@@ -1341,7 +1347,7 @@ async def check_ospf_interfaces(devices: list[str], config: RunnableConfig) -> s
     try:
         data = await _nornir_post("/ospf-interfaces", {"devices": devices}, timeout=30.0)
     except Exception as exc:
-        return f"OSPF interfaces error: {exc}"
+        return _backend_unavailable("Nornir", "OSPF interface lookup", exc)
 
     _store(session_id)["ospf_interfaces"] = data
 

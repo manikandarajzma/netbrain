@@ -13,7 +13,6 @@ Ping works but traffic is slow or degraded. Focus on interface errors and OSPF i
 - `get_interface_counters(devices_and_interfaces=[...path_hops...])` — actively incrementing errors are the primary signal
 - `lookup_routing_history(destination_ip=dest_ip)`
 - `get_device_syslog(devices=[...path_hops...])` — look for recurring error events
-- `recall_similar_cases(query="...", devices=[...path_hops...])` — surface past cases; treat as context only, not conclusions
 
 **Step 3** — OSPF checks in parallel on path devices + historically known devices:
 - `check_ospf_neighbors(devices=[...])`
@@ -23,6 +22,9 @@ Ping works but traffic is slow or degraded. Focus on interface errors and OSPF i
 **Step 4** — Ping to measure RTT:
 - `ping_device(device=first_hop_device, destination=dest_ip, source_interface=first_hop_lan_interface, vrf=src_vrf)`
 - `trace_reverse_path(source_ip=source_ip, dest_ip=dest_ip)` — asymmetric path causes TCP issues
+
+**Step 5** — Memory only if live evidence suggests a recurring or still-unresolved pattern:
+- `recall_similar_cases(query="...", devices=[...path_hops...])` — use as historical context only, never as current-state proof
 
 ---
 
