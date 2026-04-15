@@ -26,9 +26,11 @@ from langchain_core.tools import tool
 try:
     from atlas.tools.resilience import retry_async, CircuitBreaker, CircuitOpenError
     from atlas.mcp_client import call_mcp_tool
+    from atlas.services.memory_manager import memory_manager
 except ImportError:
     from tools.resilience import retry_async, CircuitBreaker, CircuitOpenError
     from mcp_client import call_mcp_tool
+    from services.memory_manager import memory_manager  # type: ignore
 
 logger = logging.getLogger("atlas.tools")
 
@@ -78,108 +80,6 @@ def _backend_unavailable(backend: str, action: str, detail: Any, *, subject: str
     reason = str(detail or "unknown error").strip() or "unknown error"
     context = f" for {subject}" if subject else ""
     return f"{backend} unavailable during {action}{context}: {reason}"
-
-
-def _memory_recall_signals(store: dict[str, Any]) -> list[str]:
-    signals: list[str] = []
-
-    path_flags = store.get("path_flags") or {}
-    if any(
-        path_flags.get(key)
-        for key in (
-            "no_route_device",
-            "next_hop_resolution_failed",
-            "mgmt_routing_detected",
-            "missing_next_hop_device",
-        )
-    ):
-        signals.append("path anomaly")
-
-    for counter in store.get("interface_counters") or []:
-        if isinstance(counter, dict):
-            if counter.get("ssh_error"):
-                signals.append("interface counter collection failure")
-                break
-            if counter.get("active"):
-                signals.append("active interface errors")
-                break
-
-    interface_details = store.get("interface_details") or {}
-    if isinstance(interface_details, dict):
-        for detail in interface_details.values():
-            if not isinstance(detail, dict):
-                continue
-            if detail.get("error"):
-                signals.append("interface detail lookup failure")
-                break
-            if str(detail.get("oper_status") or "").lower() not in {"", "up"}:
-                signals.append("interface state anomaly")
-                break
-            if str(detail.get("line_protocol") or "").lower() not in {"", "up"}:
-                signals.append("line protocol anomaly")
-                break
-            if any((detail.get(k) or 0) > 0 for k in ("input_errors", "output_errors", "input_discards", "output_discards")):
-                signals.append("interface error counters")
-                break
-
-    syslog = store.get("syslog") or {}
-    if isinstance(syslog, dict):
-        for payload in syslog.values():
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("error"):
-                signals.append("syslog collection failure")
-                break
-            if payload.get("relevant"):
-                signals.append("recent device events")
-                break
-
-    ospf_history = store.get("ospf_history") or {}
-    if isinstance(ospf_history, dict):
-        for info in ospf_history.values():
-            if not isinstance(info, dict):
-                continue
-            if info.get("error"):
-                signals.append("OSPF history lookup failure")
-                break
-            counts = [snap.get("neighbor_count") for snap in info.get("history", []) if isinstance(snap, dict)]
-            if counts and len(set(counts)) > 1:
-                signals.append("OSPF instability")
-                break
-
-    for inspection in store.get("peering_inspections") or []:
-        if not isinstance(inspection, dict):
-            continue
-        diagnosis = str(inspection.get("diagnosis_class") or "").strip().lower()
-        if diagnosis and diagnosis not in {"healthy", "clean"}:
-            signals.append("peer diagnosis anomaly")
-            break
-        if inspection.get("ping_a_success") is False or inspection.get("ping_b_success") is False:
-            signals.append("peer reachability failure")
-            break
-
-    for ping in store.get("ping_results") or []:
-        if isinstance(ping, dict) and ping.get("success") is False:
-            signals.append("failed reachability test")
-            break
-
-    connectivity_snapshot = store.get("connectivity_snapshot") or {}
-    if isinstance(connectivity_snapshot, dict):
-        findings = connectivity_snapshot.get("findings") or []
-        if findings:
-            signals.append("unresolved connectivity findings")
-        errors = connectivity_snapshot.get("errors") or {}
-        if errors:
-            signals.append("partial evidence gaps")
-        service = connectivity_snapshot.get("service") or {}
-        if isinstance(service, dict) and service and service.get("reachable") is False:
-            signals.append("service reachability failure")
-
-    deduped: list[str] = []
-    for signal in signals:
-        if signal not in deduped:
-            deduped.append(signal)
-    return deduped
 
 
 def pop_session_data(session_id: str) -> dict[str, Any]:
@@ -1915,8 +1815,15 @@ async def collect_connectivity_snapshot(
     ospf_interfaces: dict[str, Any] = {}
     details: dict[tuple[str, str], dict[str, Any]] = {}
     counter_results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    snapshot_errors: dict[str, str] = {}
+    live_snapshot_devices: list[str] = []
 
     for device, snap in device_snapshots.items():
+        if snap.get("error"):
+            snapshot_errors[device] = str(snap.get("error") or "unknown snapshot error")
+        else:
+            live_snapshot_devices.append(device)
+
         proto = snap.get("protocol_discovery") or {
             "device": device,
             "routing_protocols": [],
@@ -2034,7 +1941,9 @@ async def collect_connectivity_snapshot(
 
     for device in devices:
         route_info = (route_to_dest.get("hops") or {}).get(device, {})
-        if route_info.get("found") is False:
+        if route_info.get("error") and route_info.get("found") is not True:
+            findings.append(f"[evidence] Live routing data for {device} was unavailable: {route_info.get('error')}.")
+        elif route_info.get("found") is False:
             findings.append(f"[routing] {device} currently has no route to {dest_ip}.")
         for line in syslog_results.get(device, {}).get("relevant", []):
             low = line.lower()
@@ -2060,6 +1969,8 @@ async def collect_connectivity_snapshot(
         "routing_history": routing_history,
         "destination_side_device": destination_side_device,
         "findings": findings,
+        "errors": snapshot_errors,
+        "live_evidence_available": bool(path_hops or reverse_hops or live_snapshot_devices),
         "service": service_snapshot,
     }
     store["connectivity_snapshot"] = _json_safe(snapshot)
@@ -2091,12 +2002,20 @@ async def collect_connectivity_snapshot(
         route_dest_summary = (
             f"{route_dest.get('protocol')} via {route_dest.get('interface')} next-hop {route_dest.get('next_hop')}"
             if route_dest.get("found") else
-            f"no route ({route_dest.get('error', 'unknown')})"
+            (
+                f"unavailable ({route_dest.get('error', 'unknown')})"
+                if route_dest.get("error")
+                else f"no route ({route_dest.get('error', 'unknown')})"
+            )
         )
         route_src_summary = (
             f"{route_src.get('protocol')} via {route_src.get('interface')} next-hop {route_src.get('next_hop')}"
             if route_src.get("found") else
-            f"no route ({route_src.get('error', 'unknown')})"
+            (
+                f"unavailable ({route_src.get('error', 'unknown')})"
+                if route_src.get("error")
+                else f"no route ({route_src.get('error', 'unknown')})"
+            )
         )
         lines.append(
             f"- {device}: protocols={', '.join(proto.get('routing_protocols') or []) or 'none'}; "
@@ -2679,7 +2598,7 @@ async def recall_similar_cases(
     """
     session_id = _sid(config)
     store = _store(session_id)
-    signals = _memory_recall_signals(store)
+    signals = memory_manager.get_recall_signals(store)
     if not signals:
         return (
             "Memory recall deferred: gather live evidence first. "

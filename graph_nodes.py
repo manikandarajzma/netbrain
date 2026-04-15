@@ -17,12 +17,7 @@ from langchain_core.messages import HumanMessage
 try:
     from atlas.graph_state import AtlasState
     from atlas.chat_service import _IP_OR_CIDR_RE
-    from atlas.services.pending_context import (
-        clear_pending_context,
-        get_pending_context,
-        has_pending_context,
-        set_pending_context,
-    )
+    from atlas.services.memory_manager import memory_manager
     from atlas.services.request_preprocessor import (
         extract_final_text,
         extract_ips,
@@ -38,17 +33,11 @@ try:
         missing_path_visuals,
         needs_connectivity_snapshot,
         push_status,
-        store_agent_memory_entry,
     )
 except ImportError:
     from graph_state import AtlasState        # type: ignore[assignment]
     from chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
-    from services.pending_context import (  # type: ignore
-        clear_pending_context,
-        get_pending_context,
-        has_pending_context,
-        set_pending_context,
-    )
+    from services.memory_manager import memory_manager  # type: ignore
     from services.request_preprocessor import (  # type: ignore
         extract_final_text,
         extract_ips,
@@ -64,7 +53,6 @@ except ImportError:
         missing_path_visuals,
         needs_connectivity_snapshot,
         push_status,
-        store_agent_memory_entry,
     )
 
 logger = logging.getLogger("atlas.graph_nodes")
@@ -149,7 +137,7 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     # Plain acknowledgement / dismissal with nothing pending → dismiss
     if prompt_lower in (_ACKNOWLEDGEMENTS | _DISMISSALS):
-        if not has_pending_context(session_id):
+        if not memory_manager.has_pending_context(session_id):
             return {
                 "intent":         "dismiss",
                 "final_response": {"role": "assistant",
@@ -159,14 +147,14 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     # Reply to a pending clarification → continue whichever flow is pending.
     # Network-ops follow-ups are often long structured field lists, so do not
     # require them to be short.
-    if has_pending_context(session_id):
-        pending_prompt, pending_issue_type = get_pending_context(session_id)
+    if memory_manager.has_pending_context(session_id):
+        pending_prompt, pending_issue_type = memory_manager.get_pending_context(session_id)
         if pending_issue_type == "network_ops":
             return {"intent": "network_ops"}
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
             intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
             return {"intent": intent}
-        clear_pending_context(session_id)
+        memory_manager.clear_pending_context(session_id)
 
     # Ambiguity guard: diagnostic framing overrides ops keywords.
     #
@@ -239,9 +227,9 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
     await push_status(session_id, "Investigating...")
 
     # Recover clarification context if pending
-    pending, pending_issue_type = get_pending_context(session_id)
+    pending, pending_issue_type = memory_manager.get_pending_context(session_id)
     if pending:
-        clear_pending_context(session_id)
+        memory_manager.clear_pending_context(session_id)
 
     # Fallback: detect clarification reply from conversation history
     if not pending:
@@ -331,7 +319,7 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 
     # Store findings in long-term memory for future recall
     if final_text:
-        await store_agent_memory_entry(full_prompt, final_text, agent_type="troubleshoot")
+        await memory_manager.store_agent_memory_entry(full_prompt, final_text, agent_type="troubleshoot")
 
     logger.info(
         "troubleshoot done: keys=%s hops=%d counters=%d",
@@ -361,9 +349,9 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
 
     await push_status(session_id, "Processing network ops request...")
 
-    pending, pending_issue_type = get_pending_context(session_id)
+    pending, pending_issue_type = memory_manager.get_pending_context(session_id)
     if pending_issue_type == "network_ops" and pending:
-        clear_pending_context(session_id)
+        memory_manager.clear_pending_context(session_id)
         prompt = f"{pending}\n\nUser clarification: {prompt}"
 
     clear_session_cache(session_id)
@@ -381,7 +369,7 @@ async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
 
     final_text = extract_final_text(result.get("messages", []))
     if looks_like_clarification_request(final_text):
-        set_pending_context(session_id, prompt, "network_ops")
+        memory_manager.set_pending_context(session_id, prompt, "network_ops")
     session_data = pop_session_data(session_id)
     content = response_presenter.build_network_ops_content(final_text, session_data, prompt)
 

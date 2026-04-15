@@ -2,7 +2,7 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from services.graph_runtime import invoke_atlas_graph
+from services.graph_runtime import atlas_runtime
 
 
 class GraphInvokerTests(unittest.IsolatedAsyncioTestCase):
@@ -12,7 +12,7 @@ class GraphInvokerTests(unittest.IsolatedAsyncioTestCase):
         fake_module = types.SimpleNamespace(atlas_graph=fake_graph)
 
         with patch.dict("sys.modules", {"atlas.graph_builder": fake_module}):
-            result = await invoke_atlas_graph(
+            result = await atlas_runtime.invoke_atlas_graph(
                 "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200",
                 [{"role": "user", "content": "previous"}],
                 username="alice",

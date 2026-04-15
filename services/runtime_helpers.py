@@ -51,19 +51,3 @@ async def push_status(session_id: str, message: str) -> None:
         await status_bus.push(session_id, message)
     except Exception:
         pass
-
-
-async def store_agent_memory_entry(prompt: str, final_text: str, agent_type: str = "troubleshoot") -> None:
-    if not final_text:
-        return
-    try:
-        try:
-            from atlas.agent_memory import store_memory
-        except ImportError:
-            from agent_memory import store_memory  # type: ignore
-        import asyncio
-
-        asyncio.create_task(store_memory(prompt, final_text, agent_type=agent_type))
-    except Exception:
-        pass
-

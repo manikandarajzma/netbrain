@@ -58,35 +58,3 @@ class AtlasRuntime:
 
 
 atlas_runtime = AtlasRuntime()
-
-
-def build_initial_state(
-    prompt: str,
-    conversation_history: list[dict[str, str]],
-    username: str | None,
-    session_id: str | None,
-) -> dict[str, Any]:
-    return atlas_runtime.build_initial_state(prompt, conversation_history, username, session_id)
-
-
-def build_graph_config(session_id: str | None) -> dict[str, Any]:
-    return atlas_runtime.build_graph_config(session_id)
-
-
-async def invoke_atlas_graph(
-    prompt: str,
-    conversation_history: list[dict[str, str]],
-    *,
-    username: str | None = None,
-    session_id: str | None = None,
-) -> dict[str, Any]:
-    return await atlas_runtime.invoke_atlas_graph(
-        prompt,
-        conversation_history,
-        username=username,
-        session_id=session_id,
-    )
-
-
-def extract_final_response(result_state: dict[str, Any]) -> dict[str, Any]:
-    return atlas_runtime.extract_final_response(result_state)

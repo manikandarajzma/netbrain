@@ -15,12 +15,14 @@ import pathlib
 
 try:
     from atlas.agents.agent_factory import agent_factory
-    from atlas.tools.all_tools import NETWORK_OPS_TOOLS
+    from atlas.tools.tool_registry import tool_registry
 except ImportError:
     from agents.agent_factory import agent_factory  # type: ignore
-    from tools.all_tools import NETWORK_OPS_TOOLS          # type: ignore
+    from tools.tool_registry import tool_registry          # type: ignore
 
 logger = logging.getLogger("atlas.network_ops_agent")
+
+NETWORK_OPS_TOOLS = tool_registry.get_network_ops_tools()
 
 _SKILL_PATH = pathlib.Path(__file__).parent.parent / "skills" / "network_ops.md"
 

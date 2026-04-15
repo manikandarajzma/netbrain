@@ -13,14 +13,15 @@ import re
 
 try:
     from atlas.agents.agent_factory import agent_factory
-    from atlas.tools.all_tools import ALL_TOOLS
-    from atlas.tools.all_tools import CONNECTIVITY_TOOLS
+    from atlas.tools.tool_registry import tool_registry
 except ImportError:
     from agents.agent_factory import agent_factory  # type: ignore
-    from tools.all_tools import ALL_TOOLS          # type: ignore
-    from tools.all_tools import CONNECTIVITY_TOOLS  # type: ignore
+    from tools.tool_registry import tool_registry  # type: ignore
 
 logger = logging.getLogger("atlas.troubleshoot_agent")
+
+ALL_TOOLS = tool_registry.get_all_tools()
+CONNECTIVITY_TOOLS = tool_registry.get_connectivity_tools()
 
 _SKILLS_DIR    = pathlib.Path(__file__).parent.parent / "skills"
 _CORE_PROMPT   = _SKILLS_DIR / "troubleshooter.md"

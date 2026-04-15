@@ -23,6 +23,31 @@ _NETWORK_OPS_PATH_KEYWORDS = (
 class ResponsePresenter:
     """Owns UI-facing response shaping for troubleshoot and network-ops flows."""
 
+    def _build_live_evidence_unavailable_answer(
+        self,
+        full_prompt: str,
+        session_data: dict[str, Any],
+        connectivity_snapshot: dict[str, Any],
+    ) -> str:
+        src_ip, dst_ip = extract_ips(full_prompt)
+        errors = connectivity_snapshot.get("errors") or {}
+        error_lines = []
+        for device, detail in sorted(errors.items()):
+            error_lines.append(f"- {device}: {detail}")
+        servicenow_summary = session_data.get("servicenow_summary") or "No ServiceNow context available."
+        return (
+            "## Path Summary\n"
+            f"Live path evidence is unavailable for {src_ip or 'the source'} to {dst_ip or 'the destination'} because Atlas could not collect current device data over SSH.\n\n"
+            "## ServiceNow\n"
+            f"{servicenow_summary}\n\n"
+            "## Root Cause\n"
+            "Unable to determine the current root cause from live evidence. The current run did not have enough SSH access to the path devices to validate routing, protocol, or interface state.\n\n"
+            "## Recommendation\n"
+            "Restore live SSH access to the relevant devices and rerun troubleshooting. Do not treat historical routing clues or recent changes as proof of the current fault until live collection succeeds.\n\n"
+            "## Additional Findings\n"
+            + ("\n".join(error_lines) if error_lines else "- Live SSH data collection failed, but the device-specific errors were not available.")
+        )
+
     def replace_markdown_section(self, text: str, header: str, body: str) -> str:
         if not text:
             return f"## {header}\n{body}"
@@ -116,6 +141,19 @@ class ResponsePresenter:
         connectivity_snapshot = session_data.get("connectivity_snapshot")
         servicenow_summary = session_data.get("servicenow_summary") or ""
 
+        if (
+            connectivity_snapshot
+            and connectivity_snapshot.get("live_evidence_available") is False
+            and not path_hops
+            and not reverse_path_hops
+            and not interface_counters
+        ):
+            final_text = self._build_live_evidence_unavailable_answer(
+                full_prompt,
+                session_data,
+                connectivity_snapshot,
+            )
+
         if final_text and servicenow_summary:
             final_text = self.replace_markdown_section(final_text, "ServiceNow", servicenow_summary)
 
@@ -160,37 +198,3 @@ class ResponsePresenter:
 
 
 response_presenter = ResponsePresenter()
-
-
-def replace_markdown_section(text: str, header: str, body: str) -> str:
-    return response_presenter.replace_markdown_section(text, header, body)
-
-
-def group_interface_counters(entries: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    return response_presenter.group_interface_counters(entries)
-
-
-def should_include_network_ops_path(prompt: str) -> bool:
-    return response_presenter.should_include_network_ops_path(prompt)
-
-
-def build_troubleshoot_content(
-    final_text: str,
-    session_data: dict[str, Any],
-    full_prompt: str,
-    incident_summary: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return response_presenter.build_troubleshoot_content(
-        final_text,
-        session_data,
-        full_prompt,
-        incident_summary,
-    )
-
-
-def build_network_ops_content(
-    final_text: str,
-    session_data: dict[str, Any],
-    prompt: str,
-) -> dict[str, Any]:
-    return response_presenter.build_network_ops_content(final_text, session_data, prompt)

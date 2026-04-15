@@ -4,8 +4,7 @@ Atlas chat service.
 Thin entry point that wires a user HTTP request into the LangGraph pipeline:
 
     process_message()
-        └─► services.graph_runtime.invoke_atlas_graph()
-        └─► services.graph_runtime.extract_final_response()
+        └─► atlas_application.process_query()
 
 The graph itself lives in ``graph_builder.py``.  All reasoning happens inside
 ``agents/orchestrator.py`` via LangGraph's ``create_react_agent``.
@@ -22,9 +21,9 @@ from typing import Any
 _IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 try:
-    from atlas.services.graph_runtime import atlas_runtime
+    from atlas.atlas_application import atlas_application
 except ImportError:
-    from services.graph_runtime import atlas_runtime  # type: ignore
+    from atlas_application import atlas_application  # type: ignore
 
 async def process_message(
     prompt: str,
@@ -58,10 +57,9 @@ async def process_message(
         Always a ``{"role": "assistant", "content": ...}`` dict, optionally
         with a ``path_hops`` key for the PathVisualization frontend component.
     """
-    result_state = await atlas_runtime.invoke_atlas_graph(
+    return await atlas_application.process_query(
         prompt,
         conversation_history,
         username=username,
         session_id=session_id,
     )
-    return atlas_runtime.extract_final_response(result_state)

@@ -1,222 +1,359 @@
-# Atlas — AI-Powered Network Infrastructure Assistant
+# Atlas
 
-Atlas is a natural language interface for querying network infrastructure. Ask questions in plain English — Atlas routes the query to the right system, runs the right tools, and returns a structured answer.
+Atlas is an AI-assisted network operations application with two primary workflows:
 
----
+- **Troubleshooting** for live investigations such as connectivity, performance, and intermittent issues
+- **Network operations** for operational actions such as ServiceNow incident/change work and firewall or policy review
 
-## What Atlas can answer
+The current architecture is built around a small LangGraph router, two specialized ReAct agents, a centralized tool layer, and a separate Nornir HTTP service for live network collection.
 
-- **Panorama** — "What address group is 11.0.0.1 in?", "Show members of leander_web", "Find unused address objects"
-- **NetBrain** — "Find path from 10.0.0.1 to 10.0.1.1", "Is traffic from X to Y on TCP 443 allowed?"
----
+## What Atlas Does
 
-## Architecture
+Atlas currently supports work in these broad categories:
 
-Atlas uses **LangGraph** to route queries through one of two paths:
+- **Connectivity troubleshooting**
+  - live forward and reverse path tracing
+  - route and interface inspection
+  - interface counter collection
+  - routing-history correlation
+  - ServiceNow correlation
+  - deterministic structured response payloads for path visuals and counters
+- **Performance and intermittent troubleshooting**
+  - live diagnostics plus selective long-term memory recall when live evidence suggests history is relevant
+- **Network operations**
+  - create and retrieve ServiceNow incidents
+  - create, update, close, and retrieve ServiceNow change requests
+  - policy checks
+  - controlled path lookups for operational context
 
-- **Direct MCP path (`network` intent)** — the LLM picks a tool, the MCP server executes it against the target API, and the result is returned directly.
-- **A2A path (`netbrain` intent)** — the NetBrain agent traces the network path and calls the Panorama agent mid-reasoning to enrich firewall hops with zones and device group.
+## Architecture Overview
 
-```
-Browser
-  │  POST /api/discover   (tool pre-selection — loading indicator only)
-  │  POST /api/chat       (full query)
-  ▼
-FastAPI (app.py)
-  │  Session cookie validation + RBAC (auth.py)
-  ▼
-LangGraph (graph_builder.py, graph_nodes.py)
-  │
-  ├── network intent ──► MCP Server (port 8765) ──► Panorama API
-  │
-  └── netbrain intent ──► NetBrain agent (port 8004)
-                              └── ask_panorama_agent ──► Panorama agent (port 8003)
-                                                             └── MCP Server ──► Panorama API
-```
+Atlas now has clear owners for the main application responsibilities:
 
-**LLM:** Ollama (llama3.1:8b by default) — runs locally, no external AI API calls.
+- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
+  - top-level application owner
+- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
+  - graph execution owner
+- [`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>)
+  - agent construction owner
+- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
+  - final response payload owner
+- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
+  - pending-context and recall-policy owner
+- [`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>)
+  - tool-set owner
 
----
+### Request Flow
 
-## Project Structure
+```mermaid
+flowchart TD
+    UI["React UI"] --> DISC["POST /api/discover"]
+    UI --> CHAT["POST /api/chat (SSE)"]
+    CHAT --> APP["FastAPI app.py"]
+    APP --> CS["chat_service.process_message()"]
+    CS --> AA["AtlasApplication"]
+    AA --> RT["AtlasRuntime"]
+    RT --> CP["Redis checkpointer (optional)"]
+    RT --> GRAPH["LangGraph atlas_graph"]
 
-```
-atlas/
-├── app.py                     # FastAPI web server (port 8000)
-├── run_web.py                 # Dev launcher
-├── auth.py                    # OIDC authentication + session management
-├── chat_service.py            # LLM tool selection, MCP execution, normalization
-├── chat_history.py            # Conversation persistence (disk-based, per user)
-├── graph_builder.py           # LangGraph graph definition
-├── graph_nodes.py             # LangGraph node functions (intent classifier, tool executor, etc.)
-├── graph_state.py             # LangGraph state schema
-├── mcp_client.py              # MCP client (connects to MCP server)
-├── mcp_server.py              # MCP server (port 8765) — exposes tools
-├── panoramaauth.py            # Panorama API key retrieval (Azure Key Vault)
-├── netbrainauth.py            # NetBrain authentication
-├── kv_helper.py               # Azure Key Vault helper
-├── status_bus.py              # SSE status updates
-│
-├── agents/                    # A2A agents (each is a standalone FastAPI service)
-│   ├── agent_loop.py          # Shared tool-calling loop used by all agents
-│   ├── panorama_agent.py      # Panorama agent (port 8003)
-│   ├── netbrain_agent.py      # NetBrain agent (port 8004)
-│   └── netbrain_agent.py      # NetBrain agent (port 8004)
-│
-├── tools/                     # MCP tool implementations
-│   ├── panorama_tools.py      # Panorama XML API tools
-│   ├── netbrain_tools.py      # NetBrain API tools
-│   ├── docs_tool.py           # Documentation search tool
-│   └── shared.py              # Shared config (Ollama URL, model, etc.)
-│
-├── skills/                    # LLM system prompts (domain knowledge per agent)
-│   ├── base.md                # Loaded for all queries
-│   ├── panorama_agent.md      # Panorama domain knowledge
-│   ├── netbrain_agent.md      # NetBrain path query knowledge
-│   └── netbrain_agent.md      # NetBrain path query knowledge
-│
-└── frontend/                  # React 18 SPA (Vite)
-    ├── src/
-    │   ├── stores/            # State management (user, chat)
-    │   ├── components/        # UI components (layout, chat, messages, tables)
-    │   └── utils/             # API client, formatters, response classifier
-    └── dist/                  # Production build (served by FastAPI)
+    GRAPH --> CI["classify_intent"]
+    CI -->|troubleshoot| TA["call_troubleshoot_agent"]
+    CI -->|network_ops| NA["call_network_ops_agent"]
+    CI -->|dismiss| BF["build_final_response"]
+
+    TA --> TRAG["Troubleshoot ReAct agent"]
+    NA --> NOAG["Network Ops ReAct agent"]
+
+    TRAG --> TOOLS["tools/all_tools.py"]
+    NOAG --> TOOLS
+
+    TOOLS --> NORNIR["Nornir HTTP service :8006"]
+    TOOLS --> MCP["MCP-backed systems"]
+    TOOLS --> STORE["Per-session side-effect store + Redis run cache"]
+
+    TA --> PRES["ResponsePresenter"]
+    NA --> PRES
+    PRES --> BF
+    BF --> APP
+    APP --> UI
 ```
 
----
+### Layer Boundaries
 
-## Key Components
+- **Frontend**
+  - sends the query
+  - renders the SSE status timeline
+  - renders structured payloads such as path visuals and interface counters
+- **FastAPI**
+  - authentication
+  - SSE lifecycle
+  - chat-history persistence
+  - cache flush after write operations
+- **Chat entrypoint**
+  - [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>) is intentionally thin
+  - delegates to `AtlasApplication`
+- **Application/runtime**
+  - `AtlasApplication` owns the top-level processing flow
+  - `AtlasRuntime` owns graph invocation, initial state, config, and final-response extraction
+- **Graph**
+  - coarse routing only: `troubleshoot`, `network_ops`, `dismiss`
+- **Agents**
+  - pure specialized ReAct agents with minimal wrappers
+- **Tools**
+  - the only layer allowed to interact with backends
+  - return human-readable tool output plus structured side effects
+- **Presenter**
+  - converts session/tool state into the UI-facing payload
 
-| Component | What it is | How Atlas uses it |
-|-----------|-----------|-------------------|
-| **FastAPI** | Python web framework | Serves the chat API (`/api/chat`, `/api/discover`), handles authentication, and manages session cookies |
-| **LangGraph** | Graph-based orchestration layer (built on LangChain) | Defines the query routing pipeline as a graph of nodes — intent classification → tool selection → tool execution → response. LangChain provides the underlying LLM interface (`ChatOllama`, `bind_tools()`, message types) that LangGraph nodes use |
-| **Ollama** | Local LLM runtime | Runs the language model (llama3.1:8b by default) locally — no external AI API calls |
-| **MCP (Model Context Protocol)** | Protocol for exposing tools to LLMs | Atlas tools (Panorama, NetBrain) are registered as MCP tools. The LLM selects a tool by name; the MCP client executes it against the target API |
-| **FastMCP** | Python library for building MCP servers | Used to define and serve the MCP tools in `mcp_server.py` — tool docstrings become the descriptions the LLM uses for tool selection |
-| **A2A (Agent-to-Agent)** | Pattern where one agent calls another over HTTP | The NetBrain agent calls the Panorama agent mid-reasoning to enrich firewall hops. Each agent is a standalone FastAPI service that receives a plain-text task, runs its own LLM tool-calling loop, and returns a natural language answer |
-| **Authlib** | OIDC/OAuth2 library | Handles the Microsoft Entra ID login flow — redirects to Azure, exchanges the auth code for tokens, extracts user identity |
-| **Azure Key Vault** | Cloud secrets store | Stores Panorama and NetBrain credentials. Retrieved at runtime via `azure-identity` using the VM's managed identity — no secrets in `.env` |
-| **aiohttp** | Async HTTP client | Used by the Panorama and NetBrain tool implementations to make concurrent API calls to their respective APIs |
+## Core Modules
 
----
+### Entry and runtime
 
-## Prerequisites
+- [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>)
+  - FastAPI routes, SSE streaming, chat persistence, built-frontend serving
+- [`/Users/manig/Documents/coding/atlas/run_web.py`](</Users/manig/Documents/coding/atlas/run_web.py>)
+  - recommended development launcher for the web app
+- [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>)
+  - thin entrypoint from HTTP into the application
+- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
+  - application owner that wires runtime, memory, presenter, tools, and agents
+- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
+  - graph execution owner
+- [`/Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py`](</Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py>)
+  - Redis-backed LangGraph checkpointer lifecycle
 
-| Requirement | Purpose |
-|-------------|---------|
-| Python 3.13+ | Runtime |
-| Ollama | Local LLM (llama3.1:8b by default) |
-| Node.js | Frontend build |
-| Nginx | Reverse proxy / TLS termination |
-| Azure Key Vault | Secrets (Panorama, NetBrain credentials) |
-| Azure Entra ID | OIDC authentication |
+### Graph
 
----
+- [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>)
+  - graph structure
+- [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>)
+  - routing node, troubleshoot node, network-ops node, final response node
+- [`/Users/manig/Documents/coding/atlas/graph_state.py`](</Users/manig/Documents/coding/atlas/graph_state.py>)
+  - typed graph state
 
-## Installation
+### Agents
 
-### 1. Install Ollama and pull the model
+- [`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>)
+  - minimal shared ReAct agent factory
+- [`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>)
+  - troubleshooting agent builder
+- [`/Users/manig/Documents/coding/atlas/agents/network_ops_agent.py`](</Users/manig/Documents/coding/atlas/agents/network_ops_agent.py>)
+  - network-ops agent builder
+
+### Services
+
+- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
+  - pending clarification state and evidence-driven recall signals
+- [`/Users/manig/Documents/coding/atlas/services/request_preprocessor.py`](</Users/manig/Documents/coding/atlas/services/request_preprocessor.py>)
+  - incident expansion, IP/port extraction, clarification helpers
+- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
+  - deterministic payload shaping for troubleshoot and network-ops answers
+- [`/Users/manig/Documents/coding/atlas/services/runtime_helpers.py`](</Users/manig/Documents/coding/atlas/services/runtime_helpers.py>)
+  - session-data merge, snapshot/path completeness checks, status push helpers
+
+### Tools and external integrations
+
+- [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>)
+  - centralized tool implementations
+- [`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>)
+  - tool-set ownership
+- [`/Users/manig/Documents/coding/atlas/mcp_client.py`](</Users/manig/Documents/coding/atlas/mcp_client.py>)
+  - MCP calls for systems such as ServiceNow
+- [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
+  - live network collection service on port `8006`
+
+### Frontend
+
+- [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>)
+  - chat lifecycle and status timeline
+- [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>)
+  - `/api/discover` and `/api/chat` helpers
+- [`/Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx>)
+  - payload-driven assistant rendering
+- [`/Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx>)
+  - forward and reverse path diagrams
+
+## Intent Routing
+
+Atlas uses **coarse routing** in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) `classify_intent(...)`.
+
+This routing is intentionally simple and deterministic:
+
+- `troubleshoot`
+  - live investigations
+  - connectivity, routing, OSPF, reachability, packet loss, latency
+- `network_ops`
+  - incidents
+  - change requests
+  - policy review
+  - firewall/path review workflows
+- `dismiss`
+  - acknowledgements or unsupported requests
+
+Once Atlas chooses the agent, the **LLM** decides which tools to use inside that agent.
+
+That means:
+
+- regex decides **which agent**
+- the ReAct agent decides **which tools**
+
+## Tool Model
+
+Every tool in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) follows the same model:
+
+- accept typed arguments the LLM can fill
+- accept hidden runtime config for `session_id`
+- optionally push status updates
+- write structured side effects into the per-session store
+- return a human-readable string for the LLM
+
+### Tool sets
+
+- `ALL_TOOLS`
+  - full troubleshooting surface
+- `CONNECTIVITY_TOOLS`
+  - restricted set for the connectivity scenario
+  - deliberately excludes `recall_similar_cases(...)`
+- `NETWORK_OPS_TOOLS`
+  - restricted ops surface
+  - includes ServiceNow creation/update/detail tools
+  - may use `trace_path(...)` for CI selection
+
+## State and Memory
+
+Atlas uses three distinct state layers:
+
+### 1. LangGraph conversation state
+
+- owned by `AtlasRuntime`
+- optionally persisted to Redis through `AsyncRedisSaver`
+- keyed by browser `session_id` as LangGraph `thread_id`
+
+### 2. Per-session tool side-effect store
+
+Stored inside [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) and cleared between runs.
+
+Examples:
+
+- `path_hops`
+- `reverse_path_hops`
+- `interface_counters`
+- `routing_history`
+- `connectivity_snapshot`
+- `servicenow_summary`
+
+### 3. Run-scoped Redis cache
+
+Also used in `all_tools.py` for read-only backend results during a run:
+
+- route lookups
+- find-device lookups
+- owner maps
+
+This cache is scoped to the session/run and explicitly cleared.
+
+### 4. MemoryManager responsibilities
+
+[`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>) owns:
+
+- pending clarification state
+- recall-signal evaluation
+- long-term memory store hook
+
+Long-term recall is no longer always-on background context. It is gated by evidence signals such as:
+
+- path anomalies
+- interface failures
+- service reachability failures
+- unresolved connectivity findings
+
+## Response Shaping
+
+Atlas does not let the LLM freely shape every UI payload.
+
+[`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>) owns:
+
+- deterministic `ServiceNow` section replacement
+- interface counter grouping
+- network-ops path visibility rules
+- fail-closed troubleshoot output when live evidence is unavailable
+
+That means the final payload can safely contain:
+
+- `direct_answer`
+- `path_hops`
+- `reverse_path_hops`
+- `interface_counters`
+- `connectivity_snapshot`
+- `incident_summary`
+
+without depending on the LLM to keep those structures consistent.
+
+## Running Atlas
+
+### Prerequisites
+
+- Python environment in `.venv`
+- Node.js for the frontend
+- Ollama reachable at the configured `OLLAMA_BASE_URL`
+- Redis recommended for LangGraph persistence and run cache
+- ServiceNow / other backend credentials as needed
+
+### Backend web app
+
+Recommended development launcher:
 
 ```bash
-ollama serve
-ollama pull llama3.1:8b
+cd /Users/manig/Documents/coding/atlas
+.venv/bin/python run_web.py
 ```
 
-### 2. Install Python dependencies
+This starts the FastAPI app on port `8001` with reload enabled.
+
+### Nornir live network service
 
 ```bash
-cd atlas
-uv sync
+cd /Users/manig/Documents/coding/atlas
+.venv/bin/python nornir/server.py
 ```
 
-### 3. Build the frontend
+This starts the Nornir HTTP service on port `8006`.
+
+### Frontend development server
 
 ```bash
-cd atlas/frontend
+cd /Users/manig/Documents/coding/atlas/frontend
 npm install
+npm run dev
+```
+
+Vite serves the frontend on port `5173`.
+
+### Frontend production build
+
+```bash
+cd /Users/manig/Documents/coding/atlas/frontend
 npm run build
 ```
 
----
+FastAPI serves the built app automatically from `frontend/dist` when it exists.
 
-## Configuration
+## Key HTTP Endpoints
 
-All configuration is done via a `.env` file in the project root.
+- `POST /api/discover`
+  - lightweight preflight label for the UI
+  - currently returns a neutral `Atlas` label
+- `POST /api/chat`
+  - SSE chat stream
+  - emits `status` events and one `done` event
+- `GET /api/chat/history`
+- `GET /api/chat/conversations`
+- `GET /api/chat/conversations/{conversation_id}`
 
-```env
-# Authentication
-AUTH_MODE=oidc
-AZURE_CLIENT_ID=...
-AZURE_CLIENT_SECRET=...
-AZURE_TENANT_ID=...
-SESSION_SECRET=...
+## Troubleshooting the Application
 
-# Azure Key Vault (used to retrieve Panorama and NetBrain credentials)
-AZURE_KEYVAULT_URL=https://your-vault.vault.azure.net/
+See:
 
-# Panorama
-PANORAMA_URL=https://192.168.15.247
-PANORAMA_VERIFY_SSL=false
+- [`/Users/manig/Documents/coding/atlas/Documentation/General/troubleshooting/troubleshooting.md`](</Users/manig/Documents/coding/atlas/Documentation/General/troubleshooting/troubleshooting.md>)
+- [`/Users/manig/Documents/coding/atlas/Documentation/End-to-End-flow/troubleshooting-query-flow.md`](</Users/manig/Documents/coding/atlas/Documentation/End-to-End-flow/troubleshooting-query-flow.md>)
 
-# Ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1:8b
-```
-
-See [Documentation/auth-rbac.md](Documentation/auth-rbac.md) for full auth setup.
-
----
-
-## Running the Application
-
-Services are managed by **systemd** and start automatically on boot.
-
-```bash
-# Start
-sudo systemctl start atlas-web
-sudo systemctl start atlas-mcp
-
-# Restart after code changes
-sudo systemctl restart atlas-web
-sudo systemctl restart atlas-mcp
-
-# Logs
-tail -f /var/log/atlas/atlas_web.log
-tail -f /var/log/atlas/mcp_server.log
-```
-
-### Running manually (development)
-
-```bash
-# Terminal 1 — MCP server
-cd /opt/atlas && .venv/bin/python mcp_server.py
-
-# Terminal 2 — Web server
-cd /opt/atlas && .venv/bin/python run_web.py
-```
-
----
-
-## Available Tools
-
-| Tool | System | Description |
-|------|--------|-------------|
-| `query_panorama_ip_object_group` | Panorama | Find which address groups contain an IP |
-| `query_panorama_address_group_members` | Panorama | List members of an address group |
-| `find_unused_panorama_objects` | Panorama | Find orphaned/unused address objects |
-| `query_network_path` | NetBrain | Trace hop-by-hop path between two IPs |
-| `check_path_allowed` | NetBrain | Check if traffic between two IPs is allowed |
-
-
----
-
-## Troubleshooting
-
-See [Documentation/General/troubleshooting/troubleshooting.md](Documentation/General/troubleshooting/troubleshooting.md).
-
----
-
-## License
-
-[Add your license here]

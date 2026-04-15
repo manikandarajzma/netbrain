@@ -1,653 +1,633 @@
 # Troubleshooting Query Flow
 
-This document explains the end-to-end flow for a troubleshooting query in Atlas, starting from the moment a user submits a query in the UI and ending when the final response, path visualizations, and status timeline are rendered back in the browser.
+This document describes the current end-to-end flow for a troubleshooting request in Atlas, from the moment the user clicks send in the browser to the moment the UI renders the final structured response.
 
-The description below is based on the current implementation in:
+It is based on the live architecture in:
 
-- [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>)
 - [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>)
-- [`/Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx>)
-- [`/Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx>)
+- [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>)
 - [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>)
 - [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>)
+- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
+- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
+- [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>)
 - [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>)
-- [`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>)
+- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
+- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
 - [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>)
-- [`/Users/manig/Documents/coding/atlas/status_bus.py`](</Users/manig/Documents/coding/atlas/status_bus.py>)
 - [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
 
-## 1. User submits a troubleshooting query in the UI
+## High-Level Sequence
 
-The frontend entrypoint is the Zustand store in [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>).
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant FE as React UI
+    participant API as FastAPI app.py
+    participant CS as chat_service.py
+    participant APP as AtlasApplication
+    participant RT as AtlasRuntime
+    participant G as LangGraph atlas_graph
+    participant T as Troubleshoot Agent
+    participant TOOLS as all_tools.py
+    participant N as Nornir :8006
+    participant P as ResponsePresenter
 
-When the user presses send:
+    U->>FE: Submit troubleshoot query
+    FE->>API: POST /api/discover
+    API-->>FE: {tool_display_name: "Atlas"}
+    FE->>API: POST /api/chat (SSE)
+    API->>CS: process_message(...)
+    CS->>APP: process_query(...)
+    APP->>RT: invoke_atlas_graph(...)
+    RT->>G: ainvoke(initial_state, config)
+    G->>G: classify_intent()
+    G->>T: call_troubleshoot_agent()
+    T->>TOOLS: tool calls
+    TOOLS->>N: live HTTP tool calls
+    TOOLS-->>T: human-readable tool output + side effects
+    T-->>G: final_text
+    G->>P: build_troubleshoot_content(...)
+    P-->>G: structured payload
+    G-->>RT: result_state
+    RT-->>APP: final_response
+    APP-->>CS: response dict
+    CS-->>API: assistant payload
+    API-->>FE: SSE done event
+    FE-->>U: rendered markdown + path visuals + counters
+```
 
-1. `sendMessage(text)` is called.
-2. The store:
-   - appends the user message to the visible chat
-   - appends the same text to `conversationHistory`
-   - creates an `AbortController`
-   - initializes status tracking:
-     - `isLoading = true`
-     - `currentStatus = "Identifying query"`
-     - `statusSteps = []`
-     - `_stepStart = performance.now()`
-3. The store kicks off two async operations:
+## 1. Frontend Submission
+
+The frontend entrypoint is [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>).
+
+When the user submits a troubleshoot prompt:
+
+1. `sendMessage(text)` appends the user message to chat state.
+2. The store resets live status tracking:
+   - `currentStatus = "Identifying query"`
+   - `statusSteps = []`
+   - `_stepStart = performance.now()`
+3. It launches two HTTP actions:
    - `discoverTool(...)`
    - `sendChat(...)`
 
-Important detail:
+### Why `/api/discover` exists
 
-- `discoverTool(...)` is only used to improve status text early in the run.
-- The actual troubleshooting result comes from `sendChat(...)`.
+`/api/discover` is only for an early UI label. It does **not** perform real routing.
 
-## 2. Frontend calls `/api/chat` and opens an SSE stream
+Today it returns:
 
-The network helper is in [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>).
+```json
+{"tool_display_name": "Atlas"}
+```
 
-`sendChat(message, conversationHistory, signal, ...)`:
+The actual routing happens later inside LangGraph.
 
-1. Sends a `POST /api/chat` request.
-2. Includes:
-   - `message`
-   - `conversation_history`
-   - optional `conversation_id`
-   - optional `parent_conversation_id`
-3. Expects the response to be an SSE stream, not a normal JSON response.
+## 2. Frontend Opens the SSE Chat Stream
 
-The code then:
+[`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>) sends:
 
-1. Reads the response stream chunk-by-chunk.
-2. Parses SSE `data:` lines.
-3. Handles two event types:
-   - `status`
-   - `done`
+- `POST /api/chat`
 
-Status events update the live progress list in the chat UI.
+with:
 
-The `done` event carries the final assistant payload.
+- `message`
+- `conversation_history`
+- optional conversation metadata
 
-## 3. FastAPI `/api/chat` creates the SSE workflow
+The response is treated as **Server-Sent Events**, not plain JSON.
 
-The backend HTTP endpoint is in [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>) under:
+The frontend listens for:
 
-- `@app.post("/api/chat")`
+- `status`
+- `done`
 
-This route:
+### Status handling
 
-1. Validates authentication.
-2. Reads the session cookie via `get_session_id(request)`.
-3. Pulls:
-   - `message`
-   - `conversation_history`
-   - optional conversation IDs
-4. Registers a per-session status queue with [`/Users/manig/Documents/coding/atlas/status_bus.py`](</Users/manig/Documents/coding/atlas/status_bus.py>):
-   - `queue = status_bus.register(sid)`
-5. Starts the real backend work as a task:
-   - `process_message(...)`
-6. Streams status events from the queue while the task is running.
-7. Sends SSE heartbeats (`: keep-alive`) during idle periods.
-8. Cancels the task if the browser disconnects.
-9. When the task finishes:
-   - drains any remaining status events
-   - attaches/saves chat history
-   - emits one final SSE `done` event
+Status events update the timeline in the UI.
+
+Current early neutral labels are:
+
+- `Identifying query`
+- `Routing request`
+- `Analyzing your query...`
+
+Later statuses come from graph nodes and tools.
+
+## 3. FastAPI Owns the SSE Lifecycle
+
+The main endpoint is [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>) `api_chat(...)`.
+
+Responsibilities:
+
+1. authenticate the user
+2. load `session_id`
+3. register a status queue via [`/Users/manig/Documents/coding/atlas/status_bus.py`](</Users/manig/Documents/coding/atlas/status_bus.py>)
+4. start `process_message(...)` in a background task
+5. stream:
+   - `status` events from the queue
+   - keep-alive heartbeats
+   - final `done` event
+6. cancel the backend task if the browser disconnects
+7. save conversation history after the result is ready
 
 Important operational behavior:
 
-- Browser disconnects now cancel the running backend task.
-- The route always tries to deregister the session queue in `finally`.
+- stopping the browser request cancels the in-flight backend task
+- after write-like requests, `app.py` also clears relevant Redis caches so later reads do not serve stale ticket data
 
-## 4. Status events are pushed through the per-session status bus
+## 4. `chat_service.py` Is Intentionally Thin
 
-[`/Users/manig/Documents/coding/atlas/status_bus.py`](</Users/manig/Documents/coding/atlas/status_bus.py>) is intentionally small.
+[`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>) is no longer a large orchestration file.
 
-It is just:
+It does one thing:
 
-- `_queues: dict[str, asyncio.Queue]`
-- `register(session_id)`
-- `deregister(session_id)`
-- `push(session_id, message)`
+- delegate to `atlas_application.process_query(...)`
 
-Tools and graph nodes do not write to the frontend directly.
-They call `_push_status(...)`, which eventually calls:
+It also exports `_IP_OR_CIDR_RE` so the graph node can reuse the same IP/CIDR detection logic.
 
-- `status_bus.push(session_id, "some status text")`
+## 5. `AtlasApplication` Owns Top-Level Query Processing
 
-That status is then picked up by the SSE generator in `app.py`.
+[`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>) is the top-level owner.
 
-## 5. `process_message()` enters LangGraph
+It owns these collaborating objects:
 
-The main backend entrypoint is [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>).
+- `AtlasRuntime`
+- `AgentFactory`
+- `MemoryManager`
+- `ResponsePresenter`
+- `ToolRegistry`
 
-`process_message(...)` does three important things:
+For each query it:
 
-1. Ensures the LangGraph Redis checkpointer is initialized:
-   - `_ensure_checkpointer()`
-2. Builds the initial graph state:
-   - `prompt`
-   - `conversation_history`
-   - `username`
-   - `session_id`
-   - `intent`
-   - `rbac_error`
-   - `final_response`
-3. Invokes the compiled graph:
-   - `atlas_graph.ainvoke(initial_state, config=config)`
+1. calls `self.runtime.invoke_atlas_graph(...)`
+2. calls `self.runtime.extract_final_response(...)`
 
-Important detail:
+This keeps the entrypoint clean and gives the application a single high-level owner.
 
-- `session_id` is also used as LangGraph `thread_id`
-- that means graph checkpoints are keyed per browser session in Redis
+## 6. `AtlasRuntime` Builds State, Ensures the Checkpointer, and Invokes the Graph
 
-This is separate from the tool-side run cache described later.
+[`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>) owns graph execution.
 
-## 6. LangGraph classifies the query intent
+It is responsible for:
 
-The first graph node is [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) `classify_intent(...)`.
+- building initial LangGraph state
+- building per-run graph config
+- ensuring Redis-backed checkpointer setup
+- invoking `atlas_graph`
+- extracting the final payload
 
-This decides whether the prompt is:
+### Initial state
+
+`build_initial_state(...)` creates:
+
+- `prompt`
+- `conversation_history`
+- `username`
+- `session_id`
+- `intent = None`
+- `rbac_error = None`
+- `final_response = None`
+
+### Graph config
+
+`build_graph_config(...)` always sets:
+
+- `recursion_limit = 50`
+
+and, when a `session_id` exists:
+
+- `configurable.thread_id = session_id`
+
+That means LangGraph conversation state is keyed to the browser session.
+
+## 7. Redis Checkpointer Is Optional but Supported
+
+[`/Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py`](</Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py>) owns checkpointer lifecycle.
+
+On first use:
+
+1. it attempts to create `AsyncRedisSaver`
+2. it recompiles `atlas_graph` with that checkpointer
+3. if Redis is unavailable, Atlas logs a warning and continues without persistent graph state
+
+This is important:
+
+- **Atlas still runs if Redis is unavailable**
+- but multi-turn LangGraph persistence degrades gracefully
+
+## 8. LangGraph Performs Coarse Routing
+
+The graph itself is defined in [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>).
+
+Graph shape:
+
+```text
+classify_intent
+  ├─► call_troubleshoot_agent
+  ├─► call_network_ops_agent
+  └─► build_final_response
+```
+
+This is a deliberately small graph.
+
+Atlas does **not** use the graph for deep reasoning. The graph only owns:
+
+- coarse routing
+- node-level orchestration
+- early exit
+
+## 9. `classify_intent()` Decides Which Agent Runs
+
+[`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
+
+Possible values:
 
 - `troubleshoot`
 - `network_ops`
 - `dismiss`
 
-For a connectivity question like:
+### Important behavior
+
+- bare acknowledgements can dismiss if nothing is pending
+- pending clarification context can continue the previous flow
+- diagnostic phrasing overrides ops keywords
+
+That means:
+
+- regex chooses the **agent**
+- the chosen agent chooses the **tools**
+
+## 10. Troubleshoot Node Starts a Fresh Live Investigation
+
+`call_troubleshoot_agent(...)` in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) is the main orchestration node for live troubleshooting.
+
+Before the agent runs, it explicitly resets run-scoped live state:
+
+- `clear_session_cache(session_id)`
+- `pop_session_data(session_id)`
+
+This prevents stale live evidence from a prior run from contaminating the current one.
+
+It then:
+
+1. pushes `Investigating...`
+2. recovers pending clarification context if present
+3. optionally expands `INC...` prompts into a more explicit troubleshooting prompt
+4. decides the effective `issue_type`
+5. builds the troubleshoot agent
+6. invokes the agent
+
+## 11. Incident-Based Troubleshooting Is Rewritten Before Agent Execution
+
+When the prompt references an incident such as:
 
 ```text
-help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200 on tcp port 443
+help me troubleshoot INC0010043
 ```
 
-the graph routes to:
+the graph uses [`/Users/manig/Documents/coding/atlas/services/request_preprocessor.py`](</Users/manig/Documents/coding/atlas/services/request_preprocessor.py>) to:
 
-- `call_troubleshoot_agent(...)`
+- fetch the incident details
+- extract IPs and other context
+- rewrite the prompt into a concrete troubleshooting prompt
 
-## 7. `call_troubleshoot_agent()` prepares a fresh troubleshooting run
+That prevents incident troubleshooting from drifting into a vague generic path.
 
-This function lives in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>).
+## 12. `AgentFactory` Builds Thin ReAct Agents
 
-Before invoking the agent, it resets run-scoped state:
+[`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>) owns agent creation.
 
-1. `clear_session_cache(session_id)`
-2. `pop_session_data(session_id)`
+It provides:
 
-This is important because Atlas uses two different state layers:
+- `build_default_llm()`
+- `create_specialized_agent(...)`
 
-### 7.1 Redis run cache
+The factory is intentionally minimal:
 
-In [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>), there is a session-scoped Redis cache for read-only Nornir results.
+- it creates `ChatOpenAI(...)`
+- it wires `create_react_agent(...)`
+- it applies the system prompt
 
-This cache stores things like:
+It does **not** own:
 
-- route lookups
-- find-device lookups
-- interface ownership maps
+- checkpointer setup
+- session state
+- response formatting
+- status updates
 
-The cache is keyed by:
+Those responsibilities stay outside the agent layer.
 
-- `session_id`
-- endpoint
-- request payload
+## 13. The Troubleshoot Agent Selects the Prompt and Tool Set
 
-and is explicitly cleared:
+[`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>) decides:
 
-- at the start of a troubleshoot run
-- at the end of the troubleshoot run
+- which troubleshooting system prompt to use
+- which tool collection to expose
 
-This means cached data is reused only within the same run/session lifecycle, not indefinitely.
+### Prompt composition
 
-### 7.2 In-memory session side-effect store
+It loads:
 
-Also in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>), `_store(session_id)` holds structured side effects from tools:
+- core prompt from `skills/troubleshooter.md`
+- scenario prompt from one of:
+  - `skills/troubleshooting_scenarios/connectivity.md`
+  - `skills/troubleshooting_scenarios/performance.md`
+  - `skills/troubleshooting_scenarios/intermittent.md`
+
+### Tool selection
+
+- connectivity scenario → `CONNECTIVITY_TOOLS`
+- other troubleshoot cases → `ALL_TOOLS`
+
+That keeps connectivity runs constrained and reduces accidental tool sprawl.
+
+## 14. ToolRegistry Owns the Tool Sets
+
+[`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>) owns:
+
+- `ALL_TOOLS`
+- `CONNECTIVITY_TOOLS`
+- `NETWORK_OPS_TOOLS`
+
+This gives the application one place to define which tools are allowed for each agent.
+
+Current intent:
+
+- `CONNECTIVITY_TOOLS`
+  - live evidence and correlation tools only
+  - no `recall_similar_cases(...)`
+- `NETWORK_OPS_TOOLS`
+  - ServiceNow + operational review tools
+  - may use path lookup for CI context
+
+## 15. The Tool Layer Does the Real Backend Work
+
+[`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) is the centralized tool layer.
+
+Each tool may do all of the following:
+
+- push a status message
+- call a backend
+- store structured side effects
+- return a string for the LLM
+
+### Example connectivity tools
+
+- `trace_path(...)`
+- `trace_reverse_path(...)`
+- `check_routing(...)`
+- `collect_connectivity_snapshot(...)`
+- `search_servicenow(...)`
+- `check_panorama_policy(...)`
+- `check_splunk(...)`
+- `lookup_vendor_kb(...)`
+
+## 16. Atlas Uses Two Different Runtime State Layers for Tool Output
+
+### 16.1 In-memory per-session side-effect store
+
+Inside `all_tools.py`, `_store(session_id)` holds structured run data such as:
 
 - `path_hops`
 - `reverse_path_hops`
 - `interface_counters`
 - `routing_history`
-- `ping_results`
-- `all_interfaces`
 - `interface_details`
 - `syslog`
-- `protocol_discovery`
 - `connectivity_snapshot`
-- `ip_owners`
+- `servicenow_summary`
 
-The LLM does not return these directly.
-Tools populate them as side effects, and `graph_nodes.py` later packages them into the final response.
+These are not the agent’s natural language answer. They are structured artifacts later used by the presenter.
 
-## 8. The troubleshoot agent is built with the connectivity runbook
+### 16.2 Redis run cache
 
-The agent is built in [`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>).
+`all_tools.py` also uses Redis for read-only run-scoped caching, such as:
 
-`build_agent(prompt, issue_type)` does this:
+- Nornir route lookups
+- next-hop owner lookups
+- device-owner maps
 
-1. Picks the system prompt:
-   - core prompt from `skills/troubleshooter.md`
-   - scenario prompt from `skills/troubleshooting_scenarios/connectivity.md`
-2. Chooses the tool list:
-   - for connectivity: `CONNECTIVITY_TOOLS`
-3. Creates a LangGraph ReAct agent using:
-   - `ChatOpenAI(...)`
-   - `create_react_agent(...)`
+This cache is explicitly cleared at the beginning and end of the run.
 
-Important detail:
+## 17. Nornir Is a Separate Live Collection Service
 
-- connectivity runs use `CONNECTIVITY_TOOLS`, not the entire `ALL_TOOLS` list
-- this was done so the agent cannot fan out into every legacy low-level tool by default
+Live network collection does **not** happen inside the Atlas web process.
 
-## 9. The connectivity agent executes the investigation
+Atlas calls the Nornir HTTP service at:
 
-The agent runs inside LangGraph, but the actual useful work is done by tool calls in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>).
+- `http://localhost:8006`
 
-The current intended connectivity flow is:
+implemented in:
 
-1. `trace_path(source_ip, dest_ip)`
-2. `trace_reverse_path(source_ip, dest_ip)`
-3. `lookup_routing_history(dest_ip)`
-4. `search_servicenow(...)`
-5. `collect_connectivity_snapshot(source_ip, dest_ip, port)`
-6. LLM synthesis from the accumulated evidence
+- [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
 
-The graph also has enforcement logic:
+This service is responsible for:
 
-- if no `connectivity_snapshot` exists after the first agent pass, it forces a follow-up pass
-- if path visualizations are missing, it directly calls `trace_path` and `trace_reverse_path` itself
+- live route lookup
+- next-hop ownership lookup
+- device snapshots
+- interface counters
+- TCP tests
+- other live SSH-backed network actions
 
-That logic is in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>).
+This separation is important because:
 
-## 10. Live path tracing
+- Atlas remains the reasoning/orchestration layer
+- Nornir remains the live collection layer
 
-The core of live path tracing is `_live_path_trace(...)` in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>).
+## 18. ServiceNow, Panorama, Splunk, and Other Systems Are Accessed Through the Tool Layer
 
-This function returns three things:
+Not every tool goes through Nornir.
 
-- human-readable text
-- `structured_hops`
-- `flags`
+For example:
 
-### 10.1 First-hop discovery
+- ServiceNow work often uses the MCP path
+- policy checks can use Panorama-related tools
+- traffic/event correlation can use Splunk tools
 
-The trace begins by finding the first L3 gateway for the source IP.
+The important invariant is:
 
-`_find_first_hop(src_ip)`:
+- the agent does not talk to those systems directly
+- tools do
 
-1. gets device list from `GET /devices` on the Nornir server
-2. loops over devices
-3. asks each device for a route to the source IP:
-   - `POST /route`
-4. the first device that reports:
-   - `found = true`
-   - `protocol = connected`
-   is treated as the source-side first hop
+## 19. `MemoryManager` Owns Pending Context and Recall Policy
 
-The host-facing interface on that device becomes:
+[`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>) owns two important memory concerns:
 
-- `first_hop_lan_interface`
+### Pending clarification context
 
-### 10.2 Hop walking
+It keeps track of whether the prior answer was asking the user for more details.
 
-Once the first hop is known, `_live_path_trace(...)` loops hop-by-hop:
+That allows follow-up answers to continue the correct flow instead of being treated as brand-new queries.
 
-1. query current device route to destination via:
-   - `POST /route`
-2. inspect:
-   - `egress_interface`
-   - `next_hop`
-   - `protocol`
-   - `prefix`
-3. if route is `connected`/`local` and no next hop exists:
-   - use `POST /arp`
-   - treat that device as the final router before the destination host
-4. otherwise resolve `next_hop` to a device
+### Long-term memory recall policy
 
-### 10.3 Next-hop owner resolution
+Recall is no longer always-on background context.
 
-This is where the path trace turns an IP next hop like `169.254.0.5` into a device/interface like:
+`MemoryManager` evaluates live evidence signals such as:
 
-- `arista-ai4 / Ethernet2`
+- path anomalies
+- active interface errors
+- interface lookup failures
+- recent syslog signals
+- OSPF instability
+- peer diagnosis anomalies
+- failed pings
+- unresolved connectivity snapshot findings
 
-Current logic:
+Only when those signals justify recall should historical memory be used.
 
-1. preload an owner map once per run from:
-   - `POST /ip-owners`
-2. if the owner map has the next-hop IP:
-   - use it directly
-3. otherwise:
-   - do a one-off exact live `POST /find-device`
-   - cache the result into the session store
+## 20. Troubleshoot Node Enforces Required Evidence
 
-This was introduced to avoid repeated inventory-wide next-hop-owner probing on every hop.
+After the first troubleshoot agent pass, `call_troubleshoot_agent(...)` may run additional enforcement logic:
 
-### 10.4 Structured path hops
+- if no `connectivity_snapshot` exists but the prompt is a connectivity case, Atlas forces a snapshot follow-up
+- if path visuals are missing, Atlas directly runs `trace_path(...)` and `trace_reverse_path(...)`
 
-Each hop is stored as a dict like:
+This is application logic, not agent creativity.
 
-```json
-{
-  "from_device": "arista-ai2",
-  "from_device_type": "switch",
-  "out_interface": "Ethernet2",
-  "to_device": "arista-ai3",
-  "to_device_type": "switch",
-  "in_interface": "Ethernet1"
-}
+The goal is to avoid answers that omit mandatory live evidence artifacts.
+
+## 21. Presenter Owns the Final Payload Shape
+
+[`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>) owns the final UI-facing payload.
+
+It does not just pass through the agent’s text.
+
+It also:
+
+- deterministically replaces the `ServiceNow` section with the tool-generated summary
+- groups duplicate interface-counter rows by device
+- decides whether network-ops answers should include path visuals
+- fails closed when live troubleshoot evidence is unavailable
+
+### Fail-closed behavior
+
+If a troubleshoot run has:
+
+- no live path
+- no reverse path
+- no grouped interface counters
+- and `connectivity_snapshot.live_evidence_available == False`
+
+then Atlas does **not** claim a specific OSPF or routing root cause.
+
+Instead, it returns a deterministic “unable to determine current root cause from live evidence” style answer.
+
+## 22. The Final LangGraph State Returns `final_response`
+
+The graph node returns:
+
+```python
+{"final_response": {"role": "assistant", "content": payload}}
 ```
 
-These become:
-
-- `path_hops`
-- `reverse_path_hops`
-
-in the per-session store.
-
-### 10.5 Path metadata extraction
-
-After the hop list is built:
-
-- `_extract_path_metadata(hops)`
-- `_extract_reverse_path_metadata(hops)`
-
-derive:
-
-- `first_hop_device`
-- `first_hop_lan_interface`
-- `first_hop_egress_interface`
-- `last_hop_device`
-- `last_hop_egress_interface`
-- `reverse_first_hop_device`
-- `reverse_first_hop_lan_interface`
-- `reverse_first_hop_egress_interface`
-- `path_devices`
-- `path_hops_for_counters`
-
-That metadata drives later actions like:
-
-- source interface selection for pings
-- destination-side TCP test selection
-- interface counter selection
-
-## 11. Holistic connectivity snapshot
-
-The snapshot entrypoint is:
-
-- `collect_connectivity_snapshot(...)`
-
-in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>).
-
-This is not the live path walker.
-It is the structured evidence collection pass that happens after path discovery.
-
-### 11.1 Device set selection
-
-It builds the device set from:
-
-- forward path devices
-- reverse path devices
-- routing-history devices
-- historical peering hint devices
-
-### 11.2 One snapshot per device
-
-For each device in scope, Atlas calls:
-
-- `POST /device-snapshot`
-
-on the Nornir server.
-
-Each `/device-snapshot` call is intended to use one SSH session for that device and gather:
-
-- route to source
-- route to destination
-- interface inventory
-- protocol discovery
-- limited syslog
-- OSPF detail only if OSPF is discovered
-- relevant interface state/detail/counters
-
-The device snapshots are collected in parallel across devices.
-
-### 11.3 Additional service check
-
-If a port is provided, the snapshot path also performs:
-
-- destination-side TCP test
-
-The intended source is the destination-side device inferred from live route data, typically:
-
-1. a device with `connected` or `local` route to destination
-2. else reverse-path first hop
-3. else fallback metadata
-
-### 11.4 Snapshot output
-
-The snapshot builds:
-
-- structured object stored in `store["connectivity_snapshot"]`
-- compact text summary returned to the agent
-
-The LLM reasons over the compact summary, not the full raw device dumps.
-
-## 12. ServiceNow lookup
-
-The connectivity flow may also call `search_servicenow(...)`.
-
-Current design intent:
-
-- best-effort only
-- time-bounded
-- must not block core connectivity diagnosis
-
-This is important because ServiceNow context is supplemental, not foundational.
-
-## 13. Graph-level post-processing and packaging
-
-After the agent finishes, [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) does not just blindly return the raw LLM output.
-
-It:
-
-1. extracts final assistant text from the agent messages
-2. reads tool side effects via:
-   - `pop_session_data(session_id)`
-3. merges side effects across passes with:
-   - `_merge_session_data(...)`
-4. enforces mandatory evidence when needed
-
-### 13.1 What goes into the final response payload
-
-The final `content` dict may contain:
+where `payload` may include:
 
 - `direct_answer`
 - `path_hops`
 - `reverse_path_hops`
-- `source`
-- `destination`
 - `interface_counters`
-- `incident_summary`
 - `connectivity_snapshot`
+- `incident_summary`
 
-This is the payload the frontend ultimately receives in the SSE `done` event.
+`AtlasRuntime.extract_final_response(...)` then pulls that payload out of the graph result.
 
-## 14. SSE `done` event returns to the frontend
+## 23. FastAPI Persists Chat History and Emits the Final SSE `done`
 
-Back in [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>), once `process_message(...)` finishes:
+Back in [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>):
 
-1. the result is read from the task
-2. conversation history is saved
-3. noisy L2 text may be stripped from path content
-4. a final SSE event is sent:
+1. the completed result is read from the task
+2. if the user message was a write-like operation, relevant caches are flushed
+3. the assistant content is stored in chat history
+4. the endpoint sends one final SSE `done` event
 
-```json
-{
-  "type": "done",
-  "result": {
-    "role": "assistant",
-    "content": { ... }
-  }
-}
+That event contains the structured response payload.
+
+## 24. Frontend Renders Structured Troubleshooting Output
+
+The frontend assistant-message layer inspects the returned payload:
+
+- markdown-like `direct_answer`
+- `path_hops`
+- `reverse_path_hops`
+- `interface_counters`
+
+Then it renders:
+
+- the main answer text
+- the forward path panel
+- the reverse path panel
+- grouped interface counters
+- the status timeline recorded during execution
+
+## 25. Summary of Responsibility Boundaries
+
+### `app.py`
+
+- HTTP
+- SSE
+- auth
+- history persistence
+
+### `chat_service.py`
+
+- thin entrypoint only
+
+### `AtlasApplication`
+
+- top-level owner for query processing
+
+### `AtlasRuntime`
+
+- graph state/config/invocation/final extraction
+
+### `graph_nodes.py`
+
+- routing and node orchestration
+
+### agents
+
+- reasoning + tool use only
+
+### `all_tools.py`
+
+- backend access + structured side effects
+
+### `MemoryManager`
+
+- pending context + recall policy
+
+### `ResponsePresenter`
+
+- deterministic output shaping
+
+### `nornir/server.py`
+
+- live SSH-backed network collection
+
+## 26. Practical Example
+
+For a prompt like:
+
+```text
+help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200 on tcp port 443
 ```
 
-## 15. Frontend converts the SSE payload into a renderable assistant message
+the typical modern flow is:
 
-In [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>):
+1. UI sends `/api/discover`
+2. UI opens `/api/chat` SSE
+3. `process_message(...)` delegates to `AtlasApplication`
+4. `AtlasRuntime` builds graph state and invokes `atlas_graph`
+5. `classify_intent()` returns `troubleshoot`
+6. `call_troubleshoot_agent()` clears run-scoped live state
+7. troubleshoot agent runs the connectivity scenario
+8. tools collect live path/snapshot/ServiceNow evidence
+9. presenter injects deterministic `ServiceNow` and grouped counter output
+10. FastAPI sends the final structured payload
+11. UI renders markdown, path visuals, counters, and the status timeline
 
-1. the `done` event is received
-2. `rawContent = data.content ?? data.message ?? 'No response'`
-3. if `data.path_hops` exists, the frontend wraps everything into a structured object:
-
-```js
-{
-  text: rawContent,
-  path_hops: data.path_hops,
-  reverse_path_hops: data.reverse_path_hops
-}
-```
-
-4. that object is appended as the assistant message content
-
-This is the bridge that allows the UI to show:
-
-- path visualization
-- return path visualization
-- markdown explanation text
-
-in the same assistant bubble.
-
-## 16. Assistant message rendering
-
-The main renderer is [`/Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx>).
-
-If the response is classified as a path-style response:
-
-1. render `Forward Path`
-2. render `PathVisualization` for `content.path_hops`
-3. if `reverse_path_hops` exists:
-   - render `Return Path`
-   - render a second `PathVisualization`
-4. render the markdown/text explanation below the diagrams
-
-## 17. Path visualization rendering
-
-[`/Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx>) turns `path_hops` into display nodes.
-
-### 17.1 How nodes are built
-
-It:
-
-1. starts from the first hop
-2. builds a `Map` of nodes in order
-3. updates `out` interfaces once a node later appears as `from_device`
-4. marks:
-   - the first node as source
-   - the last node as destination only if the last hop ends on a host
-
-This last rule is important:
-
-- if the path merely stops on a router/switch, the UI should not pretend that device is the destination host
-
-### 17.2 Path item display
-
-[`/Users/manig/Documents/coding/atlas/frontend/src/components/path/PathItem.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/path/PathItem.jsx>) renders:
-
-- node name
-- `A` and `B` badges for source/destination
-- source/destination IPs only when appropriate
-- `In:` and `Out:` interfaces
-
-## 18. Status timeline rendering
-
-The running status timeline comes from:
-
-- the SSE `status` events
-- stored in `chatStore.statusSteps`
-- rendered by [`/Users/manig/Documents/coding/atlas/frontend/src/components/chat/StatusMessage.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/chat/StatusMessage.jsx>)
-
-The store records:
-
-- label
-- duration
-
-using `performance.now()` timing.
-
-## 19. Summary of the full lifecycle
-
-For a troubleshooting query, the flow is:
-
-1. user types message in chat
-2. frontend store sends `/api/chat`
-3. backend opens SSE stream
-4. `process_message()` invokes LangGraph
-5. `classify_intent()` routes to troubleshooting
-6. `call_troubleshoot_agent()` clears run-scoped cache/state
-7. troubleshoot agent runs connectivity runbook with `CONNECTIVITY_TOOLS`
-8. tools push statuses through `status_bus`
-9. live path trace builds `path_hops`
-10. reverse trace builds `reverse_path_hops`
-11. snapshot collection builds `connectivity_snapshot`
-12. graph merges all tool side effects
-13. graph packages final payload
-14. SSE `done` event returns the final result
-15. frontend wraps `path_hops` + text into a renderable object
-16. assistant message renders:
-   - forward path
-   - return path
-   - markdown summary
-   - counters / extra details
-
-## 20. Architectural separation of responsibilities
-
-The system is split like this:
-
-### Frontend
-
-- submit query
-- stream statuses
-- display path diagrams and analysis
-
-### FastAPI app
-
-- authentication
-- SSE orchestration
-- cancellation handling
-- conversation history persistence
-
-### Chat service
-
-- initializes LangGraph checkpointer
-- invokes graph with `session_id`
-
-### Graph nodes
-
-- classify request
-- choose troubleshoot vs network ops
-- enforce mandatory evidence
-- package final response payload
-
-### Agent
-
-- reasons over the connectivity runbook
-- chooses tools
-- writes the final narrative
-
-### Tools
-
-- perform the actual work
-- push statuses
-- store structured side effects
-- return human-readable summaries to the agent
-
-### Nornir server
-
-- executes live SSH-backed network commands
-- provides low-level route / path / interface / snapshot primitives
-
-## 21. Current design intent for production scale
-
-The intended shape of this architecture for large networks is:
-
-- live path trace stays live and minimal
-- device evidence collection happens once per device in parallel
-- repeated read-only lookups are cached only within the current run/session
-- the agent reasons over a structured incident snapshot, not over many scattered raw calls
-
-That is the direction the current code is trying to implement, even though some parts have recently been under active debugging.
-
+That is the current architecture as implemented today, and it is materially different from the older NetBrain/Panorama-first flow.

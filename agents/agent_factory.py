@@ -41,13 +41,3 @@ class AgentFactory:
 
 
 agent_factory = AgentFactory()
-
-
-def build_default_llm() -> ChatOpenAI:
-    """Compatibility wrapper for the shared AgentFactory."""
-    return agent_factory.build_default_llm()
-
-
-def create_specialized_agent(llm, tools, system_prompt: str, agent_name: str):
-    """Compatibility wrapper for the shared AgentFactory."""
-    return agent_factory.create_specialized_agent(llm, tools, system_prompt, agent_name)

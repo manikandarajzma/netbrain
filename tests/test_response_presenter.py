@@ -2,9 +2,7 @@ import unittest
 
 from services.response_presenter import (
     ResponsePresenter,
-    build_network_ops_content,
-    build_troubleshoot_content,
-    group_interface_counters,
+    response_presenter,
 )
 
 
@@ -31,7 +29,7 @@ class ResponsePresenterTests(unittest.TestCase):
         )
 
     def test_group_interface_counters_merges_duplicate_devices(self):
-        grouped = group_interface_counters(
+        grouped = response_presenter.group_interface_counters(
             [
                 {
                     "device": "arista-ai1",
@@ -62,7 +60,7 @@ class ResponsePresenterTests(unittest.TestCase):
         )
 
     def test_build_network_ops_content_hides_path_for_incident_creation(self):
-        content = build_network_ops_content(
+        content = response_presenter.build_network_ops_content(
             "Created incident INC0010044",
             {
                 "path_hops": [{"node_type": "host"}, {"node_type": "device"}],
@@ -74,7 +72,7 @@ class ResponsePresenterTests(unittest.TestCase):
         self.assertEqual(content, {"direct_answer": "Created incident INC0010044"})
 
     def test_build_network_ops_content_keeps_path_for_firewall_style_request(self):
-        content = build_network_ops_content(
+        content = response_presenter.build_network_ops_content(
             "Reviewed firewall path",
             {
                 "path_hops": [{"node_type": "host"}, {"node_type": "device"}],
@@ -90,7 +88,7 @@ class ResponsePresenterTests(unittest.TestCase):
         self.assertIn("reverse_path_hops", content)
 
     def test_build_troubleshoot_content_replaces_servicenow_section_and_groups_counters(self):
-        result = build_troubleshoot_content(
+        result = response_presenter.build_troubleshoot_content(
             "## Summary\nIssue found\n\n## ServiceNow\nold data",
             {
                 "path_hops": [{"node_type": "host"}, {"node_type": "device"}],
@@ -118,6 +116,28 @@ class ResponsePresenterTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_build_troubleshoot_content_fails_closed_when_live_evidence_is_unavailable(self):
+        result = response_presenter.build_troubleshoot_content(
+            "## Root Cause\nIncorrect OSPF guess",
+            {
+                "servicenow_summary": "Incidents found: 2\n\n### Change Requests\n- CHG0030042",
+                "connectivity_snapshot": {
+                    "live_evidence_available": False,
+                    "errors": {
+                        "arista-ai1": "TCP connection to device failed",
+                        "arista-ai2": "TCP connection to device failed",
+                    },
+                },
+            },
+            "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200 on tcp port 443",
+            None,
+        )
+
+        self.assertIn("Unable to determine the current root cause from live evidence", result["direct_answer"])
+        self.assertIn("arista-ai1: TCP connection to device failed", result["direct_answer"])
+        self.assertIn("CHG0030042", result["direct_answer"])
+        self.assertNotIn("Incorrect OSPF guess", result["direct_answer"])
 
 
 if __name__ == "__main__":
