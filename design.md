@@ -41,7 +41,7 @@ classify_intent  (graph_nodes.py)
 ### 2.1 Tools Are the Single Source of Truth
 
 - All external capabilities must be implemented as tools in `tools/all_tools.py`
-- Tools use MCP (Model Context Protocol) or direct HTTP to communicate with backends (Nornir, ServiceNow, Panorama, Splunk, etc.)
+- Tools use MCP (Model Context Protocol) or direct HTTP to communicate with backends (Nornir, ServiceNow, and other external systems)
 - Agent files must never contain direct API calls, HTTP logic, XML parsing, or backend-specific code
 
 ### 2.2 Exactly Two Specialized Agents

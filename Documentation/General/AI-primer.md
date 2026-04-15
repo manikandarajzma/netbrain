@@ -110,12 +110,12 @@ Atlas sets `temperature=0.0` everywhere it calls the LLM.
 A feature where the LLM, instead of generating prose, outputs a structured JSON object indicating which function to call and with what arguments. The application code then executes the function and can feed the result back to the model.
 
 ```
-Prompt: "What address group is 11.0.0.1 part of?"
+Prompt: "Give me the details for INC0010043"
 
 LLM output (tool call):
 {
-  "name": "query_panorama_ip_object_group",
-  "arguments": { "ip_address": "11.0.0.1" }
+  "name": "get_incident_details",
+  "arguments": { "incident_number": "INC0010043" }
 }
 ```
 
@@ -203,7 +203,7 @@ Atlas does not currently use LangGraph. Tool selection is a single LLM call — 
 An open protocol (developed by Anthropic) for connecting LLMs to external tools and data sources in a standardized way. An MCP server exposes a list of tools with JSON Schema definitions; an MCP client fetches those definitions, passes them to the LLM, and routes tool calls back to the server for execution.
 
 In Atlas:
-- `mcp_server.py` is the MCP server — it registers tools (`query_panorama_ip_object_group`, etc.) and handles execution
+- `mcp_server.py` is the MCP server — it registers tools (`get_incident_details`, etc.) and handles execution
 - `mcp_client_tool_selection.py` is the MCP client — it fetches the tool list and feeds it to the LLM
 
 This separation means tools can be added to the MCP server without touching the LLM integration code.

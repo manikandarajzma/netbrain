@@ -1,6 +1,6 @@
 # Adding a New MCP Tool
 
-This guide covers adding a new MCP tool to an existing integration module — for example, adding a new NetBrain query to [tools/netbrain_tools.py](../../tools/netbrain_tools.py), a new Splunk search to [tools/splunk_tools.py](../../tools/splunk_tools.py), and so on.
+This guide covers adding a new MCP tool to an existing integration module — for example, adding a new NetBrain query to [tools/netbrain_tools.py](../../tools/netbrain_tools.py), a new ServiceNow lookup to [tools/servicenow_tools.py](../../tools/servicenow_tools.py), and so on.
 
 To add an entirely new integration (new file, new auth, new credentials), see [adding-a-domain.md](./adding-a-domain.md) first, then return here.
 
@@ -137,14 +137,13 @@ Add the tool name → UI label mapping. This label appears in the status bar whi
 TOOL_DISPLAY_NAMES: dict[str, str] = {
     "check_path_allowed":                 "Atlas",
     "query_network_path":                 "Atlas",
-    "query_panorama_ip_object_group":     "Panorama",
-    "query_panorama_address_group_members": "Panorama",
-    "get_splunk_recent_denies":           "Splunk",
+    "get_incident_details":               "ServiceNow",
+    "get_change_request_details":         "ServiceNow",
     "get_device_interfaces":              "NetBrain",   # ← add this
 }
 ```
 
-Use the system name (e.g., `"NetBrain"`, `"Panorama"`, `"Splunk"`). This is what the user sees.
+Use the system name (e.g., `"NetBrain"`, `"ServiceNow"`). This is what the user sees.
 
 ---
 
@@ -156,16 +155,15 @@ Set a per-tool timeout in seconds. This is the maximum time `call_mcp_tool()` wi
 _TOOL_TIMEOUTS: dict[str, float] = {
     "query_network_path":        385.0,   # NetBrain path polling can be slow
     "check_path_allowed":        370.0,
-    "get_splunk_recent_denies":   95.0,   # Includes Splunk job polling
-    "query_panorama_ip_object_group":       65.0,
-    "query_panorama_address_group_members": 65.0,
+    "get_incident_details":       30.0,
+    "get_change_request_details": 30.0,
     "get_device_interfaces":      30.0,   # ← add this (fast API call)
 }
 ```
 
 **Guidelines:**
 - Simple single API calls: `30–65s`
-- Calls that require polling (Splunk job, NetBrain path calculation): `90–400s`
+- Calls that require polling (NetBrain path calculation): `90–400s`
 - If a tool is not listed, a default timeout applies — always add it explicitly.
 
 ---
@@ -181,8 +179,8 @@ SystemMessage(content=(
     "Tool selection rules: "
     "short rack IDs like 'A4', 'B2' → get_rack_details; "
     "device names with dashes like 'leander-dc-leaf1' → get_device_rack_location; "
-    "IP addresses → query_panorama_ip_object_group or get_splunk_recent_denies; "
-    "address group names → query_panorama_address_group_members; "
+    "incident numbers like INC0012345 → get_incident_details; "
+    "change numbers like CHG0012345 → get_change_request_details; "
     "list/all racks → list_racks; "
     "device interfaces/ports → get_device_interfaces. "   # ← add this
     ...
@@ -238,8 +236,8 @@ ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
     "netadmin": {
         "query_network_path",
         "check_path_allowed",
-        "query_panorama_ip_object_group",
-        "query_panorama_address_group_members",
+        "get_incident_details",
+        "get_change_request_details",
         "get_device_interfaces",    # ← add for netadmin if appropriate
     },
     "guest":    set(),  # no tools
@@ -253,7 +251,7 @@ Also update `ROLE_ALLOWED_CATEGORIES` if the tool belongs to a sidebar category 
 ```python
 ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
     "admin":    None,
-    "netadmin": ["atlas", "panorama"],   # add a category slug here if needed
+    "netadmin": ["atlas", "servicenow"],   # add a category slug here if needed
     "guest":    [],
 }
 ```
@@ -274,19 +272,19 @@ Only modify if your tool returns a shape that doesn't fit the existing classifie
 
 **File:** [frontend/src/utils/formatters.js](../../frontend/src/utils/formatters.js)
 
-If the table column order matters, add an entry to `PANORAMA_COLUMN_ORDER` (despite the name, this works for any tool):
+If the table column order matters, add an entry to `TABLE_COLUMN_ORDER`:
 
 ```js
-export const PANORAMA_COLUMN_ORDER = {
-  address_objects: ['name', 'type', 'value', 'location', 'device_group'],
-  address_groups:  ['name', 'contains_address_object', 'members', 'location', 'device_group'],
+export const TABLE_COLUMN_ORDER = {
+  incidents: ['number', 'short_description', 'state', 'priority'],
+  changes: ['number', 'short_description', 'state', 'risk'],
   // ↓ add your tool's array key and preferred column order
   interfaces: ['name', 'ip', 'type'],
 }
 
-export const PANORAMA_TABLE_LABELS = {
-  address_objects: 'Address objects',
-  address_groups:  'Address groups',
+export const TABLE_LABELS = {
+  incidents: 'Incidents',
+  changes: 'Change requests',
   interfaces: 'Device interfaces',   // ← human-readable heading
 }
 ```

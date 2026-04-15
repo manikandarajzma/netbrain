@@ -76,7 +76,7 @@ frontend/
         ChatMessages.jsx + .module.css  # Message list, auto-scroll, welcome state
         WelcomeState.jsx + .module.css  # Initial greeting with fade animation
         ChatInput.jsx + .module.css     # Text input, file upload, send/stop toggle
-        StatusMessage.jsx + .module.css # "Querying Panorama..." with typing dots
+        StatusMessage.jsx + .module.css # Routing / progress badges with typing dots
       messages/
         MessageBubble.jsx + .module.css     # User vs assistant styling wrapper
         AssistantMessage.jsx + .module.css  # Routes content to correct renderer

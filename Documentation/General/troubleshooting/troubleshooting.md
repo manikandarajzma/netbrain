@@ -67,14 +67,14 @@ ollama pull llama3.1:8b
 
 ---
 
-## Panorama/Splunk Tools Fail
+## External Backend Tools Fail
 
 **Cause:** API credentials or URLs are incorrect
 
 **Solution:** Check environment variables and credential files:
 - `netbrainauth.py` for NetBrain credentials
-- `panoramaauth.py` for Panorama credentials
-- `SPLUNK_HOST`, `SPLUNK_USER`, `SPLUNK_PASSWORD` for Splunk credentials
+- `servicenowauth.py` and ServiceNow secrets for ServiceNow credentials
+- any backend-specific host, username, and password values in `.env` or Azure Key Vault
 
 ---
 

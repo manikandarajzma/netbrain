@@ -71,7 +71,7 @@ async def get_mcp_session():
     """
     if FASTMCP_CLIENT_AVAILABLE:
         # Use FastMCP Client with explicit transport so we can set both HTTP and SSE read timeouts.
-        # Long-running tools (e.g. Panorama ~65s) require the streamable-http SSE connection to stay
+        # Long-running tools require the streamable-http SSE connection to stay
         # open; otherwise the client can disconnect before the tool returns and you get "Chat failed".
         try:
             server_url = get_server_url()

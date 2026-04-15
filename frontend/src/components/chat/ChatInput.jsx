@@ -59,7 +59,7 @@ const ChatInput = forwardRef(function ChatInput(props, ref) {
           type="text"
           value={inputText}
           onChange={e => setInputText(e.target.value)}
-          placeholder={attachedFile ? 'Describe what to do: e.g. "check if paths are allowed"...' : 'Ask about paths, devices, racks, Panorama, Splunk...'}
+          placeholder={attachedFile ? 'Describe what to do: e.g. "check if paths are allowed"...' : 'Ask about paths, devices, racks, incidents, or change requests...'}
           autoComplete="off"
           className={styles.textInput}
         />

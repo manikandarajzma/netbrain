@@ -1,7 +1,7 @@
 [project]
 name = "atlas"
 version = "0.1.0"
-description = "Atlas - AI-powered network infrastructure assistant with MCP, NetBrain API, Panorama, and Splunk integration"
+description = "Atlas - AI-powered network infrastructure assistant with MCP, Nornir, and ServiceNow integration"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

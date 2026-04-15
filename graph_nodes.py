@@ -4,7 +4,7 @@ Atlas LangGraph nodes.
 Graph shape:
   classify_intent
       ├─► call_troubleshoot_agent   (connectivity / device-health investigation)
-      ├─► call_network_ops_agent    (firewall change requests, policy review, access requests)
+      ├─► call_network_ops_agent    (incident, change, and operational request workflows)
       └─► build_final_response      (dismiss / early-exit)
 """
 import logging
@@ -99,8 +99,8 @@ _NETWORK_OPS_RE = re.compile(
     # Actionable traffic directives (not diagnostic)
     r"allow\s+traffic|block\s+traffic|permit\s+traffic|deny\s+traffic|"
     r"allow\s+\d{1,3}\.\d{1,3}|permit\s+\d{1,3}\.\d{1,3}|"
-    # Panorama / firewall policy work
-    r"firewall\s+policy|fw\s+policy|panorama\s+rule|security\s+policy"
+    # Firewall / security policy work
+    r"firewall\s+policy|fw\s+policy|security\s+policy"
     r")\b",
     re.IGNORECASE,
 )

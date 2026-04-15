@@ -4,18 +4,18 @@ This document describes the current end-to-end flow for a troubleshooting reques
 
 It is based on the live architecture in:
 
-- [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>)
-- [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>)
-- [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>)
-- [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>)
-- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
-- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
-- [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>)
-- [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>)
-- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
-- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
-- [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>)
-- [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
+- [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
+- [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
+- [`app.py`](<app.py>)
+- `chat_service.py`
+- [`atlas_application.py`](<atlas_application.py>)
+- [`services/graph_runtime.py`](<services/graph_runtime.py>)
+- [`graph_builder.py`](<graph_builder.py>)
+- [`graph_nodes.py`](<graph_nodes.py>)
+- [`services/memory_manager.py`](<services/memory_manager.py>)
+- [`services/response_presenter.py`](<services/response_presenter.py>)
+- [`tools/all_tools.py`](<tools/all_tools.py>)
+- [`nornir/server.py`](<nornir/server.py>)
 
 ## High-Level Sequence
 
@@ -59,7 +59,7 @@ sequenceDiagram
 
 ## 1. Frontend Submission
 
-The frontend entrypoint is [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>).
+The frontend entrypoint is [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>).
 
 When the user submits a troubleshoot prompt:
 
@@ -86,7 +86,7 @@ The actual routing happens later inside LangGraph.
 
 ## 2. Frontend Opens the SSE Chat Stream
 
-[`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>) sends:
+[`frontend/src/utils/api.js`](<frontend/src/utils/api.js>) sends:
 
 - `POST /api/chat`
 
@@ -117,13 +117,13 @@ Later statuses come from graph nodes and tools.
 
 ## 3. FastAPI Owns the SSE Lifecycle
 
-The main endpoint is [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>) `api_chat(...)`.
+The main endpoint is [`app.py`](<app.py>) `api_chat(...)`.
 
 Responsibilities:
 
 1. authenticate the user
 2. load `session_id`
-3. register a status queue via [`/Users/manig/Documents/coding/atlas/status_bus.py`](</Users/manig/Documents/coding/atlas/status_bus.py>)
+3. register a status queue via [`status_bus.py`](<status_bus.py>)
 4. start `process_message(...)` in a background task
 5. stream:
    - `status` events from the queue
@@ -139,7 +139,7 @@ Important operational behavior:
 
 ## 4. `chat_service.py` Is Intentionally Thin
 
-[`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>) is no longer a large orchestration file.
+`chat_service.py` is no longer a large orchestration file.
 
 It does one thing:
 
@@ -149,7 +149,7 @@ It also exports `_IP_OR_CIDR_RE` so the graph node can reuse the same IP/CIDR de
 
 ## 5. `AtlasApplication` Owns Top-Level Query Processing
 
-[`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>) is the top-level owner.
+[`atlas_application.py`](<atlas_application.py>) is the top-level owner.
 
 It owns these collaborating objects:
 
@@ -168,7 +168,7 @@ This keeps the entrypoint clean and gives the application a single high-level ow
 
 ## 6. `AtlasRuntime` Builds State, Ensures the Checkpointer, and Invokes the Graph
 
-[`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>) owns graph execution.
+[`services/graph_runtime.py`](<services/graph_runtime.py>) owns graph execution.
 
 It is responsible for:
 
@@ -204,7 +204,7 @@ That means LangGraph conversation state is keyed to the browser session.
 
 ## 7. Redis Checkpointer Is Optional but Supported
 
-[`/Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py`](</Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py>) owns checkpointer lifecycle.
+[`services/checkpointer_runtime.py`](<services/checkpointer_runtime.py>) owns checkpointer lifecycle.
 
 On first use:
 
@@ -219,7 +219,7 @@ This is important:
 
 ## 8. LangGraph Performs Coarse Routing
 
-The graph itself is defined in [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>).
+The graph itself is defined in [`graph_builder.py`](<graph_builder.py>).
 
 Graph shape:
 
@@ -240,7 +240,7 @@ Atlas does **not** use the graph for deep reasoning. The graph only owns:
 
 ## 9. `classify_intent()` Decides Which Agent Runs
 
-[`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
+[`graph_nodes.py`](<graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
 
 Possible values:
 
@@ -261,7 +261,7 @@ That means:
 
 ## 10. Troubleshoot Node Starts a Fresh Live Investigation
 
-`call_troubleshoot_agent(...)` in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) is the main orchestration node for live troubleshooting.
+`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is the main orchestration node for live troubleshooting.
 
 Before the agent runs, it explicitly resets run-scoped live state:
 
@@ -287,7 +287,7 @@ When the prompt references an incident such as:
 help me troubleshoot INC0010043
 ```
 
-the graph uses [`/Users/manig/Documents/coding/atlas/services/request_preprocessor.py`](</Users/manig/Documents/coding/atlas/services/request_preprocessor.py>) to:
+the graph uses [`services/request_preprocessor.py`](<services/request_preprocessor.py>) to:
 
 - fetch the incident details
 - extract IPs and other context
@@ -297,7 +297,7 @@ That prevents incident troubleshooting from drifting into a vague generic path.
 
 ## 12. `AgentFactory` Builds Thin ReAct Agents
 
-[`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>) owns agent creation.
+[`agents/agent_factory.py`](<agents/agent_factory.py>) owns agent creation.
 
 It provides:
 
@@ -321,7 +321,7 @@ Those responsibilities stay outside the agent layer.
 
 ## 13. The Troubleshoot Agent Selects the Prompt and Tool Set
 
-[`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>) decides:
+[`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>) decides:
 
 - which troubleshooting system prompt to use
 - which tool collection to expose
@@ -345,7 +345,7 @@ That keeps connectivity runs constrained and reduces accidental tool sprawl.
 
 ## 14. ToolRegistry Owns the Tool Sets
 
-[`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>) owns:
+[`tools/tool_registry.py`](<tools/tool_registry.py>) owns:
 
 - `ALL_TOOLS`
 - `CONNECTIVITY_TOOLS`
@@ -364,7 +364,7 @@ Current intent:
 
 ## 15. The Tool Layer Does the Real Backend Work
 
-[`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) is the centralized tool layer.
+[`tools/all_tools.py`](<tools/all_tools.py>) is the centralized tool layer.
 
 Each tool may do all of the following:
 
@@ -380,8 +380,6 @@ Each tool may do all of the following:
 - `check_routing(...)`
 - `collect_connectivity_snapshot(...)`
 - `search_servicenow(...)`
-- `check_panorama_policy(...)`
-- `check_splunk(...)`
 - `lookup_vendor_kb(...)`
 
 ## 16. Atlas Uses Two Different Runtime State Layers for Tool Output
@@ -421,7 +419,7 @@ Atlas calls the Nornir HTTP service at:
 
 implemented in:
 
-- [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
+- [`nornir/server.py`](<nornir/server.py>)
 
 This service is responsible for:
 
@@ -437,15 +435,14 @@ This separation is important because:
 - Atlas remains the reasoning/orchestration layer
 - Nornir remains the live collection layer
 
-## 18. ServiceNow, Panorama, Splunk, and Other Systems Are Accessed Through the Tool Layer
+## 18. ServiceNow and Other Systems Are Accessed Through the Tool Layer
 
 Not every tool goes through Nornir.
 
 For example:
 
 - ServiceNow work often uses the MCP path
-- policy checks can use Panorama-related tools
-- traffic/event correlation can use Splunk tools
+- other external systems can be reached through dedicated tool integrations
 
 The important invariant is:
 
@@ -454,7 +451,7 @@ The important invariant is:
 
 ## 19. `MemoryManager` Owns Pending Context and Recall Policy
 
-[`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>) owns two important memory concerns:
+[`services/memory_manager.py`](<services/memory_manager.py>) owns two important memory concerns:
 
 ### Pending clarification context
 
@@ -492,7 +489,7 @@ The goal is to avoid answers that omit mandatory live evidence artifacts.
 
 ## 21. Presenter Owns the Final Payload Shape
 
-[`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>) owns the final UI-facing payload.
+[`services/response_presenter.py`](<services/response_presenter.py>) owns the final UI-facing payload.
 
 It does not just pass through the agent’s text.
 
@@ -537,7 +534,7 @@ where `payload` may include:
 
 ## 23. FastAPI Persists Chat History and Emits the Final SSE `done`
 
-Back in [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>):
+Back in [`app.py`](<app.py>):
 
 1. the completed result is read from the task
 2. if the user message was a write-like operation, relevant caches are flushed
@@ -630,4 +627,4 @@ the typical modern flow is:
 10. FastAPI sends the final structured payload
 11. UI renders markdown, path visuals, counters, and the status timeline
 
-That is the current architecture as implemented today, and it is materially different from the older NetBrain/Panorama-first flow.
+That is the current architecture as implemented today, and it is materially different from the older NetBrain-centric flow.

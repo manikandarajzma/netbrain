@@ -51,13 +51,13 @@ Implements every node as an async function. Each node receives `AtlasState`, doe
 | `classify_intent` | Calls the LLM with a strict system prompt to classify the query into one of 7 intents. Also handles follow-up confirmations ("yes"/"no") by checking the previous `follow_up_action` in conversation history |
 | `tool_selector` | Calls the LLM with all MCP tool descriptions bound and forces it to pick a tool (`tool_choice="required"` on first iteration, `"auto"` on retries). Returns the tool name and args |
 | `check_rbac` | Checks whether the user's role permits the selected tool. Sets `rbac_error` if not |
-| `tool_executor` | Calls the MCP tool. Also contains deterministic chaining logic — e.g. if `query_panorama_ip_object_group` ran and the user asked for members, it immediately calls `query_panorama_address_group_members` without going back to the LLM |
+| `tool_executor` | Calls the MCP tool. Also contains deterministic chaining logic when a follow-up tool is known in advance, without bouncing back to the LLM |
 | `prefilled_tool_executor` | Skips LLM tool selection entirely — runs a known tool directly. Used when the user confirms a follow-up offer ("yes, show me the members") |
 | `enrich_with_insights` | After the main result is ready, adds proactive hints — e.g. "this group has no policies referencing it" |
 | `troubleshoot_orchestrator` | Checks if the troubleshoot query has enough context (port, issue type). If not, asks a clarifying question and saves the original prompt in memory keyed by session ID. The next message from the same session is combined with it |
 | `synthesize_error` | If the tool failed after retries, asks the LLM to produce a friendly error message |
 | `netbrain_agent` | Delegates path queries to the NetBrain A2A agent over HTTP — no MCP involved |
-| `risk_orchestrator` | Delegates risk queries to the risk orchestrator which fans out to Panorama and Splunk A2A agents in parallel |
+| `risk_orchestrator` | Delegates risk queries to the risk orchestrator which can fan out to external backend agents in parallel |
 
 ---
 
@@ -90,7 +90,7 @@ classify_intent
     │ intent = "netbrain"
     ▼
 netbrain_agent  ──► HTTP POST localhost:8004 (NetBrain agent)
-                        └── ask_panorama_agent ──► HTTP POST localhost:8003 (Panorama agent)
+                        └── ask_external_agent ──► HTTP POST localhost:<port> (external agent)
     ▼
 build_final_response
 ```

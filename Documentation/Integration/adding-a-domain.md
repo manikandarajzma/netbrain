@@ -24,12 +24,12 @@ Each integration follows the same three-file pattern:
 ```
 atlas/
 ├── netbrainauth.py          ← authentication (token/session management)
-├── panoramaauth.py          ← authentication (API key management)
+├── servicenowauth.py        ← authentication (credential helper example)
 ├── tools/
 │   ├── shared.py            ← credentials loaded here at startup
 │   ├── netbrain_tools.py    ← @mcp.tool() definitions
-│   ├── panorama_tools.py
-│   └── splunk_tools.py
+│   ├── servicenow_tools.py
+│   └── newdomain_tools.py
 └── mcp_server.py            ← imports tool modules to trigger registration
 ```
 
@@ -76,7 +76,7 @@ if not SERVICENOW_USER or not SERVICENOW_PASSWORD:
 
 ## Step 2: Create the backend service credential module
 
-Create `newdomainauth.py` in the atlas root (alongside `netbrainauth.py`, `panoramaauth.py`). Its job is to manage session/token state and expose a single function the tool module calls to get a valid credential.
+Create `newdomainauth.py` in the atlas root (alongside `netbrainauth.py` and other auth helpers). Its job is to manage session/token state and expose a single function the tool module calls to get a valid credential.
 
 Choose the pattern that matches how the external API authenticates:
 
@@ -86,13 +86,13 @@ The external API requires a login call that returns a short-lived session token.
 
 See [`netbrainauth.py`](../../netbrainauth.py) for a complete working example. Key elements: a module-level `_token` variable, a `TOKEN_TTL_SECONDS` constant, a `get_token()` function that returns the cached token or fetches a new one, and a `clear_token_cache()` function used when a tool receives an unexpected 401 response.
 
-### Credential pattern B — API key cached indefinitely (e.g., Panorama)
+### Credential pattern B — API key cached indefinitely
 
 The external API uses an API key that does not expire. Fetch it once (from Key Vault or environment) and cache it for the process lifetime.
 
-See [`panoramaauth.py`](../../panoramaauth.py) for a working example.
+Use the same module-level caching pattern as the other auth helpers in the repo.
 
-### Credential pattern C — credentials passed directly (e.g., Splunk)
+### Credential pattern C — credentials passed directly
 
 Some APIs accept credentials on every request — no session management needed. Skip the credential module entirely and import the username/password constants directly from `tools/shared.py` in the tool module.
 
@@ -210,8 +210,8 @@ Add one import line. The act of importing the module triggers all `@mcp.tool()` 
 # mcp_server.py
 
 # Import domain modules – the act of importing triggers @mcp.tool() registration
-import tools.splunk_tools      # noqa: F401
-import tools.panorama_tools    # noqa: F401
+import tools.servicenow_tools  # noqa: F401
+import tools.netbrain_tools    # noqa: F401
 import tools.netbrain_tools    # noqa: F401
 import tools.servicenow_tools  # noqa: F401   ← add this line
 ```

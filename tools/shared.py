@@ -39,7 +39,7 @@ def setup_logging(name: str) -> logging.Logger:
     Usage in each module::
 
         from tools.shared import setup_logging
-        logger = setup_logging(__name__)   # e.g. "tools.splunk_tools"
+        logger = setup_logging(__name__)   # e.g. "tools.servicenow_tools"
         logger.debug("something happened")
     """
     logger = logging.getLogger(name)
@@ -72,7 +72,7 @@ mcp.llm = None
 mcp.llm_error = None
 
 # ---------------------------------------------------------------------------
-# LLM helper (used by Panorama for AI analysis)
+# LLM helper for optional tool-side analysis
 # ---------------------------------------------------------------------------
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate  # re-exported for convenience

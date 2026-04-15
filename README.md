@@ -30,17 +30,17 @@ Atlas currently supports work in these broad categories:
 
 Atlas now has clear owners for the main application responsibilities:
 
-- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
+- [`atlas_application.py`](<atlas_application.py>)
   - top-level application owner
-- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
+- [`services/graph_runtime.py`](<services/graph_runtime.py>)
   - graph execution owner
-- [`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>)
+- [`agents/agent_factory.py`](<agents/agent_factory.py>)
   - agent construction owner
-- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
+- [`services/response_presenter.py`](<services/response_presenter.py>)
   - final response payload owner
-- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
+- [`services/memory_manager.py`](<services/memory_manager.py>)
   - pending-context and recall-policy owner
-- [`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>)
+- [`tools/tool_registry.py`](<tools/tool_registry.py>)
   - tool-set owner
 
 ### Request Flow
@@ -90,7 +90,7 @@ flowchart TD
   - chat-history persistence
   - cache flush after write operations
 - **Chat entrypoint**
-  - [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>) is intentionally thin
+  - `chat_service.py` is intentionally thin
   - delegates to `AtlasApplication`
 - **Application/runtime**
   - `AtlasApplication` owns the top-level processing flow
@@ -109,73 +109,73 @@ flowchart TD
 
 ### Entry and runtime
 
-- [`/Users/manig/Documents/coding/atlas/app.py`](</Users/manig/Documents/coding/atlas/app.py>)
+- [`app.py`](<app.py>)
   - FastAPI routes, SSE streaming, chat persistence, built-frontend serving
-- [`/Users/manig/Documents/coding/atlas/run_web.py`](</Users/manig/Documents/coding/atlas/run_web.py>)
+- [`run_web.py`](<run_web.py>)
   - recommended development launcher for the web app
-- [`/Users/manig/Documents/coding/atlas/chat_service.py`](</Users/manig/Documents/coding/atlas/chat_service.py>)
+- `chat_service.py`
   - thin entrypoint from HTTP into the application
-- [`/Users/manig/Documents/coding/atlas/atlas_application.py`](</Users/manig/Documents/coding/atlas/atlas_application.py>)
+- [`atlas_application.py`](<atlas_application.py>)
   - application owner that wires runtime, memory, presenter, tools, and agents
-- [`/Users/manig/Documents/coding/atlas/services/graph_runtime.py`](</Users/manig/Documents/coding/atlas/services/graph_runtime.py>)
+- [`services/graph_runtime.py`](<services/graph_runtime.py>)
   - graph execution owner
-- [`/Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py`](</Users/manig/Documents/coding/atlas/services/checkpointer_runtime.py>)
+- [`services/checkpointer_runtime.py`](<services/checkpointer_runtime.py>)
   - Redis-backed LangGraph checkpointer lifecycle
 
 ### Graph
 
-- [`/Users/manig/Documents/coding/atlas/graph_builder.py`](</Users/manig/Documents/coding/atlas/graph_builder.py>)
+- [`graph_builder.py`](<graph_builder.py>)
   - graph structure
-- [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>)
+- [`graph_nodes.py`](<graph_nodes.py>)
   - routing node, troubleshoot node, network-ops node, final response node
-- [`/Users/manig/Documents/coding/atlas/graph_state.py`](</Users/manig/Documents/coding/atlas/graph_state.py>)
+- [`graph_state.py`](<graph_state.py>)
   - typed graph state
 
 ### Agents
 
-- [`/Users/manig/Documents/coding/atlas/agents/agent_factory.py`](</Users/manig/Documents/coding/atlas/agents/agent_factory.py>)
+- [`agents/agent_factory.py`](<agents/agent_factory.py>)
   - minimal shared ReAct agent factory
-- [`/Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py`](</Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py>)
+- [`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>)
   - troubleshooting agent builder
-- [`/Users/manig/Documents/coding/atlas/agents/network_ops_agent.py`](</Users/manig/Documents/coding/atlas/agents/network_ops_agent.py>)
+- [`agents/network_ops_agent.py`](<agents/network_ops_agent.py>)
   - network-ops agent builder
 
 ### Services
 
-- [`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>)
+- [`services/memory_manager.py`](<services/memory_manager.py>)
   - pending clarification state and evidence-driven recall signals
-- [`/Users/manig/Documents/coding/atlas/services/request_preprocessor.py`](</Users/manig/Documents/coding/atlas/services/request_preprocessor.py>)
+- [`services/request_preprocessor.py`](<services/request_preprocessor.py>)
   - incident expansion, IP/port extraction, clarification helpers
-- [`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>)
+- [`services/response_presenter.py`](<services/response_presenter.py>)
   - deterministic payload shaping for troubleshoot and network-ops answers
-- [`/Users/manig/Documents/coding/atlas/services/runtime_helpers.py`](</Users/manig/Documents/coding/atlas/services/runtime_helpers.py>)
+- [`services/runtime_helpers.py`](<services/runtime_helpers.py>)
   - session-data merge, snapshot/path completeness checks, status push helpers
 
 ### Tools and external integrations
 
-- [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>)
+- [`tools/all_tools.py`](<tools/all_tools.py>)
   - centralized tool implementations
-- [`/Users/manig/Documents/coding/atlas/tools/tool_registry.py`](</Users/manig/Documents/coding/atlas/tools/tool_registry.py>)
+- [`tools/tool_registry.py`](<tools/tool_registry.py>)
   - tool-set ownership
-- [`/Users/manig/Documents/coding/atlas/mcp_client.py`](</Users/manig/Documents/coding/atlas/mcp_client.py>)
+- [`mcp_client.py`](<mcp_client.py>)
   - MCP calls for systems such as ServiceNow
-- [`/Users/manig/Documents/coding/atlas/nornir/server.py`](</Users/manig/Documents/coding/atlas/nornir/server.py>)
+- [`nornir/server.py`](<nornir/server.py>)
   - live network collection service on port `8006`
 
 ### Frontend
 
-- [`/Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js`](</Users/manig/Documents/coding/atlas/frontend/src/stores/chatStore.js>)
+- [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
   - chat lifecycle and status timeline
-- [`/Users/manig/Documents/coding/atlas/frontend/src/utils/api.js`](</Users/manig/Documents/coding/atlas/frontend/src/utils/api.js>)
+- [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
   - `/api/discover` and `/api/chat` helpers
-- [`/Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/messages/AssistantMessage.jsx>)
+- [`frontend/src/components/messages/AssistantMessage.jsx`](<frontend/src/components/messages/AssistantMessage.jsx>)
   - payload-driven assistant rendering
-- [`/Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx`](</Users/manig/Documents/coding/atlas/frontend/src/components/path/PathVisualization.jsx>)
+- [`frontend/src/components/path/PathVisualization.jsx`](<frontend/src/components/path/PathVisualization.jsx>)
   - forward and reverse path diagrams
 
 ## Intent Routing
 
-Atlas uses **coarse routing** in [`/Users/manig/Documents/coding/atlas/graph_nodes.py`](</Users/manig/Documents/coding/atlas/graph_nodes.py>) `classify_intent(...)`.
+Atlas uses **coarse routing** in [`graph_nodes.py`](<graph_nodes.py>) `classify_intent(...)`.
 
 This routing is intentionally simple and deterministic:
 
@@ -199,7 +199,7 @@ That means:
 
 ## Tool Model
 
-Every tool in [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) follows the same model:
+Every tool in [`tools/all_tools.py`](<tools/all_tools.py>) follows the same model:
 
 - accept typed arguments the LLM can fill
 - accept hidden runtime config for `session_id`
@@ -231,7 +231,7 @@ Atlas uses three distinct state layers:
 
 ### 2. Per-session tool side-effect store
 
-Stored inside [`/Users/manig/Documents/coding/atlas/tools/all_tools.py`](</Users/manig/Documents/coding/atlas/tools/all_tools.py>) and cleared between runs.
+Stored inside [`tools/all_tools.py`](<tools/all_tools.py>) and cleared between runs.
 
 Examples:
 
@@ -254,7 +254,7 @@ This cache is scoped to the session/run and explicitly cleared.
 
 ### 4. MemoryManager responsibilities
 
-[`/Users/manig/Documents/coding/atlas/services/memory_manager.py`](</Users/manig/Documents/coding/atlas/services/memory_manager.py>) owns:
+[`services/memory_manager.py`](<services/memory_manager.py>) owns:
 
 - pending clarification state
 - recall-signal evaluation
@@ -271,7 +271,7 @@ Long-term recall is no longer always-on background context. It is gated by evide
 
 Atlas does not let the LLM freely shape every UI payload.
 
-[`/Users/manig/Documents/coding/atlas/services/response_presenter.py`](</Users/manig/Documents/coding/atlas/services/response_presenter.py>) owns:
+[`services/response_presenter.py`](<services/response_presenter.py>) owns:
 
 - deterministic `ServiceNow` section replacement
 - interface counter grouping
@@ -322,7 +322,7 @@ This starts the Nornir HTTP service on port `8006`.
 ### Frontend development server
 
 ```bash
-cd /Users/manig/Documents/coding/atlas/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -332,7 +332,7 @@ Vite serves the frontend on port `5173`.
 ### Frontend production build
 
 ```bash
-cd /Users/manig/Documents/coding/atlas/frontend
+cd frontend
 npm run build
 ```
 
@@ -354,6 +354,5 @@ FastAPI serves the built app automatically from `frontend/dist` when it exists.
 
 See:
 
-- [`/Users/manig/Documents/coding/atlas/Documentation/General/troubleshooting/troubleshooting.md`](</Users/manig/Documents/coding/atlas/Documentation/General/troubleshooting/troubleshooting.md>)
-- [`/Users/manig/Documents/coding/atlas/Documentation/End-to-End-flow/troubleshooting-query-flow.md`](</Users/manig/Documents/coding/atlas/Documentation/End-to-End-flow/troubleshooting-query-flow.md>)
-
+- [`Documentation/General/troubleshooting/troubleshooting.md`](<Documentation/General/troubleshooting/troubleshooting.md>)
+- [`Documentation/End-to-End-flow/troubleshooting-query-flow.md`](<Documentation/End-to-End-flow/troubleshooting-query-flow.md>)

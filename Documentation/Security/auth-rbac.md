@@ -6,7 +6,7 @@ Atlas uses Microsoft Entra ID (OIDC) for user authentication. Access is controll
 
 When a user signs in, their group memberships are read from the OIDC `id_token` and mapped to a configured access level. The resolved group is baked into a signed session cookie and checked on every tool call.
 
-**All backend credentials** (NetBrain, Panorama, Splunk) are stored in Azure Key Vault — not in the session or in user-facing tokens.
+**All backend credentials** (for example, NetBrain and ServiceNow) are stored in Azure Key Vault — not in the session or in user-facing tokens.
 
 ---
 

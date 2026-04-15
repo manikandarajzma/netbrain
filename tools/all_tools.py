@@ -35,8 +35,6 @@ except ImportError:
 logger = logging.getLogger("atlas.tools")
 
 NORNIR_AGENT_URL   = "http://localhost:8006"
-PANORAMA_AGENT_URL = "http://localhost:8003"
-SPLUNK_AGENT_URL   = "http://localhost:8002"
 
 _STUB = os.getenv("STUB_UNREACHABLE_AGENTS", "").lower() in ("1", "true", "yes")
 
@@ -588,7 +586,6 @@ async def trace_path(source_ip: str, dest_ip: str, config: RunnableConfig) -> st
     - All device hostnames in the path (use these for ServiceNow, OSPF checks, etc.)
     - The first-hop device (use for ping source)
     - The last-hop device (use for TCP test source)
-    - Any firewalls in the path (use for Panorama check)
     """
     session_id = _sid(config)
     await _push_status(session_id, f"Tracing path {source_ip} → {dest_ip} via live SSH...")
@@ -2478,104 +2475,6 @@ async def update_servicenow_change_request(
 
 
 # ---------------------------------------------------------------------------
-# Firewall / Splunk tools
-# ---------------------------------------------------------------------------
-
-@tool
-async def check_panorama_policy(
-    source_ip: str,
-    dest_ip: str,
-    firewall_hostnames: list[str],
-    config: RunnableConfig,
-    port: str = "",
-    protocol: str = "tcp",
-) -> str:
-    """
-    Run Panorama 'test security-policy-match' against each Palo Alto firewall in the path.
-    Only call this if trace_path identified Palo Alto firewalls.
-    Pass the firewall hostnames from the path trace output.
-
-    Returns: per-firewall matching rule, action (allow/deny), zones.
-    """
-    session_id = _sid(config)
-    fws_str = ", ".join(firewall_hostnames)
-    await _push_status(session_id, f"Checking Panorama policy on {fws_str}...")
-
-    if not firewall_hostnames:
-        return "No Palo Alto firewalls provided — Panorama check skipped."
-
-    if _STUB:
-        return "Security policy match (STUB): rule=Allow-Internal action=allow zones=trust→untrust"
-
-    async def _test_one(fw: str) -> str:
-        args: dict[str, Any] = {"firewall_hostname": fw, "source_ip": source_ip, "dest_ip": dest_ip}
-        if port:
-            args["dest_port"] = port.strip()
-        if protocol:
-            args["protocol"] = protocol.strip()
-        result = await call_mcp_tool("test_panorama_security_policy_match", args, timeout=45.0)
-        if not result:
-            return f"{fw}: no response from Panorama."
-        if "error" in result:
-            return f"{fw}: {result['error']}"
-        rule    = result.get("matching_rule", "no-match")
-        action  = result.get("action", "unknown")
-        dg      = result.get("device_group", "?")
-        from_z  = result.get("from_zone", "?")
-        to_z    = result.get("to_zone", "?")
-        port_info = f" port {port}/{protocol}" if port else ""
-        icon    = "✅" if action.lower() == "allow" else "🚫"
-        return f"{icon} {fw} (dg: {dg}){port_info}: rule='{rule}' action={action} zones={from_z}→{to_z}"
-
-    results = await asyncio.gather(*[_test_one(fw) for fw in firewall_hostnames])
-    return "Panorama policy results:\n" + "\n".join(results)
-
-
-@tool
-async def check_splunk(task: str, config: RunnableConfig) -> str:
-    """
-    Query Splunk for recent firewall deny events and traffic patterns.
-    Use to correlate deny events with the path findings when firewalls are present.
-    Pass a natural-language description including the source IP and time window.
-    Example: "Check deny events for 10.0.0.1 → 11.0.0.1 in the last 24 hours."
-    """
-    session_id = _sid(config)
-    await _push_status(session_id, "Querying Splunk for traffic events...")
-
-    if _STUB:
-        return "Splunk (STUB): 14 deny events on port 22 from 10.0.0.1 in the last 24h."
-
-    import uuid
-    cb = CircuitBreaker.for_endpoint(SPLUNK_AGENT_URL)
-
-    async def _do() -> dict:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            resp = await c.post(SPLUNK_AGENT_URL, json={
-                "id": str(uuid.uuid4()),
-                "message": {"role": "user", "parts": [{"type": "text", "text": task}]},
-            })
-            resp.raise_for_status()
-            return resp.json()
-
-    try:
-        data = await retry_async(
-            cb, _do,
-            retryable_exc=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError),
-        )
-        artifacts = data.get("artifacts", [])
-        if artifacts:
-            text = next(
-                (p.get("text") for p in artifacts[0].get("parts", []) if p.get("type") == "text"),
-                None,
-            )
-            if text:
-                return text
-        return "Splunk: no data returned."
-    except Exception as exc:
-        return f"Splunk unavailable: {exc}"
-
-
-# ---------------------------------------------------------------------------
 # Long-term memory recall — semantic search over past sessions + incidents
 # ---------------------------------------------------------------------------
 
@@ -2771,18 +2670,15 @@ ALL_TOOLS = [
     lookup_routing_history,
     search_servicenow,
     get_incident_details,
-    check_panorama_policy,
-    check_splunk,
     recall_similar_cases,
     lookup_vendor_kb,
 ]
 
-# Restricted tool set for the network-ops agent — path + policy + tickets only.
+# Restricted tool set for the network-ops agent — path + tickets only.
 # No diagnostic tools (OSPF, counters, routing checks, ping) — those belong to
 # the troubleshooting agent.
 NETWORK_OPS_TOOLS = [
     trace_path,
-    check_panorama_policy,
     search_servicenow,
     get_incident_details,
     get_change_request_details,
@@ -2803,7 +2699,5 @@ CONNECTIVITY_TOOLS = [
     lookup_routing_history,
     search_servicenow,
     get_incident_details,
-    check_panorama_policy,
-    check_splunk,
     lookup_vendor_kb,
 ]
