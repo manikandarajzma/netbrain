@@ -71,88 +71,26 @@ Atlas has clear owners for the main application responsibilities:
 
 ### Request Flow
 
-```mermaid
-flowchart TD
-    UI["React UI"] --> CHAT["POST /api/chat (SSE)"]
-    CHAT --> APP["FastAPI app.py"]
-    APP --> CS["chat_service.process_message()"]
-    CS --> AA["AtlasApplication"]
-    AA --> RT["AtlasRuntime"]
-    AA --> OBS["structured logs<br/>request_id / session_id / timing"]
-    RT --> CP["Redis checkpointer (optional)"]
-    RT --> GRAPH["LangGraph atlas_graph"]
+1. The React UI sends the user request to `POST /api/chat` over SSE.
+2. `app.py` authenticates the request, creates the SSE lifecycle, and delegates to `chat_service.py`.
+3. `chat_service.py` hands the request to `AtlasApplication`.
+4. `AtlasApplication` calls `AtlasRuntime`, which prepares graph state, request metadata, and optional checkpointer context.
+5. LangGraph classifies the intent and routes to either the troubleshoot workflow, the network-ops workflow, or a dismiss path.
+6. The selected workflow service invokes the appropriate pure ReAct agent.
+7. The agent resolves its allowed tools through `ToolRegistry`.
+8. Workflow tools call owned services and backends such as Nornir or MCP-backed systems.
+9. Tool side effects are written into the per-session store.
+10. `ResponsePresenter` turns the final text and session state into the UI payload.
+11. `app.py` streams the final response back to the frontend, which renders markdown, path visuals, counters, and status updates.
 
-    GRAPH --> CI["classify_intent"]
-    CI -->|troubleshoot| TWF["TroubleshootWorkflowService"]
-    CI -->|network_ops| NWF["NetworkOpsWorkflowService"]
-    CI -->|dismiss| BF["build_final_response"]
+### Agent Execution
 
-    TWF --> TRAG["Troubleshoot ReAct agent"]
-    NWF --> NOAG["Network Ops ReAct agent"]
-
-    TRAG --> REG["ToolRegistry"]
-    NOAG --> REG
-
-    REG --> PATH["tools/path_agent_tools.py"]
-    REG --> DEVICE["tools/device_agent_tools.py"]
-    REG --> ROUTING["tools/routing_agent_tools.py"]
-    REG --> CONN["tools/connectivity_agent_tools.py"]
-    REG --> SNWF["tools/servicenow_workflow_tools.py"]
-    REG --> SNTOOLS["tools/servicenow_agent_tools.py"]
-
-    PATH --> NORNIR["Nornir HTTP service :8006"]
-    DEVICE --> NORNIR
-    ROUTING --> NORNIR
-    CONN --> NORNIR
-    SNWF --> MCP["MCP-backed systems"]
-    PATH --> PATHSVC["PathTraceService"]
-    DEVICE --> DDSVC["DeviceDiagnosticsService"]
-    ROUTING --> RDSVC["RoutingDiagnosticsService"]
-    CONN --> CSSVC["ConnectivitySnapshotService"]
-    SNWF --> SNSVC["ServiceNowSearchService"]
-    PATH --> STORE["Per-session side-effect store + Redis run cache"]
-    DEVICE --> STORE
-    ROUTING --> STORE
-    CONN --> STORE
-    SNWF --> STORE
-    SNTOOLS --> MCP
-
-    TWF --> PRES["ResponsePresenter"]
-    NWF --> PRES
-    PRES --> BF
-    BF --> APP
-    APP --> UI
-```
-
-### Agent Execution View
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant App as "AtlasApplication"
-    participant Runtime as "AtlasRuntime"
-    participant Router as "classify_intent"
-    participant Agent as "ReAct agent"
-    participant Registry as "ToolRegistry"
-    participant Workflow as "workflow tools"
-    participant Product as "product-facing tools"
-    participant Backends as "Nornir / MCP"
-    participant Presenter as "ResponsePresenter"
-
-    User->>App: process query
-    App->>Runtime: invoke graph (request_id)
-    Runtime->>Router: classify intent
-    Router->>Agent: choose troubleshoot or network_ops
-    Agent->>Registry: resolve allowed tools
-    Registry-->>Agent: uniform tool list
-    Agent->>Workflow: trace/snapshot/correlation tools
-    Agent->>Product: ServiceNow CRUD/detail tools
-    Workflow->>Backends: Nornir HTTP / MCP
-    Product->>Backends: MCP
-    Backends-->>Agent: tool results
-    Agent-->>Presenter: final text + side effects
-    Presenter-->>App: structured response payload
-```
+1. The workflow service picks the agent type.
+2. The agent receives a prompt plus a restricted profile of tools from `ToolRegistry`.
+3. The agent chooses tools from a uniform Atlas tool surface.
+4. Those tools delegate to workflow owners or thin product-facing adapters.
+5. Backends return live data or record data.
+6. The workflow merges side effects, enforces required evidence when needed, and hands the result to `ResponsePresenter`.
 
 ### Layer Boundaries
 

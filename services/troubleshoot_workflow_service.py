@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import traceback as _tb
 from time import perf_counter
 from typing import Any
@@ -9,7 +10,6 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 try:
-    from atlas.chat_service import _IP_OR_CIDR_RE
     from atlas.services.memory_manager import memory_manager
     from atlas.services.metrics import metrics_recorder
     from atlas.services.nornir_client import nornir_client
@@ -27,7 +27,6 @@ try:
     from atlas.tools.path_agent_tools import trace_path, trace_reverse_path
     from atlas.agents.troubleshoot_agent import build_agent
 except ImportError:
-    from chat_service import _IP_OR_CIDR_RE  # type: ignore
     from services.memory_manager import memory_manager  # type: ignore
     from services.metrics import metrics_recorder  # type: ignore
     from services.nornir_client import nornir_client  # type: ignore
@@ -42,6 +41,7 @@ except ImportError:
 
 
 logger = logging.getLogger("atlas.troubleshoot_workflow")
+_IP_OR_CIDR_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b")
 
 
 class TroubleshootWorkflowService:
@@ -148,6 +148,15 @@ class TroubleshootWorkflowService:
                 session_data = workflow_state_service.merge_session_data(session_data, session_store.pop(session_id))
             except Exception as exc:
                 logger.warning("mandatory path visualization collection failed: %s", exc)
+
+        if memory_manager.should_trigger_recall_follow_up(session_data):
+            recall_follow_up = memory_manager.build_recall_follow_up(full_prompt, session_data)
+            if recall_follow_up:
+                await status_service.push(session_id, "Checking similar past cases...")
+                agent = build_agent(full_prompt, issue_type)
+                result = await agent.ainvoke({"messages": [HumanMessage(content=recall_follow_up)]}, config=config)
+                final_text = extract_final_text(result.get("messages", [])) or final_text
+                session_data = workflow_state_service.merge_session_data(session_data, session_store.pop(session_id))
 
         content = response_presenter.build_troubleshoot_content(final_text, session_data, full_prompt, inc_summary)
         if final_text:

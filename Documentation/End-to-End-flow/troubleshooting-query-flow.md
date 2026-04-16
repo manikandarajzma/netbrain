@@ -46,94 +46,39 @@ It is based on the owner hierarchy:
 
 ## High-Level Sequence
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant FE as React UI
-    participant API as FastAPI app.py
-    participant CS as chat_service.py
-    participant APP as AtlasApplication
-    participant RT as AtlasRuntime
-    participant G as LangGraph atlas_graph
-    participant T as Troubleshoot Agent
-    participant REG as ToolRegistry
-    participant PATH as path_agent_tools.py
-    participant DEVICE as device_agent_tools.py
-    participant ROUTING as routing_agent_tools.py
-    participant CONN as connectivity_agent_tools.py
-    participant SNWF as servicenow_workflow_tools.py
-    participant DDSVC as DeviceDiagnosticsService
-    participant CSSVC as ConnectivitySnapshotService
-    participant RDSVC as RoutingDiagnosticsService
-    participant SNSVC as ServiceNowSearchService
-    participant SN as servicenow_agent_tools.py
-    participant N as Nornir :8006
-    participant P as ResponsePresenter
-
-    U->>FE: Submit troubleshoot query
-    FE->>API: POST /api/chat (SSE)
-    API->>CS: process_message(...)
-    CS->>APP: process_query(...)
-    APP->>RT: invoke_atlas_graph(...)
-    RT->>G: ainvoke(initial_state, config)
-    G->>G: classify_intent()
-    G->>T: call_troubleshoot_agent()
-    T->>REG: resolve allowed tools
-    T->>PATH: path workflow calls
-    T->>DEVICE: active test / interface calls
-    T->>ROUTING: routing / OSPF / syslog calls
-    T->>CONN: connectivity snapshot calls
-    T->>SNWF: ServiceNow correlation calls
-    PATH->>N: live HTTP tool calls
-    DEVICE->>DDSVC: active tests / interface diagnostics as needed
-    ROUTING->>RDSVC: routing / OSPF / syslog workflow as needed
-    CONN->>CSSVC: connectivity evidence bundle as needed
-    SNWF->>SNSVC: incident/change correlation as needed
-    PATH-->>T: human-readable tool output + side effects
-    DEVICE-->>T: human-readable tool output + side effects
-    ROUTING-->>T: human-readable tool output + side effects
-    CONN-->>T: human-readable tool output + side effects
-    SNWF-->>T: human-readable tool output + side effects
-    T->>SN: product-facing ServiceNow tool calls as needed
-    SN-->>T: human-readable tool output
-    T-->>G: final_text
-    G->>P: build_troubleshoot_content(...)
-    P-->>G: structured payload
-    G-->>RT: result_state
-    RT-->>APP: final_response
-    APP-->>CS: response dict
-    CS-->>API: assistant payload
-    API-->>FE: SSE done event
-    FE-->>U: rendered markdown + path visuals + counters
-```
+1. The user submits a troubleshooting request in the React UI.
+2. The frontend opens `POST /api/chat` as an SSE stream.
+3. `app.py` owns authentication, session lookup, the status queue, and the SSE lifecycle.
+4. `chat_service.py` delegates the request to `AtlasApplication`.
+5. `AtlasApplication` invokes `AtlasRuntime`.
+6. `AtlasRuntime` builds graph state and calls the compiled LangGraph graph.
+7. LangGraph classifies the intent and routes to the troubleshoot workflow.
+8. `TroubleshootWorkflowService` invokes the pure troubleshoot ReAct agent.
+9. The agent gets its tool profile from `ToolRegistry`.
+10. Those tools call owned services and backends such as:
+    - `PathTraceService`
+    - `DeviceDiagnosticsService`
+    - `RoutingDiagnosticsService`
+    - `ConnectivitySnapshotService`
+    - `ServiceNowSearchService`
+    - Nornir on `:8006`
+    - MCP-backed systems
+11. Tool side effects accumulate in `SessionStore`.
+12. `ResponsePresenter` turns final text plus session side effects into the structured frontend payload.
+13. `app.py` streams the completed answer back to the browser, where the UI renders markdown, path visuals, counters, and status steps.
 
 ## Agent View
 
-```mermaid
-sequenceDiagram
-    participant RT as AtlasRuntime
-    participant Router as classify_intent
-    participant Agent as ReAct agent
-    participant REG as ToolRegistry
-    participant WF as workflow tools
-    participant MEM as memory tools
-    participant SN as ServiceNow tools
-    participant N as Nornir :8006
-    participant MCP as MCP backends
-    participant P as ResponsePresenter
-
-    RT->>Router: state(prompt, session_id, request_id)
-    Router->>Agent: selected agent node
-    Agent->>REG: resolve profile tools
-    REG-->>Agent: uniform tool list
-    Agent->>WF: path/snapshot/correlation
-    Agent->>MEM: historical recall when warranted
-    Agent->>SN: incident/change CRUD/detail
-    WF->>N: live network calls
-    WF->>MCP: workflow MCP calls
-    SN->>MCP: product-facing MCP calls
-    Agent-->>P: final text + side effects
-```
+1. `AtlasRuntime` passes prompt, session id, request id, and conversation context into the graph.
+2. The graph selects the troubleshoot agent node.
+3. The troubleshoot workflow builds a pure ReAct agent and gives it a restricted tool profile.
+4. The agent sees one uniform Atlas tool interface.
+5. Under that interface:
+   - workflow tools handle path tracing, snapshots, routing diagnostics, and ServiceNow correlation
+   - memory tools handle historical recall when live evidence justifies it
+   - product-facing ServiceNow tools handle incident and change CRUD/detail operations
+6. Tool results return both human-readable output and structured side effects.
+7. The workflow and presenter turn those results into the final response payload.
 
 ## 1. Frontend Submission
 

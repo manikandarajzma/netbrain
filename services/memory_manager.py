@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 try:
@@ -12,6 +13,8 @@ except ImportError:
 
 class MemoryManager:
     """Owns pending clarification state and long-term memory storage hooks."""
+
+    _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
     def set_pending_context(self, session_id: str, prompt: str, issue_type: str = "general") -> None:
         pending_context_store.set(session_id, prompt, issue_type)
@@ -128,6 +131,66 @@ class MemoryManager:
 
     def should_recall(self, store: dict[str, Any]) -> bool:
         return bool(self.get_recall_signals(store))
+
+    @classmethod
+    def _is_device_name(cls, value: str) -> bool:
+        value = str(value or "").strip()
+        return bool(value) and bool(cls._HOSTNAME_RE.match(value)) and not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value)
+
+    @classmethod
+    def _extract_devices_from_hops(cls, hops: list[dict[str, Any]] | None) -> list[str]:
+        devices: list[str] = []
+        for hop in hops or []:
+            if not isinstance(hop, dict):
+                continue
+            for key in ("from_device", "to_device"):
+                value = str(hop.get(key) or "").strip()
+                if cls._is_device_name(value) and value not in devices:
+                    devices.append(value)
+        return devices
+
+    def get_recall_devices(self, store: dict[str, Any]) -> list[str]:
+        devices: list[str] = []
+
+        for device in (
+            self._extract_devices_from_hops(store.get("path_hops") or [])
+            + self._extract_devices_from_hops(store.get("reverse_path_hops") or [])
+            + list((store.get("routing_history") or {}).get("historical_devices") or [])
+        ):
+            device = str(device or "").strip()
+            if self._is_device_name(device) and device not in devices:
+                devices.append(device)
+
+        peer_hint = (store.get("routing_history") or {}).get("peer_hint") or {}
+        for key in ("from_device", "to_device"):
+            device = str(peer_hint.get(key) or "").strip()
+            if self._is_device_name(device) and device not in devices:
+                devices.append(device)
+
+        return devices
+
+    def should_trigger_recall_follow_up(self, store: dict[str, Any]) -> bool:
+        if store.get("memory_recall_used"):
+            return False
+        return self.should_recall(store)
+
+    def build_recall_follow_up(self, prompt: str, store: dict[str, Any]) -> str:
+        signals = self.get_recall_signals(store)
+        devices = self.get_recall_devices(store)
+        if not signals:
+            return ""
+
+        device_list = ", ".join(devices) if devices else "none"
+        return (
+            f"{prompt}\n\n"
+            "Additional required step before finalizing:\n"
+            "- Live investigation produced evidence that may match prior cases.\n"
+            f"- Recall signals: {', '.join(signals)}\n"
+            f"- Candidate devices for recall: {device_list}\n"
+            "- Call recall_similar_cases with the current issue description and the relevant devices.\n"
+            "- Use historical results only as supporting context; keep live evidence primary.\n"
+            "- If memory returns nothing useful, say so briefly and keep the answer grounded in live findings."
+        )
 
     async def store_agent_memory_entry(self, prompt: str, final_text: str, agent_type: str = "troubleshoot") -> None:
         if not final_text:

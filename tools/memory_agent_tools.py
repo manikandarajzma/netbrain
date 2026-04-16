@@ -41,6 +41,8 @@ async def recall_similar_cases(
         )
 
     await push_status(session_id, "Searching past cases...")
+    store["memory_recall_used"] = True
+    store["memory_recall_signals"] = list(signals)
 
     try:
         try:

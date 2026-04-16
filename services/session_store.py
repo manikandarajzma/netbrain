@@ -23,6 +23,8 @@ class SessionStore:
             "connectivity_snapshot": {},
             "ip_owners": {},
             "servicenow_summary": "",
+            "memory_recall_used": False,
+            "memory_recall_signals": [],
         }
 
     def __init__(self) -> None:

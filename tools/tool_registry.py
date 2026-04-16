@@ -169,6 +169,7 @@ class ToolRegistry:
                 "workflow.routing.history",
                 "servicenow.search",
                 "servicenow.incident.read",
+                "memory.recall",
                 "knowledge.vendor.lookup",
             ),
         )

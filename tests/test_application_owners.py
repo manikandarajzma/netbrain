@@ -85,6 +85,26 @@ class MemoryManagerTests(unittest.TestCase):
         self.assertIn("interface state anomaly", signals)
         self.assertIn("failed reachability test", signals)
 
+    def test_memory_manager_extracts_recall_devices_from_live_path_context(self):
+        manager = MemoryManager()
+        devices = manager.get_recall_devices(
+            {
+                "path_hops": [
+                    {"from_device": "10.0.100.100", "to_device": "arista-ai1"},
+                    {"from_device": "arista-ai1", "to_device": "arista-ai2"},
+                ],
+                "reverse_path_hops": [
+                    {"from_device": "arista-ai3", "to_device": "10.0.200.200"},
+                ],
+                "routing_history": {
+                    "historical_devices": ["arista-ai4"],
+                    "peer_hint": {"from_device": "arista-ai2", "to_device": "arista-ai3"},
+                },
+            }
+        )
+
+        self.assertEqual(devices, ["arista-ai1", "arista-ai2", "arista-ai3", "arista-ai4"])
+
 
 class SessionStoreTests(unittest.TestCase):
     def tearDown(self):
@@ -196,6 +216,13 @@ class ToolRegistryTests(unittest.TestCase):
         }
 
         self.assertTrue(any(module.endswith("memory_agent_tools") for module in modules))
+
+    def test_connectivity_profile_includes_memory_recall_capability(self):
+        registry = ToolRegistry()
+        tools = registry.get_profile_tools("troubleshoot.connectivity")
+        tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+        self.assertIn("recall_similar_cases", tool_names)
 
     def test_tool_registry_exposes_knowledge_tools_from_dedicated_module(self):
         registry = ToolRegistry()
