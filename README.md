@@ -5,11 +5,11 @@ Atlas is an AI-assisted network operations application with two primary workflow
 - **Troubleshooting** for live investigations such as connectivity, performance, and intermittent issues
 - **Network operations** for operational actions such as ServiceNow incident/change work and firewall or policy review
 
-The current architecture is built around a small LangGraph router, two specialized ReAct agents, a uniform tool layer, an owned `NornirClient`, and a separate Nornir HTTP service for live network collection.
+The architecture is built around a small LangGraph router, two specialized ReAct agents, a uniform tool layer, an owned `NornirClient`, and a separate Nornir HTTP service for live network collection.
 
 ## What Atlas Does
 
-Atlas currently supports work in these broad categories:
+Atlas supports work in these broad categories:
 
 - **Connectivity troubleshooting**
   - live forward and reverse path tracing
@@ -28,7 +28,7 @@ Atlas currently supports work in these broad categories:
 
 ## Architecture Overview
 
-Atlas now has clear owners for the main application responsibilities:
+Atlas has clear owners for the main application responsibilities:
 
 - [`atlas_application.py`](<atlas_application.py>)
   - top-level application owner
@@ -311,7 +311,7 @@ That means:
 
 ## Tool Model
 
-Atlas exposes one uniform agent-facing tool model through [`tools/tool_registry.py`](<tools/tool_registry.py>), but the implementation now uses a few distinct owner-backed tool styles:
+Atlas exposes one uniform agent-facing tool model through [`tools/tool_registry.py`](<tools/tool_registry.py>), with a few distinct owner-backed implementation styles:
 
 - workflow tools split across:
   - [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
@@ -332,7 +332,7 @@ Every agent-facing tool follows the same model:
 
 ## Observability
 
-Atlas now uses a shared observability helper in [`services/observability.py`](<services/observability.py>).
+Atlas uses a shared observability helper in [`services/observability.py`](<services/observability.py>).
 
 Current behavior:
 - every query gets a `request_id`
@@ -352,7 +352,7 @@ This makes it easier to correlate one UI request with:
 - backend execution
 - final rendered output
 
-Atlas also now has a lightweight metrics owner in [`services/metrics.py`](<services/metrics.py>).
+Atlas has a lightweight metrics owner in [`services/metrics.py`](<services/metrics.py>).
 
 Current metrics include:
 - query started / completed counters
@@ -435,7 +435,7 @@ This cache is scoped to the session/run and explicitly cleared.
 - recall-signal evaluation
 - long-term memory store hook
 
-Long-term recall is no longer always-on background context. It is gated by evidence signals such as:
+Long-term recall is evidence-gated rather than always-on background context. It is triggered by signals such as:
 
 - path anomalies
 - interface failures

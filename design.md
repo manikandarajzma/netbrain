@@ -50,7 +50,7 @@ classify_intent  (graph_nodes.py)
   - `tools/routing_agent_tools.py`
   - `tools/connectivity_agent_tools.py`
   - `tools/servicenow_workflow_tools.py`
-- `tools/all_tools.py` remains only as a thin compatibility export layer
+- `tools/all_tools.py` serves as a thin compatibility export layer
 - Live path tracing and path metadata extraction live in `services/path_trace_service.py`
 - Active tests and interface diagnostics live in `services/device_diagnostics_service.py`
 - Transient per-session tool side effects live in `services/session_store.py`

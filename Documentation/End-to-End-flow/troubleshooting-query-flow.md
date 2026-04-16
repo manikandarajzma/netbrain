@@ -2,7 +2,7 @@
 
 This document describes the current end-to-end flow for a troubleshooting request in Atlas, from the moment the user clicks send in the browser to the moment the UI renders the final structured response.
 
-It is based on the current owner hierarchy:
+It is based on the owner hierarchy:
 
 - Entry and runtime:
   - [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
@@ -183,7 +183,7 @@ Later statuses come from graph nodes and tools.
 
 ## Internal Diagnostics Surface
 
-Atlas now also exposes an authenticated internal diagnostics endpoint:
+Atlas exposes an authenticated internal diagnostics endpoint:
 
 - `GET /api/internal/diagnostics`
 
@@ -333,7 +333,7 @@ On first use:
 
 This is important:
 
-- **Atlas still runs if Redis is unavailable**
+- **Atlas runs if Redis is unavailable**
 - but multi-turn LangGraph persistence degrades gracefully
 
 ## 8. LangGraph Performs Coarse Routing
@@ -380,7 +380,7 @@ That means:
 
 ## 10. Troubleshoot Node Starts a Fresh Live Investigation
 
-`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is now a thin delegation node. The real orchestration lives in [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>).
+`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is a thin delegation node. The orchestration lives in [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>).
 
 Before the agent runs, `TroubleshootWorkflowService` explicitly resets run-scoped live state:
 
@@ -485,7 +485,7 @@ Current intent:
 
 ## 15. The Tool Layer Does the Real Backend Work
 
-Atlas keeps one uniform agent-facing tool interface, but now uses a few distinct owner-backed implementation styles:
+Atlas keeps one uniform agent-facing tool interface, with a few distinct owner-backed implementation styles:
 
 - workflow entrypoints split across:
   - [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
@@ -596,7 +596,7 @@ That allows follow-up answers to continue the correct flow instead of being trea
 
 ### Long-term memory recall policy
 
-Recall is no longer always-on background context.
+Recall is evidence-gated rather than always-on background context.
 
 `MemoryManager` evaluates live evidence signals such as:
 
@@ -742,7 +742,7 @@ Then it renders:
 - `tools/routing_agent_tools.py`
 - `tools/connectivity_agent_tools.py`
 - `tools/servicenow_workflow_tools.py`
-- `tools/all_tools.py` remains only as a compatibility export layer
+- `tools/all_tools.py` serves as a compatibility export layer
 
 ### `ConnectivitySnapshotService`
 
@@ -783,4 +783,4 @@ the typical modern flow is:
 10. FastAPI sends the final structured payload
 11. UI renders markdown, path visuals, counters, and the status timeline
 
-That is the current architecture as implemented today, and it is materially different from the older NetBrain-centric flow.
+This is the architecture implemented in Atlas.

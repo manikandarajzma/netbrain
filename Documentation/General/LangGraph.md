@@ -10,20 +10,20 @@ Without LangGraph, the application entrypoint would need to own:
 - troubleshoot vs network-ops branching
 - final response assembly boundaries
 
-That would turn the runtime layer into a large conditional bucket again. LangGraph keeps that control flow explicit and testable.
+That would turn the runtime layer into a large conditional bucket. LangGraph keeps that control flow explicit and testable.
 
-What LangGraph does **not** do in the current design:
+What LangGraph does **not** do in this design:
 - it is not a giant tool-selection loop
 - it is not where backend logic lives
 - it is not where workflow orchestration lives
 
-Those responsibilities now live in owned services and pure agents.
+Those responsibilities live in owned services and pure agents.
 
 ---
 
 ## The Current Graph Shape
 
-Atlas now uses a small graph:
+Atlas uses a small graph:
 
 ```text
 classify_intent
@@ -67,9 +67,9 @@ Important fields:
 | `rbac_error` | Optional user-facing authorization error |
 | `final_response` | Final assistant payload returned to the caller |
 
-Unlike the older architecture, `AtlasState` no longer carries a large pile of tool-selection loop fields such as selected-tool bookkeeping, accumulated tool outputs, or retry-loop internals.
+`AtlasState` does not carry a large pile of tool-selection loop fields such as selected-tool bookkeeping, accumulated tool outputs, or retry-loop internals.
 
-That logic was removed from the graph layer on purpose.
+That logic stays out of the graph layer on purpose.
 
 ---
 
@@ -86,7 +86,7 @@ Current routing behavior:
 - both agent nodes always flow into `build_final_response`
 - `build_final_response` flows to `END`
 
-So `graph_builder.py` now owns:
+`graph_builder.py` owns:
 - graph topology
 - entry point
 - conditional routing map
@@ -108,14 +108,12 @@ Current node responsibilities:
 | `call_network_ops_agent` | Thin delegation node that calls `NetworkOpsWorkflowService.run(...)` |
 | `build_final_response` | Returns any final graph-owned response such as an RBAC error or previously prepared payload |
 
-This is a major simplification from the older design.
-
-`graph_nodes.py` is now responsible for:
+`graph_nodes.py` is responsible for:
 - routing
 - graph boundary delegation
 - minimal graph exit handling
 
-It is no longer responsible for:
+It is not responsible for:
 - tool execution
 - retry loops
 - tool chaining
@@ -127,7 +125,7 @@ It is no longer responsible for:
 
 ## Where the Real Work Happens Now
 
-LangGraph is now the router, not the whole application.
+LangGraph is the router, not the whole application.
 
 The owned services below it do the rest:
 
@@ -251,23 +249,23 @@ This structure is cleaner because each layer has one job:
 - presenter
   - UI payload shaping
 
-That separation is what makes the current architecture much easier to reason about than the older graph-heavy design.
+That separation makes the architecture easier to reason about.
 
 ---
 
 ## Summary
 
-LangGraph in Atlas is now deliberately small.
+LangGraph in Atlas is deliberately small.
 
 It is used to:
 - classify the request
 - choose the right workflow lane
 - terminate cleanly
 
-It is **not** used as the main place for:
+It is **not** the main place for:
 - backend logic
 - tool-chaining internals
 - retry orchestration
 - formatting
 
-That work now lives in the proper owners below the graph, which is the right final direction for Atlas.
+That work lives in the owners below the graph.
