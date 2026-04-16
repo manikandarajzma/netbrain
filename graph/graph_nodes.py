@@ -8,31 +8,26 @@ Graph shape:
       └─► build_final_response      (dismiss / early-exit)
 """
 import logging
-import re
 from typing import Any
 
 try:
     from atlas.graph.graph_state import AtlasState
     from atlas.application.chat_service import _IP_OR_CIDR_RE
+    from atlas.services.intent_routing_service import intent_routing_service
     from atlas.services.memory_manager import memory_manager
     from atlas.services.metrics import metrics_recorder
     from atlas.services.network_ops_workflow_service import network_ops_workflow_service
     from atlas.services.observability import log_event
-    from atlas.services.request_preprocessor import (
-        extract_ips,
-    )
     from atlas.services.status_service import status_service
     from atlas.services.troubleshoot_workflow_service import troubleshoot_workflow_service
 except ImportError:
     from graph.graph_state import AtlasState        # type: ignore[assignment]
     from application.chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
+    from services.intent_routing_service import intent_routing_service  # type: ignore
     from services.memory_manager import memory_manager  # type: ignore
     from services.metrics import metrics_recorder  # type: ignore
     from services.network_ops_workflow_service import network_ops_workflow_service  # type: ignore
     from services.observability import log_event  # type: ignore
-    from services.request_preprocessor import (  # type: ignore
-        extract_ips,
-    )
     from services.status_service import status_service  # type: ignore
     from services.troubleshoot_workflow_service import troubleshoot_workflow_service  # type: ignore
 
@@ -47,49 +42,6 @@ _DISMISSALS      = {"no", "nope", "nah", "no thanks", "never mind", "nevermind",
                     "not now", "no need", "i'm good", "im good", "all good"}
 _ACKNOWLEDGEMENTS = {"yes", "yeah", "sure", "ok", "okay", "great", "thanks",
                      "thank you", "cool", "got it", "noted", "perfect", "sounds good"}
-
-# Signals a network-ops / document-generation workflow rather than troubleshooting.
-# Checked BEFORE the troubleshoot fallback so explicit ops requests are never
-# misclassified as "something is broken" investigations.
-#
-# Covers:
-#   - Explicit ops request phrases (firewall request, change request, fw request…)
-#   - Port/access opening ("open port 443", "need port … open", "whitelist")
-#   - Rule operations (add/create/remove/update/modify rule)
-#   - Traffic directives that are actionable, not diagnostic (allow/block/permit/deny traffic)
-#   - Policy & security review workflows
-#   - Document generation (spreadsheet, change ticket)
-_NETWORK_OPS_RE = re.compile(
-    r"\b("
-    # Explicit ops request phrases
-    r"firewall\s+request|fw\s+request|change\s+request|network\s+change|"
-    r"access\s+request|request\s+access|security\s+review|policy\s+review|"
-    r"create\s+an?\s+incident|open\s+an?\s+incident|raise\s+an?\s+incident|"
-    r"create\s+a\s+ticket|open\s+a\s+ticket|raise\s+a\s+ticket|"
-    r"details?\s+about\s+(inc|chg)\d+|show\s+(inc|chg)\d+|get\s+(inc|chg)\d+|"
-    r"status\s+of\s+(inc|chg)\d+|close\s+inc\d+|update\s+inc\d+|"
-    r"inc\d+|chg\d+|"
-    r"close\s+chg\d+|update\s+chg\d+|close\s+change\s+request|update\s+change\s+request|"
-    r"spreadsheet|change\s+ticket|"
-    # Port opening / whitelisting
-    r"open\s+port|need\s+port|port\s+\d+\s+(open|allowed|whitelisted)|"
-    r"whitelist|need\s+access\s+(from|to|between)|grant\s+access|allow\s+access|"
-    # Rule CRUD
-    r"(add|create|remove|delete|update|modify)\s+(a\s+)?(firewall\s+)?rule|"
-    r"new\s+rule|fw\s+rule|firewall\s+rule|"
-    # Actionable traffic directives (not diagnostic)
-    r"allow\s+traffic|block\s+traffic|permit\s+traffic|deny\s+traffic|"
-    r"allow\s+\d{1,3}\.\d{1,3}|permit\s+\d{1,3}\.\d{1,3}|"
-    # Firewall / security policy work
-    r"firewall\s+policy|fw\s+policy|security\s+policy"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_TROUBLESHOOT_RE = re.compile(
-    r"\b(troubleshoot|investigate|diagnose|debug|connectivity|packet\s+loss|latency|slow|unreachable|can't\s+reach|cannot\s+reach|ping|ospf|bgp|eigrp|isis|route|routing|tcp\s+port|port\s+\d+)\b",
-    re.IGNORECASE,
-)
 
 
 async def classify_intent(state: AtlasState) -> dict[str, Any]:
@@ -162,73 +114,29 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             return {"intent": intent}
         memory_manager.clear_pending_context(session_id)
 
-    # Ambiguity guard: diagnostic framing overrides ops keywords.
-    #
-    # Rule: if the prompt is INVESTIGATING an existing situation (failed request,
-    # broken rule, rejected change) route to troubleshoot.
-    # Only route to network_ops when the user explicitly wants to CREATE or OPEN
-    # something new (open port, add rule, whitelist).
-    #
-    # _DIAGNOSTIC_FRAMING_RE — signals the user wants diagnosis, not creation:
-    #   • "why" (standalone or "why is/are/isn't…")
-    #   • "rejected", "not matching", "not working", "failing", "debug", "broken"
-    #   • explicit troubleshoot/investigate verbs
-    _DIAGNOSTIC_FRAMING_RE = re.compile(
-        r"\b(why(\s+(is|are|isn'?t|aren'?t|can'?t|doesn'?t|won'?t))?|"
-        r"what'?s\s+(blocking|causing|wrong|happening)|"
-        r"rejected|not\s+matching|not\s+being\s+applied|"
-        r"not\s+(working|reachable|responding|connecting)|"
-        r"can'?t\s+(reach|connect|ping|access)|"
-        r"investigate|diagnose|debug|troubleshoot|check\s+why|"
-        r"failing|broken|down\b|unreachable|timed?\s*out)\b",
-        re.IGNORECASE,
-    )
-
-    # _ACTION_RE — explicit creation / opening intent only.
-    # Deliberately excludes nouns like "change request", "firewall rule", "fw request"
-    # that can refer to an EXISTING thing the user is investigating.
-    _ACTION_RE = re.compile(
-        r"\b(open\s+port|need\s+port|whitelist|"
-        r"(add|create|submit|raise)\s+(a\s+)?(new\s+)?(firewall\s+)?rule|"
-        r"allow\s+access|grant\s+access|new\s+rule|"
-        r"(create|open|raise)\s+(an?\s+)?(incident|ticket))\b",
-        re.IGNORECASE,
-    )
-
-    if _NETWORK_OPS_RE.search(prompt):
-        if _DIAGNOSTIC_FRAMING_RE.search(prompt) and not _ACTION_RE.search(prompt):
-            metrics_recorder.increment("atlas.intent.classified", intent="troubleshoot")
-            log_event(
-                logger,
-                "intent_classified",
-                request_id=request_id,
-                session_id=session_id,
-                intent="troubleshoot",
-                reason="diagnostic_framing_overrode_network_ops",
-            )
-            return {"intent": "troubleshoot"}
-        metrics_recorder.increment("atlas.intent.classified", intent="network_ops")
+    llm_decision = await intent_routing_service.route_prompt(prompt)
+    if llm_decision:
+        llm_intent = str(llm_decision.get("intent") or "").strip()
+        metrics_recorder.increment("atlas.intent.classified", intent=llm_intent)
         log_event(
             logger,
             "intent_classified",
             request_id=request_id,
             session_id=session_id,
-            intent="network_ops",
-            reason="network_ops_regex_match",
+            intent=llm_intent,
+            reason="llm_router",
+            router_confidence=llm_decision.get("confidence"),
+            router_note=llm_decision.get("reason"),
         )
-        return {"intent": "network_ops"}
-
-    if _TROUBLESHOOT_RE.search(prompt):
-        metrics_recorder.increment("atlas.intent.classified", intent="troubleshoot")
-        log_event(
-            logger,
-            "intent_classified",
-            request_id=request_id,
-            session_id=session_id,
-            intent="troubleshoot",
-            reason="troubleshoot_regex_match",
-        )
-        return {"intent": "troubleshoot"}
+        if llm_intent == "dismiss":
+            return {
+                "intent": "dismiss",
+                "final_response": {
+                    "role": "assistant",
+                    "content": "Atlas is not equipped to help with it.",
+                },
+            }
+        return {"intent": llm_intent}
 
     metrics_recorder.increment("atlas.intent.classified", intent="dismiss")
     log_event(
@@ -237,13 +145,16 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         request_id=request_id,
         session_id=session_id,
         intent="dismiss",
-        reason="unsupported_prompt",
+        reason="llm_router_unavailable_or_invalid",
     )
     return {
         "intent": "dismiss",
         "final_response": {
             "role": "assistant",
-            "content": "Atlas is not equipped to help with it.",
+            "content": (
+                "Atlas could not classify the request. Please state whether you want troubleshooting "
+                "or an operational action such as incident or change management."
+            ),
         },
     }
 # ---------------------------------------------------------------------------

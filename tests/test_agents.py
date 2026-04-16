@@ -71,7 +71,7 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         mock_build_default_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
 
-        result = network_ops_agent.build_agent()
+        result = network_ops_agent.build_agent("show me CHG0030042")
 
         self.assertEqual(result, "agent")
         mock_create_specialized_agent.assert_called_once()
@@ -80,6 +80,30 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS)
         self.assertEqual(args[3], "network_ops")
         self.assertEqual(kwargs, {})
+
+    @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
+    @patch("agents.network_ops_agent.agent_factory.build_default_llm")
+    def test_generic_change_request_uses_change_record_scenario(self, mock_build_default_llm, mock_create_specialized_agent):
+        mock_build_default_llm.return_value = "llm"
+        mock_create_specialized_agent.return_value = "agent"
+
+        network_ops_agent.build_agent("create a change request for arista-ai1 route map update")
+
+        args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIn("Generic ServiceNow Change Request", args[2])
+        self.assertNotIn("Access / Rule / Port Change Request", args[2])
+
+    @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
+    @patch("agents.network_ops_agent.agent_factory.build_default_llm")
+    def test_access_request_uses_network_change_template_scenario(self, mock_build_default_llm, mock_create_specialized_agent):
+        mock_build_default_llm.return_value = "llm"
+        mock_create_specialized_agent.return_value = "agent"
+
+        network_ops_agent.build_agent("open port 443 from 10.0.100.100 to 10.0.200.200")
+
+        args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIn("## Network Change Request", args[2])
+        self.assertIn("Access / Rule / Port Change Request", args[2])
 
 
 if __name__ == "__main__":

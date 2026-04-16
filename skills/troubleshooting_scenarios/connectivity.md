@@ -23,15 +23,18 @@ Do NOT use `recall_similar_cases(...)` to establish current device state for con
 Past cases may help later with remediation ideas, but they are NOT evidence of current interface state, neighbor state, reachability, or service status.
 Never use recalled past cases as support for `## Root Cause`, `## Additional Findings`, or `## Recommendation` unless live tools in this same run independently corroborate them.
 
-### Step 4 — mandatory pings after reverse trace
+### Step 4 — snapshot-owned forward and reverse path validation
 
 Always write a `## Reverse Path` section in the report based on `trace_reverse_path` output.
 Do NOT guess the reverse-side device from the forward path.
 The reverse ping source device must come from `trace_reverse_path` metadata (`reverse_first_hop_device`), not from `last_hop_device` in the forward trace.
 
-After `trace_reverse_path(...)` returns, call both:
-1. `ping_device(device=first_hop_device, destination=dest_ip, ...)` — forward ping
-2. `ping_device(device=reverse_first_hop_device, destination=src_ip, source_interface=reverse_first_hop_lan_interface, vrf=dst_vrf)` — reverse ping
+`collect_connectivity_snapshot(...)` is responsible for the primary forward and reverse validation pings. It must run:
+1. forward validation from `first_hop_device` toward `dest_ip` using `first_hop_lan_interface`
+2. reverse validation from `reverse_first_hop_device` toward `source_ip` using `reverse_first_hop_lan_interface`
+
+Do NOT call `ping_device(...)` separately for these primary path-validation pings.
+Only use `ping_device(...)` later if the snapshot leaves one specific ambiguity unresolved.
 
 ### Step 5 — targeted follow-up only when snapshot leaves a real gap
 

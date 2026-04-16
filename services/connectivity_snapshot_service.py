@@ -9,9 +9,11 @@ from typing import Any
 try:
     from atlas.services.nornir_client import nornir_client
     from atlas.services.observability import json_safe
+    from atlas.services.path_trace_service import path_trace_service
 except ImportError:
     from services.nornir_client import nornir_client  # type: ignore
     from services.observability import json_safe  # type: ignore
+    from services.path_trace_service import path_trace_service  # type: ignore
 
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9\-_\.]*[A-Za-z0-9])?$")
 
@@ -58,6 +60,84 @@ class ConnectivitySnapshotService:
             if row.get("interface") == interface:
                 return row
         return {}
+
+    @staticmethod
+    def _upsert_ping_result(store: dict[str, Any], entry: dict[str, Any]) -> None:
+        results = store.setdefault("ping_results", [])
+        if not isinstance(results, list):
+            store["ping_results"] = [entry]
+            return
+
+        key = (
+            str(entry.get("device") or ""),
+            str(entry.get("destination") or ""),
+            str(entry.get("source_interface") or ""),
+            str(entry.get("vrf") or ""),
+        )
+        for idx, existing in enumerate(results):
+            existing_key = (
+                str(existing.get("device") or ""),
+                str(existing.get("destination") or ""),
+                str(existing.get("source_interface") or ""),
+                str(existing.get("vrf") or ""),
+            )
+            if existing_key == key:
+                results[idx] = entry
+                return
+        results.append(entry)
+
+    async def _run_snapshot_ping(
+        self,
+        *,
+        store: dict[str, Any],
+        device: str,
+        destination: str,
+        source_interface: str = "",
+        vrf: str = "",
+    ) -> dict[str, Any]:
+        try:
+            result = await nornir_client.post(
+                "/ping",
+                {
+                    "device": device,
+                    "destination": destination,
+                    "source_interface": source_interface,
+                    "vrf": vrf,
+                },
+                timeout=60.0,
+            )
+        except Exception as exc:
+            result = {"success": False, "error": str(exc)}
+
+        entry = {
+            "device": device,
+            "destination": destination,
+            "source_interface": source_interface,
+            "vrf": vrf or "default",
+            **result,
+        }
+        self._upsert_ping_result(store, entry)
+        return entry
+
+    @staticmethod
+    def _format_ping_summary(result: dict[str, Any]) -> str:
+        if not result:
+            return "unavailable"
+        status = "success" if result.get("success") else "failed"
+        loss = result.get("loss_pct")
+        source_interface = str(result.get("source_interface") or "").strip()
+        src_note = f" source {source_interface}" if source_interface else ""
+        vrf = str(result.get("vrf") or "default")
+        base = (
+            f"{result.get('device')} -> {result.get('destination')} "
+            f"(vrf {vrf}{src_note}) {status}"
+        )
+        if loss is not None:
+            base += f", loss {loss}%"
+        error = str(result.get("error") or "").strip()
+        if error:
+            base += f" ({error})"
+        return base
 
     def _infer_destination_side_device_from_store(
         self,
@@ -230,6 +310,55 @@ class ConnectivitySnapshotService:
                     "clean": counter_payload["clean_interfaces"],
                 })
 
+        path_meta = store.get("path_meta") or {}
+        reverse_meta = store.get("reverse_path_meta") or {}
+        forward_ping_result: dict[str, Any] | None = None
+        reverse_ping_result: dict[str, Any] | None = None
+
+        forward_ping_device = str(path_meta.get("first_hop_device") or "").strip()
+        forward_ping_source = str(path_meta.get("first_hop_lan_interface") or "").strip()
+        forward_ping_vrf = str(path_meta.get("src_vrf") or "default").strip() or "default"
+
+        reverse_ping_device = str(reverse_meta.get("reverse_first_hop_device") or "").strip()
+        reverse_ping_source = str(reverse_meta.get("reverse_first_hop_lan_interface") or "").strip()
+        reverse_ping_vrf = "default"
+        if reverse_ping_device:
+            reverse_ping_vrf = (
+                str(await path_trace_service.infer_vrf(dest_ip, reverse_ping_device) or "default").strip()
+                or "default"
+            )
+
+        ping_tasks: list[Awaitable[dict[str, Any]]] = []
+        ping_keys: list[str] = []
+        if forward_ping_device:
+            ping_keys.append("forward")
+            ping_tasks.append(
+                self._run_snapshot_ping(
+                    store=store,
+                    device=forward_ping_device,
+                    destination=dest_ip,
+                    source_interface=forward_ping_source,
+                    vrf=forward_ping_vrf,
+                )
+            )
+        if reverse_ping_device:
+            ping_keys.append("reverse")
+            ping_tasks.append(
+                self._run_snapshot_ping(
+                    store=store,
+                    device=reverse_ping_device,
+                    destination=source_ip,
+                    source_interface=reverse_ping_source,
+                    vrf=reverse_ping_vrf,
+                )
+            )
+        if ping_tasks:
+            await push_status(session_id, "Validating forward and reverse reachability from path-adjacent devices...")
+            ping_results = await asyncio.gather(*ping_tasks)
+            ping_map = dict(zip(ping_keys, ping_results))
+            forward_ping_result = ping_map.get("forward")
+            reverse_ping_result = ping_map.get("reverse")
+
         destination_side_device = self._infer_destination_side_device_from_store(store, route_to_dest)
         service_snapshot: dict[str, Any] | None = None
         if port and destination_side_device:
@@ -311,6 +440,24 @@ class ConnectivitySnapshotService:
                     findings.append(f"[service] TCP port {port} is actively refused from destination-side device {service_snapshot['device']}.")
                 else:
                     findings.append(f"[service] TCP port {port} could not be validated from destination-side device {service_snapshot['device']}.")
+        if forward_ping_result:
+            if forward_ping_result.get("success"):
+                findings.append(
+                    f"[connectivity] Forward validation ping from {forward_ping_result['device']} to {dest_ip} succeeded."
+                )
+            else:
+                findings.append(
+                    f"[connectivity] Forward validation ping from {forward_ping_result['device']} to {dest_ip} failed."
+                )
+        if reverse_ping_result:
+            if reverse_ping_result.get("success"):
+                findings.append(
+                    f"[connectivity] Reverse validation ping from {reverse_ping_result['device']} to {source_ip} succeeded."
+                )
+            else:
+                findings.append(
+                    f"[connectivity] Reverse validation ping from {reverse_ping_result['device']} to {source_ip} failed."
+                )
 
         snapshot = {
             "source_ip": source_ip,
@@ -323,6 +470,8 @@ class ConnectivitySnapshotService:
             "errors": snapshot_errors,
             "live_evidence_available": bool(path_hops or reverse_hops or live_snapshot_devices),
             "service": service_snapshot,
+            "forward_ping": forward_ping_result,
+            "reverse_ping": reverse_ping_result,
         }
         store["connectivity_snapshot"] = json_safe(snapshot)
 
@@ -401,6 +550,13 @@ class ConnectivitySnapshotService:
                     f"Service summary: tcp_port_{port} unreachable/refused from {service_snapshot.get('device')} "
                     f"({service_snapshot.get('error') or service_snapshot.get('output') or 'no detail'})"
                 )
+
+        if forward_ping_result or reverse_ping_result:
+            lines.append("Ping summary:")
+            if forward_ping_result:
+                lines.append(f"  forward_ping: {self._format_ping_summary(forward_ping_result)}")
+            if reverse_ping_result:
+                lines.append(f"  reverse_ping: {self._format_ping_summary(reverse_ping_result)}")
 
         lines.append("Candidate issues:")
         if findings:

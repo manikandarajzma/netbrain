@@ -54,7 +54,7 @@ class NetworkOpsWorkflowService:
         config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
 
         try:
-            agent = build_agent()
+            agent = build_agent(prompt)
             result = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]}, config=config)
         except Exception as exc:
             metrics_recorder.increment("atlas.agent.failed", agent_type="network_ops")

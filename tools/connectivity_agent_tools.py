@@ -59,6 +59,10 @@ async def collect_connectivity_snapshot(
         meta["src_vrf"] = await path_trace_service.infer_vrf(source_ip, meta.get("first_hop_device", ""))
         store["path_meta"] = meta
         store["path_text"] = text
+    elif not store.get("path_meta"):
+        meta = path_trace_service.extract_path_metadata(store.get("path_hops") or [])
+        meta["src_vrf"] = await path_trace_service.infer_vrf(source_ip, meta.get("first_hop_device", ""))
+        store["path_meta"] = meta
     if not store.get("reverse_path_hops"):
         text, hops, _ = await path_trace_service.live_path_trace(
             dest_ip,
@@ -69,6 +73,10 @@ async def collect_connectivity_snapshot(
         store["reverse_path_hops"] = hops
         store["reverse_path_meta"] = path_trace_service.extract_reverse_path_metadata(hops)
         store["reverse_path_text"] = text
+    elif not store.get("reverse_path_meta"):
+        store["reverse_path_meta"] = path_trace_service.extract_reverse_path_metadata(
+            store.get("reverse_path_hops") or []
+        )
 
     if not store.get("routing_history"):
         try:

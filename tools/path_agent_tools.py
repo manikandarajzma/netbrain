@@ -61,7 +61,7 @@ async def trace_reverse_path(source_ip: str, dest_ip: str, config: RunnableConfi
     """
     Trace the return path from dest_ip back to source_ip via live SSH.
     Call in parallel with search_servicenow and get_interface_counters after trace_path.
-    Reveals asymmetric routing.
+    Maps the return path for comparison with the forward trace.
     """
     session_id = sid_from_config(config)
     await push_status(session_id, f"Tracing return path {dest_ip} → {source_ip}...")
