@@ -28,6 +28,12 @@ export default function AppHeader({ view, onViewChange }) {
           >
             Dashboard
           </button>
+          <button
+            className={`${styles.navBtn} ${view === 'diagnostics' ? styles.navBtnActive : ''}`}
+            onClick={() => onViewChange('diagnostics')}
+          >
+            Diagnostics
+          </button>
         </nav>
       )}
 

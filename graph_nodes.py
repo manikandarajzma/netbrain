@@ -9,51 +9,32 @@ Graph shape:
 """
 import logging
 import re
-import traceback as _tb
 from typing import Any
-
-from langchain_core.messages import HumanMessage
 
 try:
     from atlas.graph_state import AtlasState
     from atlas.chat_service import _IP_OR_CIDR_RE
     from atlas.services.memory_manager import memory_manager
+    from atlas.services.metrics import metrics_recorder
+    from atlas.services.network_ops_workflow_service import network_ops_workflow_service
+    from atlas.services.observability import log_event
     from atlas.services.request_preprocessor import (
-        extract_final_text,
         extract_ips,
-        extract_port,
-        looks_like_clarification_request,
-        resolve_incident_prompt,
     )
-    from atlas.services.response_presenter import (
-        response_presenter,
-    )
-    from atlas.services.runtime_helpers import (
-        merge_session_data,
-        missing_path_visuals,
-        needs_connectivity_snapshot,
-        push_status,
-    )
+    from atlas.services.status_service import status_service
+    from atlas.services.troubleshoot_workflow_service import troubleshoot_workflow_service
 except ImportError:
     from graph_state import AtlasState        # type: ignore[assignment]
     from chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
     from services.memory_manager import memory_manager  # type: ignore
+    from services.metrics import metrics_recorder  # type: ignore
+    from services.network_ops_workflow_service import network_ops_workflow_service  # type: ignore
+    from services.observability import log_event  # type: ignore
     from services.request_preprocessor import (  # type: ignore
-        extract_final_text,
         extract_ips,
-        extract_port,
-        looks_like_clarification_request,
-        resolve_incident_prompt,
     )
-    from services.response_presenter import (  # type: ignore
-        response_presenter,
-    )
-    from services.runtime_helpers import (  # type: ignore
-        merge_session_data,
-        missing_path_visuals,
-        needs_connectivity_snapshot,
-        push_status,
-    )
+    from services.status_service import status_service  # type: ignore
+    from services.troubleshoot_workflow_service import troubleshoot_workflow_service  # type: ignore
 
 logger = logging.getLogger("atlas.graph_nodes")
 
@@ -130,14 +111,23 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     """
     prompt     = state["prompt"]
     session_id = state.get("session_id") or "default"
+    request_id = state.get("request_id")
 
-    await push_status(session_id, "Analyzing your query...")
+    await status_service.push(session_id, "Analyzing your query...")
 
     prompt_lower = prompt.lower().strip().rstrip("!.")
 
     # Plain acknowledgement / dismissal with nothing pending → dismiss
     if prompt_lower in (_ACKNOWLEDGEMENTS | _DISMISSALS):
         if not memory_manager.has_pending_context(session_id):
+            log_event(
+                logger,
+                "intent_classified",
+                request_id=request_id,
+                session_id=session_id,
+                intent="dismiss",
+                reason="acknowledgement_without_pending_context",
+            )
             return {
                 "intent":         "dismiss",
                 "final_response": {"role": "assistant",
@@ -150,9 +140,25 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     if memory_manager.has_pending_context(session_id):
         pending_prompt, pending_issue_type = memory_manager.get_pending_context(session_id)
         if pending_issue_type == "network_ops":
+            log_event(
+                logger,
+                "intent_classified",
+                request_id=request_id,
+                session_id=session_id,
+                intent="network_ops",
+                reason="pending_network_ops_context",
+            )
             return {"intent": "network_ops"}
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
             intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
+            log_event(
+                logger,
+                "intent_classified",
+                request_id=request_id,
+                session_id=session_id,
+                intent=intent,
+                reason="pending_short_follow_up",
+            )
             return {"intent": intent}
         memory_manager.clear_pending_context(session_id)
 
@@ -191,12 +197,48 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 
     if _NETWORK_OPS_RE.search(prompt):
         if _DIAGNOSTIC_FRAMING_RE.search(prompt) and not _ACTION_RE.search(prompt):
+            metrics_recorder.increment("atlas.intent.classified", intent="troubleshoot")
+            log_event(
+                logger,
+                "intent_classified",
+                request_id=request_id,
+                session_id=session_id,
+                intent="troubleshoot",
+                reason="diagnostic_framing_overrode_network_ops",
+            )
             return {"intent": "troubleshoot"}
+        metrics_recorder.increment("atlas.intent.classified", intent="network_ops")
+        log_event(
+            logger,
+            "intent_classified",
+            request_id=request_id,
+            session_id=session_id,
+            intent="network_ops",
+            reason="network_ops_regex_match",
+        )
         return {"intent": "network_ops"}
 
     if _TROUBLESHOOT_RE.search(prompt):
+        metrics_recorder.increment("atlas.intent.classified", intent="troubleshoot")
+        log_event(
+            logger,
+            "intent_classified",
+            request_id=request_id,
+            session_id=session_id,
+            intent="troubleshoot",
+            reason="troubleshoot_regex_match",
+        )
         return {"intent": "troubleshoot"}
 
+    metrics_recorder.increment("atlas.intent.classified", intent="dismiss")
+    log_event(
+        logger,
+        "intent_classified",
+        request_id=request_id,
+        session_id=session_id,
+        intent="dismiss",
+        reason="unsupported_prompt",
+    )
     return {
         "intent": "dismiss",
         "final_response": {
@@ -209,126 +251,8 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
-    """Build and invoke the troubleshoot ReAct agent; collect session data."""
-    try:
-        from atlas.agents.troubleshoot_agent import build_agent
-        from atlas.tools.all_tools import pop_session_data, clear_session_cache
-    except ImportError:
-        from agents.troubleshoot_agent import build_agent                # type: ignore
-        from tools.all_tools import pop_session_data, clear_session_cache  # type: ignore
-
-    session_id = state.get("session_id") or "default"
-    prompt     = state["prompt"]
-
-    # Start each troubleshoot run from fresh live tool state.
-    clear_session_cache(session_id)
-    pop_session_data(session_id)
-
-    await push_status(session_id, "Investigating...")
-
-    # Recover clarification context if pending
-    pending, pending_issue_type = memory_manager.get_pending_context(session_id)
-    if pending:
-        memory_manager.clear_pending_context(session_id)
-
-    # Fallback: detect clarification reply from conversation history
-    if not pending:
-        history = state.get("conversation_history") or []
-        if len(history) >= 2:
-            last_assistant = next(
-                (m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"), ""
-            )
-            last_user_before = next(
-                (m.get("content", "") for m in reversed(history[:-1]) if m.get("role") == "user"), ""
-            )
-            is_clarification_reply = (
-                ("which port" in last_assistant.lower() or "what type of issue" in last_assistant.lower())
-                and not _IP_OR_CIDR_RE.findall(prompt)
-                and len(prompt.split()) <= 6
-            )
-            if is_clarification_reply and _IP_OR_CIDR_RE.findall(last_user_before):
-                pending            = last_user_before
-                pending_issue_type = "general"
-
-    issue_type  = pending_issue_type or "general"
-    full_prompt = f"{pending}\n\nUser clarification: {prompt}" if pending else prompt
-
-    if not pending:
-        ip_matches = _IP_OR_CIDR_RE.findall(prompt)
-        words      = prompt.lower().split()
-        has_device_context = any(c.isdigit() or "-" in w for w in words for c in w)
-        if not has_device_context and not ip_matches and len(prompt.split()) < 4:
-            return {"final_response": {"role": "assistant", "content": (
-                "Please describe the problem — include device names, IP addresses, or what is failing.\n"
-                'Example: "Why can\'t 10.0.0.1 connect to 11.0.0.1?" or "arista1 is unreachable"'
-            )}}
-
-    # INC→IP expansion
-    full_prompt, inc_summary = await resolve_incident_prompt(full_prompt)
-    if inc_summary:
-        src_ip_hint, dst_ip_hint = extract_ips(full_prompt)
-        if src_ip_hint and dst_ip_hint:
-            issue_type = "connectivity"
-
-    agent_input = full_prompt
-
-    config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
-
-    try:
-        agent  = build_agent(full_prompt, issue_type)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=agent_input)]}, config=config)
-    except Exception as exc:
-        logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
-        clear_session_cache(session_id)
-        return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Troubleshooting failed: {exc}"}}}
-
-    final_text    = extract_final_text(result.get("messages", []))
-    session_data  = pop_session_data(session_id)
-
-    src_ip, dst_ip = extract_ips(full_prompt)
-    port = extract_port(full_prompt)
-    if needs_connectivity_snapshot(session_data, src_ip, dst_ip):
-        await push_status(session_id, "Gathering holistic connectivity evidence...")
-        follow_up = (
-            f"{full_prompt}\n\n"
-            "Required follow-up before answering:\n"
-            f"- Call collect_connectivity_snapshot(source_ip={src_ip}, dest_ip={dst_ip}, port={port or ''}) before writing the report.\n"
-            "- Use that snapshot as the primary evidence bundle.\n"
-            "- If it surfaces multiple independent issues, keep the strongest end-to-end blocker as Root Cause and preserve the others under Additional Findings or Connectivity Test.\n"
-            "- Do not stop at one issue if the snapshot shows more than one blocker."
-        )
-        agent = build_agent(full_prompt, issue_type)
-        result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
-        final_text = extract_final_text(result.get("messages", []))
-        session_data = merge_session_data(session_data, pop_session_data(session_id))
-
-    if missing_path_visuals(session_data, src_ip, dst_ip):
-        await push_status(session_id, "Gathering required path visualizations...")
-        try:
-            try:
-                from atlas.tools.all_tools import trace_path, trace_reverse_path
-            except ImportError:
-                from tools.all_tools import trace_path, trace_reverse_path  # type: ignore
-            await trace_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
-            await trace_reverse_path.ainvoke({"source_ip": src_ip, "dest_ip": dst_ip}, config=config)
-            session_data = merge_session_data(session_data, pop_session_data(session_id))
-        except Exception as exc:
-            logger.warning("mandatory path visualization collection failed: %s", exc)
-
-    content = response_presenter.build_troubleshoot_content(final_text, session_data, full_prompt, inc_summary)
-
-    # Store findings in long-term memory for future recall
-    if final_text:
-        await memory_manager.store_agent_memory_entry(full_prompt, final_text, agent_type="troubleshoot")
-
-    logger.info(
-        "troubleshoot done: keys=%s hops=%d counters=%d",
-        list(content.keys()),
-        len(content.get("path_hops", []) or []),
-        len(content.get("interface_counters", []) or []),
-    )
-    clear_session_cache(session_id)
-    return {"final_response": {"role": "assistant", "content": content}}
+    """Delegate troubleshoot orchestration to the owned workflow service."""
+    return await troubleshoot_workflow_service.run(state)
 
 
 # ---------------------------------------------------------------------------
@@ -336,45 +260,8 @@ async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
-    """Build and invoke the network-ops ReAct agent; collect session data."""
-    try:
-        from atlas.agents.network_ops_agent import build_agent
-        from atlas.tools.all_tools import pop_session_data, clear_session_cache
-    except ImportError:
-        from agents.network_ops_agent import build_agent                 # type: ignore
-        from tools.all_tools import pop_session_data, clear_session_cache  # type: ignore
-
-    session_id = state.get("session_id") or "default"
-    prompt     = state["prompt"]
-
-    await push_status(session_id, "Processing network ops request...")
-
-    pending, pending_issue_type = memory_manager.get_pending_context(session_id)
-    if pending_issue_type == "network_ops" and pending:
-        memory_manager.clear_pending_context(session_id)
-        prompt = f"{pending}\n\nUser clarification: {prompt}"
-
-    clear_session_cache(session_id)
-    pop_session_data(session_id)
-
-    config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
-
-    try:
-        agent  = build_agent()
-        result = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]}, config=config)
-    except Exception as exc:
-        logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
-        clear_session_cache(session_id)
-        return {"final_response": {"role": "assistant", "content": {"direct_answer": f"Network ops agent failed: {exc}"}}}
-
-    final_text = extract_final_text(result.get("messages", []))
-    if looks_like_clarification_request(final_text):
-        memory_manager.set_pending_context(session_id, prompt, "network_ops")
-    session_data = pop_session_data(session_id)
-    content = response_presenter.build_network_ops_content(final_text, session_data, prompt)
-
-    clear_session_cache(session_id)
-    return {"final_response": {"role": "assistant", "content": content}}
+    """Delegate network-ops orchestration to the owned workflow service."""
+    return await network_ops_workflow_service.run(state)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ Atlas uses Microsoft Entra ID (OIDC) for user authentication. Access is controll
 
 When a user signs in, their group memberships are read from the OIDC `id_token` and mapped to a configured access level. The resolved group is baked into a signed session cookie and checked on every tool call.
 
-**All backend credentials** (for example, NetBrain and ServiceNow) are stored in Azure Key Vault — not in the session or in user-facing tokens.
+**All backend credentials** (for example, Nornir-related backend secrets, ServiceNow credentials, and other integration secrets) are stored in Azure Key Vault — not in the session or in user-facing tokens.
 
 ---
 
@@ -189,24 +189,15 @@ GROUP_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
 }
 ```
 
-**RBAC check in chat_service.py — runs before every tool call:**
+**Tool access check — runs before restricted tool execution:**
 
 ```python
-# chat_service.py
-def _check_tool_access(username, tool_name, session_id=None) -> str | None:
-    # Group is read from the signed session cookie, NOT from user input.
-    # This means prompt injection cannot bypass the check.
-    group = get_group_for_session(session_id) if session_id else get_user_group(username)
-    allowed = get_allowed_tools(group)   # calls auth.GROUP_ALLOWED_TOOLS
+# conceptual shape
+def check_tool_access(group: str, tool_name: str) -> str | None:
+    allowed = get_allowed_tools(group)
     if allowed is not None and tool_name not in allowed:
-        display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-        return f"Your group ({group}) does not have access to {display} queries."
-    return None  # access granted
-
-# Called before executing any tool:
-access_err = _check_tool_access(username, sel_tool_name, session_id)
-if access_err:
-    return {"role": "assistant", "content": access_err}
+        return f"Your group ({group}) does not have access to {tool_name}."
+    return None
 ```
 
 The group is read from the **server-signed cookie**, not from the prompt. A user cannot escalate privileges through prompt injection — the RBAC check runs in Python code, independently of the LLM.

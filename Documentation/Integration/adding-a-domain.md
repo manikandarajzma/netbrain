@@ -1,273 +1,226 @@
 # Adding a New Domain / Integration
 
-This guide covers connecting a brand new external domain or system to Atlas — for example, adding ServiceNow, Cisco DNA Center, or any other API that doesn't have an existing tool file.
+This guide covers connecting a brand new backend domain or external system to Atlas.
 
-Once the integration is wired up, follow [adding-a-tool.md](./adding-a-tool.md) to add individual tools within it.
+Examples:
+- a new ITSM system
+- a new inventory platform
+- a new vendor knowledge source
+- a new network-control backend
+
+The current Atlas architecture is owner-based, so adding a new domain means adding a small set of clear owners, not scattering logic across the app.
+
+---
+
+## What a New Domain Usually Needs
+
+For most integrations, you will add some combination of:
+
+- a backend client or owned service
+- one or more agent-facing tool modules
+- capability registrations
+- health/diagnostics reporting
+- tests
+
+You should **not** add a new integration by putting everything into `chat_service.py`, `graph_nodes.py`, or a giant shared tool file.
 
 ---
 
 ## Checklist
 
-- [ ] 1. Add credentials to `tools/shared.py`
-- [ ] 2. Create the service credential module (`newdomainauth.py`)
-- [ ] 3. Create the tool module (`tools/newdomain_tools.py`)
-- [ ] 4. Register the module in `mcp_server.py`
-- [ ] 5. Add `.env` variables
-- [ ] 6. Follow [adding-a-tool.md](./adding-a-tool.md) for each tool
+- [ ] 1. Decide what kind of owner the integration needs
+- [ ] 2. Add configuration / credentials
+- [ ] 3. Create the owned backend client or service
+- [ ] 4. Add agent-facing tools
+- [ ] 5. Register capabilities in the tool manifest and `ToolRegistry`
+- [ ] 6. Add health/diagnostics support if this is a live dependency
+- [ ] 7. Add tests
+- [ ] 8. Update docs if the architecture or user-visible workflow changed
 
 ---
 
-## File layout of existing integrations
+## Step 1: Decide the Owner Shape
 
-Each integration follows the same three-file pattern:
+Use the smallest owner that cleanly matches the integration.
 
-```
-atlas/
-├── netbrainauth.py          ← authentication (token/session management)
-├── servicenowauth.py        ← authentication (credential helper example)
-├── tools/
-│   ├── shared.py            ← credentials loaded here at startup
-│   ├── netbrain_tools.py    ← @mcp.tool() definitions
-│   ├── servicenow_tools.py
-│   └── newdomain_tools.py
-└── mcp_server.py            ← imports tool modules to trigger registration
-```
+Typical options:
 
-`tools/shared.py` is the single place where credentials are loaded (from `.env` or Azure Key Vault) and exposed as module-level constants. Tool modules import these constants — they never load credentials themselves.
+### Backend client
+
+Use this when the integration is mostly transport, retry, timeout, and caching behavior.
+
+Example:
+- `services/nornir_client.py`
+
+### Domain service
+
+Use this when the integration needs Atlas-specific orchestration or correlation behavior.
+
+Examples:
+- `services/servicenow_search_service.py`
+- `services/connectivity_snapshot_service.py`
+- `services/routing_diagnostics_service.py`
+
+### Thin product-facing tool adapter
+
+Use this when the backend already exposes a task-level action and Atlas mostly needs to present it as an agent tool.
+
+Example:
+- `tools/servicenow_agent_tools.py`
 
 ---
 
-## Step 1: Add credentials to tools/shared.py
+## Step 2: Add Configuration and Credentials
 
-**File:** [tools/shared.py](../../tools/shared.py)
+Centralize configuration and credential access.
 
-Add a credential-loading block at the bottom of the configuration constants section. Follow the existing pattern: try `.env` first, then fall back to Azure Key Vault.
+Current pattern:
+- shared backend constants in `tools/shared.py` where applicable
+- Azure Key Vault or environment variables for secrets
+- backend/service owners import configuration, rather than each tool reloading it
+
+Keep credentials out of:
+- prompts
+- graph nodes
+- workflow services that do not own that backend
+
+If the new backend needs health checks, add enough config to support a simple readiness probe as well.
+
+---
+
+## Step 3: Create the Owned Backend Layer
+
+Example shape:
 
 ```python
-# tools/shared.py
+# services/example_backend_client.py
+class ExampleBackendClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
 
-# ServiceNow
-SERVICENOW_URL      = os.getenv("SERVICENOW_URL", "").rstrip("/")
-SERVICENOW_USER     = os.getenv("SERVICENOW_USER", "")
-SERVICENOW_PASSWORD = os.getenv("SERVICENOW_PASSWORD", "")
-if not SERVICENOW_USER or not SERVICENOW_PASSWORD:
-    _vault_url = os.getenv("AZURE_KEYVAULT_URL", "").strip().rstrip("/")
-    if _vault_url:
-        try:
-            from azure.identity import DefaultAzureCredential
-            from azure.keyvault.secrets import SecretClient
-            _credential = DefaultAzureCredential()
-            _client = SecretClient(vault_url=_vault_url, credential=_credential)
-            if not SERVICENOW_USER:
-                _s = _client.get_secret(os.getenv("SERVICENOW_USER_KEYVAULT_SECRET_NAME", "SERVICENOW-USER"))
-                if _s and _s.value:
-                    SERVICENOW_USER = _s.value
-            if not SERVICENOW_PASSWORD:
-                _s = _client.get_secret(os.getenv("SERVICENOW_PASSWORD_KEYVAULT_SECRET_NAME", "SERVICENOW-PASSWORD"))
-                if _s and _s.value:
-                    SERVICENOW_PASSWORD = _s.value
-        except Exception as e:
-            logger.warning("Key Vault: failed to load ServiceNow credentials: %s", e)
+    async def get_record(self, record_id: str) -> dict:
+        ...
+
+
+example_backend_client = ExampleBackendClient(base_url=EXAMPLE_URL)
 ```
 
-**Why here:** All credential loading is centralised in `shared.py` so tool modules stay clean, and so credentials are loaded once at MCP server startup — not on every tool call.
+Responsibilities that belong here:
+- transport details
+- retries
+- timeout behavior
+- caching
+- backend-specific request/response normalization
+
+Responsibilities that do **not** belong here:
+- agent prompts
+- graph routing
+- UI payload shaping
 
 ---
 
-## Step 2: Create the backend service credential module
+## Step 4: Add Agent-Facing Tools
 
-Create `newdomainauth.py` in the atlas root (alongside `netbrainauth.py` and other auth helpers). Its job is to manage session/token state and expose a single function the tool module calls to get a valid credential.
+Expose the integration through one or more tool modules depending on whether the actions are:
+- product-facing
+- workflow-facing
 
-Choose the pattern that matches how the external API authenticates:
+Examples from Atlas:
+- product-facing:
+  - `tools/servicenow_agent_tools.py`
+  - `tools/memory_agent_tools.py`
+  - `tools/knowledge_agent_tools.py`
+- workflow-facing:
+  - `tools/path_agent_tools.py`
+  - `tools/device_agent_tools.py`
+  - `tools/routing_agent_tools.py`
+  - `tools/connectivity_agent_tools.py`
+  - `tools/servicenow_workflow_tools.py`
 
-### Credential pattern A — session token with TTL (e.g., NetBrain)
-
-The external API requires a login call that returns a short-lived session token. Cache the token in a module-level variable and re-fetch it when it expires.
-
-See [`netbrainauth.py`](../../netbrainauth.py) for a complete working example. Key elements: a module-level `_token` variable, a `TOKEN_TTL_SECONDS` constant, a `get_token()` function that returns the cached token or fetches a new one, and a `clear_token_cache()` function used when a tool receives an unexpected 401 response.
-
-### Credential pattern B — API key cached indefinitely
-
-The external API uses an API key that does not expire. Fetch it once (from Key Vault or environment) and cache it for the process lifetime.
-
-Use the same module-level caching pattern as the other auth helpers in the repo.
-
-### Credential pattern C — credentials passed directly
-
-Some APIs accept credentials on every request — no session management needed. Skip the credential module entirely and import the username/password constants directly from `tools/shared.py` in the tool module.
+If the new integration introduces a new category, add a new dedicated tool module rather than overloading an unrelated one.
 
 ---
 
-## Step 3: Create the tool module
+## Step 5: Register Capabilities
 
-Create `tools/newdomain_tools.py`. The module must:
+Each tool module owns its capability manifest.
 
-1. Import `mcp` from `tools.shared` — this is the shared FastMCP instance all tools register on.
-2. Import credentials from `tools.shared`.
-3. Optionally import the auth module.
-4. Define `@mcp.tool()` functions following the pattern in [adding-a-tool.md](./adding-a-tool.md).
+Examples:
+- `WORKFLOW_TOOL_CAPABILITIES`
+- `SERVICENOW_TOOL_CAPABILITIES`
+- `MEMORY_TOOL_CAPABILITIES`
+- `KNOWLEDGE_TOOL_CAPABILITIES`
 
-```python
-# tools/servicenow_tools.py
-"""
-ServiceNow MCP tools.
+Then add those capabilities to the correct agent profile in:
+- `tools/tool_registry.py`
 
-Exposes:
-  - get_incident        – look up an incident by number
-  - list_open_incidents – list open incidents for a CI
-"""
-import asyncio
-import aiohttp
-import ssl
-from typing import Optional, Dict, Any
-
-from tools.shared import mcp, SERVICENOW_URL, SERVICENOW_USER, SERVICENOW_PASSWORD, setup_logging
-
-logger = setup_logging(__name__)
-import servicenowauth
-
-
-# ---------------------------------------------------------------------------
-# Implementation functions
-# ---------------------------------------------------------------------------
-
-async def _get_incident_impl(incident_number: str) -> Dict[str, Any]:
-    token = servicenowauth.get_token()
-    if not token:
-        return {"error": "Failed to authenticate with ServiceNow"}
-
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-
-    url = f"{SERVICENOW_URL}/api/now/table/incident"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    params = {"sysparm_query": f"number={incident_number}", "sysparm_limit": 1}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params,
-                                   ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status != 200:
-                    return {"error": f"ServiceNow API returned {resp.status}"}
-                data = await resp.json()
-    except asyncio.TimeoutError:
-        return {"incident_number": incident_number, "error": "Request timed out"}
-    except Exception as e:
-        logger.debug("get_incident error: %s", e)
-        return {"incident_number": incident_number, "error": str(e)}
-
-    records = data.get("result", [])
-    if not records:
-        return {"incident_number": incident_number, "error": f"No incident found: {incident_number}"}
-
-    r = records[0]
-    return {
-        "incident_number": incident_number,
-        "short_description": r.get("short_description"),
-        "state": r.get("state", {}).get("display_value"),
-        "priority": r.get("priority", {}).get("display_value"),
-        "assigned_to": r.get("assigned_to", {}).get("display_value"),
-        "opened_at": r.get("opened_at"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# MCP tool registrations
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-async def get_incident(incident_number: str) -> Dict[str, Any]:
-    """
-    Look up a ServiceNow incident by incident number.
-
-    Use for: queries asking for incident details — "look up INC0012345",
-    "what is incident INC0012345?", "details for INC0012345".
-    Do NOT use for: path queries, address group lookups, rack queries.
-
-    Examples:
-    - "look up INC0012345" → incident_number="INC0012345"
-    - "what is INC0012345?" → incident_number="INC0012345"
-
-    Args:
-        incident_number: ServiceNow incident number (e.g., "INC0012345")
-
-    Returns:
-        dict: incident_number, short_description, state, priority, assigned_to, opened_at, or error
-    """
-    return await _get_incident_impl(incident_number)
-```
+This is what actually makes the integration available to an agent.
 
 ---
 
-## Step 4: Register in mcp_server.py
+## Step 6: Add Health / Diagnostics Support
 
-**File:** [mcp_server.py](../../mcp_server.py)
+If the new integration is a live runtime dependency, wire it into:
+- `services/health_service.py`
+- `services/diagnostics_service.py`
 
-Add one import line. The act of importing the module triggers all `@mcp.tool()` decorators and registers the tools on the shared FastMCP instance.
+That ensures:
+- header health status stays meaningful
+- Diagnostics shows whether the backend is reachable
+- failures are visible without running a full prompt
 
-```python
-# mcp_server.py
-
-# Import domain modules – the act of importing triggers @mcp.tool() registration
-import tools.servicenow_tools  # noqa: F401
-import tools.netbrain_tools    # noqa: F401
-import tools.netbrain_tools    # noqa: F401
-import tools.servicenow_tools  # noqa: F401   ← add this line
-```
-
-No other changes are needed in `mcp_server.py`. The shared `mcp` instance accumulates all registered tools automatically.
+If it is not a runtime-critical backend, this step can be skipped.
 
 ---
 
-## Step 5: Add `.env` variables
+## Step 7: Use Shared Failure Contracts
 
-Add the new variables to your `.env` file:
+Do not invent backend errors ad hoc.
 
-```bash
-# ServiceNow
-SERVICENOW_URL=https://yourinstance.service-now.com
-SERVICENOW_USER=atlas-api-user          # or leave blank to use Key Vault
-SERVICENOW_PASSWORD=                    # or leave blank to use Key Vault
+Use the helpers in:
+- `services/backend_contracts.py`
 
-# Key Vault secret names (if using Azure Key Vault)
-SERVICENOW_USER_KEYVAULT_SECRET_NAME=SERVICENOW-USER
-SERVICENOW_PASSWORD_KEYVAULT_SECRET_NAME=SERVICENOW-PASSWORD
-```
-
-For production, leave `SERVICENOW_USER` and `SERVICENOW_PASSWORD` blank and store them exclusively in Azure Key Vault. `tools/shared.py` will load them automatically if `AZURE_KEYVAULT_URL` is set.
+This keeps failures uniform across:
+- product-facing tools
+- workflow tools
+- backend services
 
 ---
 
-## Step 6: Add individual tools
+## Step 8: Add Tests
 
-Follow [adding-a-tool.md](./adding-a-tool.md) for each tool, starting at Step 3 (`TOOL_DISPLAY_NAMES`). Steps 1 and 2 (impl + wrapper) are already done above.
+Recommended test layers:
+
+1. Owner/client tests
+- backend success
+- backend failure
+
+2. Tool tests
+- success path
+- error contract path
+
+3. Registry/profile tests
+- capability is registered
+- right agent profile sees it
+
+4. Diagnostics/health tests if the integration is live
+
+Current examples:
+- `tests/test_servicenow_search_service.py`
+- `tests/test_servicenow_agent_tools.py`
+- `tests/test_application_owners.py`
+- `tests/test_diagnostics_service.py`
 
 ---
 
-## HTTPS TLS settings for API calls
+## Summary
 
-Most internal systems use self-signed certificates. Bypass TLS verification with:
+In the current Atlas design, adding a domain means:
 
-```python
-ssl_ctx = ssl.create_default_context()
-ssl_ctx.check_hostname = False
-ssl_ctx.verify_mode = ssl.CERT_NONE
-```
+1. create a clear owner for backend behavior
+2. expose task-level tools through the right tool module
+3. register capabilities through `ToolRegistry`
+4. wire health/diagnostics if needed
+5. test the owner and the tool surface
 
-> **Production note:** Remove the SSL bypass if the system has a valid CA-signed certificate, or pin the CA certificate explicitly.
-
----
-
-## File layout summary
-
-```
-atlas/
-├── servicenowauth.py            ← new: token/session management
-├── tools/
-│   ├── shared.py                ← modified: add credential loading block
-│   └── servicenow_tools.py      ← new: @mcp.tool() definitions
-└── mcp_server.py                ← modified: add one import line
-```
-
-After all steps are complete, restart the MCP server and verify the new tools appear in `GET http://127.0.0.1:8765/health` → `tools_registered`.
+That keeps the architecture consistent with the current owner-based, capability-driven design instead of drifting back toward a monolithic integration model.

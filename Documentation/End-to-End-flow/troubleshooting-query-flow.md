@@ -2,20 +2,47 @@
 
 This document describes the current end-to-end flow for a troubleshooting request in Atlas, from the moment the user clicks send in the browser to the moment the UI renders the final structured response.
 
-It is based on the live architecture in:
+It is based on the current owner hierarchy:
 
-- [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
-- [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
-- [`app.py`](<app.py>)
-- `chat_service.py`
-- [`atlas_application.py`](<atlas_application.py>)
-- [`services/graph_runtime.py`](<services/graph_runtime.py>)
-- [`graph_builder.py`](<graph_builder.py>)
-- [`graph_nodes.py`](<graph_nodes.py>)
-- [`services/memory_manager.py`](<services/memory_manager.py>)
-- [`services/response_presenter.py`](<services/response_presenter.py>)
-- [`tools/all_tools.py`](<tools/all_tools.py>)
-- [`nornir/server.py`](<nornir/server.py>)
+- Entry and runtime:
+  - [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
+  - [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
+  - [`app.py`](<app.py>)
+  - [`chat_service.py`](<chat_service.py>)
+  - [`atlas_application.py`](<atlas_application.py>)
+  - [`services/graph_runtime.py`](<services/graph_runtime.py>)
+- Graph boundary:
+  - [`graph_builder.py`](<graph_builder.py>)
+  - [`graph_nodes.py`](<graph_nodes.py>)
+  - [`graph_state.py`](<graph_state.py>)
+- Workflow owners:
+  - [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
+  - [`services/network_ops_workflow_service.py`](<services/network_ops_workflow_service.py>)
+  - [`services/path_trace_service.py`](<services/path_trace_service.py>)
+  - [`services/device_diagnostics_service.py`](<services/device_diagnostics_service.py>)
+  - [`services/connectivity_snapshot_service.py`](<services/connectivity_snapshot_service.py>)
+  - [`services/routing_diagnostics_service.py`](<services/routing_diagnostics_service.py>)
+  - [`services/servicenow_search_service.py`](<services/servicenow_search_service.py>)
+- Shared owners:
+  - [`services/memory_manager.py`](<services/memory_manager.py>)
+  - [`services/response_presenter.py`](<services/response_presenter.py>)
+  - [`services/session_store.py`](<services/session_store.py>)
+  - [`services/status_service.py`](<services/status_service.py>)
+  - [`services/workflow_state_service.py`](<services/workflow_state_service.py>)
+  - [`services/observability.py`](<services/observability.py>)
+  - [`services/metrics.py`](<services/metrics.py>)
+  - [`services/diagnostics_service.py`](<services/diagnostics_service.py>)
+- Agent-facing tool surface:
+  - [`tools/tool_registry.py`](<tools/tool_registry.py>)
+  - [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
+  - [`tools/device_agent_tools.py`](<tools/device_agent_tools.py>)
+  - [`tools/routing_agent_tools.py`](<tools/routing_agent_tools.py>)
+  - [`tools/connectivity_agent_tools.py`](<tools/connectivity_agent_tools.py>)
+  - [`tools/servicenow_workflow_tools.py`](<tools/servicenow_workflow_tools.py>)
+  - [`tools/servicenow_agent_tools.py`](<tools/servicenow_agent_tools.py>)
+- Backend runtime:
+  - [`services/nornir_client.py`](<services/nornir_client.py>)
+  - [`nornir/server.py`](<nornir/server.py>)
 
 ## High-Level Sequence
 
@@ -29,13 +56,21 @@ sequenceDiagram
     participant RT as AtlasRuntime
     participant G as LangGraph atlas_graph
     participant T as Troubleshoot Agent
-    participant TOOLS as all_tools.py
+    participant REG as ToolRegistry
+    participant PATH as path_agent_tools.py
+    participant DEVICE as device_agent_tools.py
+    participant ROUTING as routing_agent_tools.py
+    participant CONN as connectivity_agent_tools.py
+    participant SNWF as servicenow_workflow_tools.py
+    participant DDSVC as DeviceDiagnosticsService
+    participant CSSVC as ConnectivitySnapshotService
+    participant RDSVC as RoutingDiagnosticsService
+    participant SNSVC as ServiceNowSearchService
+    participant SN as servicenow_agent_tools.py
     participant N as Nornir :8006
     participant P as ResponsePresenter
 
     U->>FE: Submit troubleshoot query
-    FE->>API: POST /api/discover
-    API-->>FE: {tool_display_name: "Atlas"}
     FE->>API: POST /api/chat (SSE)
     API->>CS: process_message(...)
     CS->>APP: process_query(...)
@@ -43,9 +78,24 @@ sequenceDiagram
     RT->>G: ainvoke(initial_state, config)
     G->>G: classify_intent()
     G->>T: call_troubleshoot_agent()
-    T->>TOOLS: tool calls
-    TOOLS->>N: live HTTP tool calls
-    TOOLS-->>T: human-readable tool output + side effects
+    T->>REG: resolve allowed tools
+    T->>PATH: path workflow calls
+    T->>DEVICE: active test / interface calls
+    T->>ROUTING: routing / OSPF / syslog calls
+    T->>CONN: connectivity snapshot calls
+    T->>SNWF: ServiceNow correlation calls
+    PATH->>N: live HTTP tool calls
+    DEVICE->>DDSVC: active tests / interface diagnostics as needed
+    ROUTING->>RDSVC: routing / OSPF / syslog workflow as needed
+    CONN->>CSSVC: connectivity evidence bundle as needed
+    SNWF->>SNSVC: incident/change correlation as needed
+    PATH-->>T: human-readable tool output + side effects
+    DEVICE-->>T: human-readable tool output + side effects
+    ROUTING-->>T: human-readable tool output + side effects
+    CONN-->>T: human-readable tool output + side effects
+    SNWF-->>T: human-readable tool output + side effects
+    T->>SN: product-facing ServiceNow tool calls as needed
+    SN-->>T: human-readable tool output
     T-->>G: final_text
     G->>P: build_troubleshoot_content(...)
     P-->>G: structured payload
@@ -57,6 +107,34 @@ sequenceDiagram
     FE-->>U: rendered markdown + path visuals + counters
 ```
 
+## Agent View
+
+```mermaid
+sequenceDiagram
+    participant RT as AtlasRuntime
+    participant Router as classify_intent
+    participant Agent as ReAct agent
+    participant REG as ToolRegistry
+    participant WF as workflow tools
+    participant MEM as memory tools
+    participant SN as ServiceNow tools
+    participant N as Nornir :8006
+    participant MCP as MCP backends
+    participant P as ResponsePresenter
+
+    RT->>Router: state(prompt, session_id, request_id)
+    Router->>Agent: selected agent node
+    Agent->>REG: resolve profile tools
+    REG-->>Agent: uniform tool list
+    Agent->>WF: path/snapshot/correlation
+    Agent->>MEM: historical recall when warranted
+    Agent->>SN: incident/change CRUD/detail
+    WF->>N: live network calls
+    WF->>MCP: workflow MCP calls
+    SN->>MCP: product-facing MCP calls
+    Agent-->>P: final text + side effects
+```
+
 ## 1. Frontend Submission
 
 The frontend entrypoint is [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>).
@@ -65,24 +143,13 @@ When the user submits a troubleshoot prompt:
 
 1. `sendMessage(text)` appends the user message to chat state.
 2. The store resets live status tracking:
-   - `currentStatus = "Identifying query"`
+   - `currentStatus = "Routing request"`
    - `statusSteps = []`
    - `_stepStart = performance.now()`
-3. It launches two HTTP actions:
-   - `discoverTool(...)`
+3. It launches the real chat request:
    - `sendChat(...)`
 
-### Why `/api/discover` exists
-
-`/api/discover` is only for an early UI label. It does **not** perform real routing.
-
-Today it returns:
-
-```json
-{"tool_display_name": "Atlas"}
-```
-
-The actual routing happens later inside LangGraph.
+The actual routing happens inside LangGraph after `/api/chat` starts.
 
 ## 2. Frontend Opens the SSE Chat Stream
 
@@ -109,11 +176,26 @@ Status events update the timeline in the UI.
 
 Current early neutral labels are:
 
-- `Identifying query`
 - `Routing request`
 - `Analyzing your query...`
 
 Later statuses come from graph nodes and tools.
+
+## Internal Diagnostics Surface
+
+Atlas now also exposes an authenticated internal diagnostics endpoint:
+
+- `GET /api/internal/diagnostics`
+
+That endpoint does not run the graph. It returns a read-only snapshot from `DiagnosticsService` containing:
+
+- owner summary
+- checkpointer readiness
+- tool registry profile mappings
+- registered tool/capability metadata
+- in-process metrics counters and timings
+
+This is useful when debugging the runtime architecture itself rather than a user workflow.
 
 ## 3. FastAPI Owns the SSE Lifecycle
 
@@ -186,6 +268,7 @@ It is responsible for:
 - `conversation_history`
 - `username`
 - `session_id`
+- `request_id`
 - `intent = None`
 - `rbac_error = None`
 - `final_response = None`
@@ -201,6 +284,44 @@ and, when a `session_id` exists:
 - `configurable.thread_id = session_id`
 
 That means LangGraph conversation state is keyed to the browser session.
+
+`DiagnosticsService` reads the same runtime/checkpointer owners so their current readiness can be inspected without sending a synthetic user prompt.
+
+## 6a. Observability and Request IDs
+
+[`services/observability.py`](<services/observability.py>) owns shared observability helpers.
+
+Current behavior:
+
+- every incoming query gets a `request_id`
+- the `request_id` is carried through:
+  - `AtlasApplication`
+  - `AtlasRuntime`
+  - `graph_nodes.py`
+  - diagnostics-visible runtime snapshots
+- major runtime events are logged as structured JSON messages, including:
+  - `query_started`
+  - `query_completed`
+  - `graph_invoke_started`
+  - `graph_invoke_completed`
+  - `intent_classified`
+  - `troubleshoot_agent_completed`
+  - `network_ops_agent_completed`
+  - Nornir request timing and cache events
+
+- lightweight in-process metrics are also recorded through [`services/metrics.py`](<services/metrics.py>), including:
+  - query counters and duration
+  - graph invocation counters and duration
+  - agent success/failure counters and duration
+  - Nornir request duration
+  - Nornir cache hit/store counters
+
+This makes it much easier to correlate:
+
+- one frontend request
+- one graph run
+- the selected agent path
+- live backend activity
 
 ## 7. Redis Checkpointer Is Optional but Supported
 
@@ -235,7 +356,7 @@ This is a deliberately small graph.
 Atlas does **not** use the graph for deep reasoning. The graph only owns:
 
 - coarse routing
-- node-level orchestration
+- thin node delegation
 - early exit
 
 ## 9. `classify_intent()` Decides Which Agent Runs
@@ -261,16 +382,16 @@ That means:
 
 ## 10. Troubleshoot Node Starts a Fresh Live Investigation
 
-`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is the main orchestration node for live troubleshooting.
+`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is now a thin delegation node. The real orchestration lives in [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>).
 
-Before the agent runs, it explicitly resets run-scoped live state:
+Before the agent runs, `TroubleshootWorkflowService` explicitly resets run-scoped live state:
 
-- `clear_session_cache(session_id)`
+- `nornir_client.clear_session_cache(session_id)`
 - `pop_session_data(session_id)`
 
 This prevents stale live evidence from a prior run from contaminating the current one.
 
-It then:
+`TroubleshootWorkflowService` then:
 
 1. pushes `Investigating...`
 2. recovers pending clarification context if present
@@ -278,6 +399,8 @@ It then:
 4. decides the effective `issue_type`
 5. builds the troubleshoot agent
 6. invokes the agent
+7. enforces any required evidence follow-up
+8. delegates final payload shaping to `ResponsePresenter`
 
 ## 11. Incident-Based Troubleshooting Is Rewritten Before Agent Execution
 
@@ -338,8 +461,8 @@ It loads:
 
 ### Tool selection
 
-- connectivity scenario → `CONNECTIVITY_TOOLS`
-- other troubleshoot cases → `ALL_TOOLS`
+- connectivity scenario → profile `troubleshoot.connectivity`
+- other troubleshoot cases → profile `troubleshoot.general`
 
 That keeps connectivity runs constrained and reduces accidental tool sprawl.
 
@@ -347,24 +470,37 @@ That keeps connectivity runs constrained and reduces accidental tool sprawl.
 
 [`tools/tool_registry.py`](<tools/tool_registry.py>) owns:
 
-- `ALL_TOOLS`
-- `CONNECTIVITY_TOOLS`
-- `NETWORK_OPS_TOOLS`
+- capability registration
+- profile registration
+- profile → capability → tool resolution
 
-This gives the application one place to define which tools are allowed for each agent.
+This gives the application one place to define which tools are allowed for each agent without relying on hand-maintained static lists.
 
 Current intent:
 
-- `CONNECTIVITY_TOOLS`
+- profile `troubleshoot.connectivity`
   - live evidence and correlation tools only
   - no `recall_similar_cases(...)`
-- `NETWORK_OPS_TOOLS`
+- profile `network_ops`
   - ServiceNow + operational review tools
   - may use path lookup for CI context
 
 ## 15. The Tool Layer Does the Real Backend Work
 
-[`tools/all_tools.py`](<tools/all_tools.py>) is the centralized tool layer.
+Atlas keeps one uniform agent-facing tool interface, but now uses a few distinct owner-backed implementation styles:
+
+- workflow entrypoints split across:
+  - [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
+  - [`tools/device_agent_tools.py`](<tools/device_agent_tools.py>)
+  - [`tools/routing_agent_tools.py`](<tools/routing_agent_tools.py>)
+  - [`tools/connectivity_agent_tools.py`](<tools/connectivity_agent_tools.py>)
+  - [`tools/servicenow_workflow_tools.py`](<tools/servicenow_workflow_tools.py>)
+- [`services/path_trace_service.py`](<services/path_trace_service.py>) for live forward/reverse path walking and derived path metadata
+- [`services/device_diagnostics_service.py`](<services/device_diagnostics_service.py>) for ping, TCP, routing-check, and interface diagnostic workflow
+- [`services/connectivity_snapshot_service.py`](<services/connectivity_snapshot_service.py>) for the heavy connectivity evidence bundle
+- [`services/routing_diagnostics_service.py`](<services/routing_diagnostics_service.py>) for routing-history, OSPF, and syslog diagnostic workflow
+- [`services/servicenow_search_service.py`](<services/servicenow_search_service.py>) for Atlas-specific ServiceNow incident/change correlation
+- [`tools/servicenow_agent_tools.py`](<tools/servicenow_agent_tools.py>) for thin product-facing ServiceNow adapters
 
 Each tool may do all of the following:
 
@@ -378,15 +514,16 @@ Each tool may do all of the following:
 - `trace_path(...)`
 - `trace_reverse_path(...)`
 - `check_routing(...)`
-- `collect_connectivity_snapshot(...)`
-- `search_servicenow(...)`
+- `trace_path(...)` and `trace_reverse_path(...)` delegate live hop-by-hop path assembly to `PathTraceService`
+- `collect_connectivity_snapshot(...)` (delegates evidence assembly to `ConnectivitySnapshotService`)
+- `search_servicenow(...)` (delegates correlation/query formatting to `ServiceNowSearchService`)
 - `lookup_vendor_kb(...)`
 
 ## 16. Atlas Uses Two Different Runtime State Layers for Tool Output
 
 ### 16.1 In-memory per-session side-effect store
 
-Inside `all_tools.py`, `_store(session_id)` holds structured run data such as:
+[`services/session_store.py`](<services/session_store.py>) owns the transient structured run data written by tools, including:
 
 - `path_hops`
 - `reverse_path_hops`
@@ -401,7 +538,7 @@ These are not the agent’s natural language answer. They are structured artifac
 
 ### 16.2 Redis run cache
 
-`all_tools.py` also uses Redis for read-only run-scoped caching, such as:
+The workflow tool layer also uses Redis for read-only run-scoped caching, such as:
 
 - Nornir route lookups
 - next-hop owner lookups
@@ -583,15 +720,36 @@ Then it renders:
 
 ### `graph_nodes.py`
 
-- routing and node orchestration
+- routing and thin node delegation
+
+### `TroubleshootWorkflowService`
+
+- troubleshoot agent orchestration
+- mandatory evidence follow-up
+- fail-closed troubleshooting execution
+
+### `NetworkOpsWorkflowService`
+
+- network-ops agent orchestration
+- clarification follow-up handling
 
 ### agents
 
 - reasoning + tool use only
 
-### `all_tools.py`
+### Workflow tool entrypoints
 
-- backend access + structured side effects
+- `tools/path_agent_tools.py`
+- `tools/device_agent_tools.py`
+- `tools/routing_agent_tools.py`
+- `tools/connectivity_agent_tools.py`
+- `tools/servicenow_workflow_tools.py`
+- `tools/all_tools.py` remains only as a compatibility export layer
+
+### `ConnectivitySnapshotService`
+
+- owned connectivity evidence collection and summarization
+- keeps heavyweight snapshot logic out of the workflow module
 
 ### `MemoryManager`
 
@@ -615,14 +773,14 @@ help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200 on tcp port 
 
 the typical modern flow is:
 
-1. UI sends `/api/discover`
-2. UI opens `/api/chat` SSE
-3. `process_message(...)` delegates to `AtlasApplication`
-4. `AtlasRuntime` builds graph state and invokes `atlas_graph`
-5. `classify_intent()` returns `troubleshoot`
-6. `call_troubleshoot_agent()` clears run-scoped live state
-7. troubleshoot agent runs the connectivity scenario
-8. tools collect live path/snapshot/ServiceNow evidence
+1. UI opens `/api/chat` SSE
+2. `process_message(...)` delegates to `AtlasApplication`
+3. `AtlasRuntime` builds graph state and invokes `atlas_graph`
+4. `classify_intent()` returns `troubleshoot`
+5. `TroubleshootWorkflowService` clears run-scoped live state
+6. troubleshoot agent runs the connectivity scenario
+7. tools collect live path/snapshot/ServiceNow evidence
+8. `TroubleshootWorkflowService` enforces any required follow-up
 9. presenter injects deterministic `ServiceNow` and grouped counter output
 10. FastAPI sends the final structured payload
 11. UI renders markdown, path visuals, counters, and the status timeline

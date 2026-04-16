@@ -1,318 +1,232 @@
-# Adding a New MCP Tool
+# Adding a New Tool
 
-This guide covers adding a new MCP tool to an existing integration module — for example, adding a new NetBrain query to [tools/netbrain_tools.py](../../tools/netbrain_tools.py), a new ServiceNow lookup to [tools/servicenow_tools.py](../../tools/servicenow_tools.py), and so on.
+This guide covers adding a new **agent-facing tool** in the current Atlas architecture.
 
-To add an entirely new integration (new file, new auth, new credentials), see [adding-a-domain.md](./adding-a-domain.md) first, then return here.
+Atlas no longer registers tools by stuffing everything into one monolithic module or by teaching `chat_service.py` about every tool individually.
+
+The current pattern is:
+
+1. put backend logic in an owned service or client
+2. expose a thin agent-facing tool in the correct tool module
+3. register a capability in that module's manifest
+4. add the capability to the right `ToolRegistry` profile
+5. add tests
+
+---
+
+## Decide What Kind of Tool You Are Adding
+
+There are two tool categories in Atlas:
+
+### 1. Product-facing tools
+
+These already match a user task directly.
+
+Examples:
+- `get_incident_details(...)`
+- `create_servicenow_incident(...)`
+- `update_servicenow_change_request(...)`
+
+These should stay thin.
+
+Good home:
+- `tools/servicenow_agent_tools.py`
+- another dedicated `*_agent_tools.py` module if you add a new product-facing integration
+
+### 2. Workflow tools
+
+These support Atlas-specific investigation workflows and often compose multiple backend calls or write session-side effects.
+
+Examples:
+- `trace_path(...)`
+- `collect_connectivity_snapshot(...)`
+- `search_servicenow(...)`
+
+These belong in the workflow tool modules:
+- `tools/path_agent_tools.py`
+- `tools/device_agent_tools.py`
+- `tools/routing_agent_tools.py`
+- `tools/connectivity_agent_tools.py`
+- `tools/servicenow_workflow_tools.py`
+
+---
+
+## Current Registration Model
+
+Atlas uses capability-based registration through `ToolRegistry`.
+
+That means:
+- the tool module owns the tool implementation
+- the tool module also exports the capability manifest
+- `ToolRegistry` resolves profiles to capabilities and then to concrete tool objects
+
+You do **not** update `chat_service.py` to register a tool.
 
 ---
 
 ## Checklist
 
-- [ ] 1. Write the implementation function in the integration tool file
-- [ ] 2. Write the `@mcp.tool()` wrapper
-- [ ] 3. Update `TOOL_DISPLAY_NAMES` in `chat_service.py`
-- [ ] 4. Update `_TOOL_TIMEOUTS` in `chat_service.py`
-- [ ] 5. Update the LLM system prompt in `_build_llm_messages()` in `chat_service.py`
-- [ ] 6. Update `_normalize_result()` in `chat_service.py` (if needed)
-- [ ] 7. Update `ROLE_ALLOWED_TOOLS` in `auth.py`
-- [ ] 8. Update the frontend (if the response shape is new)
+- [ ] 1. Put backend logic in the right owned service/client
+- [ ] 2. Add the agent-facing tool in the right tool module
+- [ ] 3. Add or update the capability manifest in that module
+- [ ] 4. Add the capability to the correct profile in `tools/tool_registry.py`
+- [ ] 5. Add tests
+- [ ] 6. Update docs if the tool changes the public architecture or workflows
 
 ---
 
-## Step 1: Write the Implementation Function
+## Step 1: Put Backend Logic in the Right Owner
 
-Add a private `async def _my_tool_impl(...)` function in the integration tool file. Keep business logic here and away from the `@mcp.tool()` wrapper.
+Do not put transport, retry, caching, or backend orchestration directly into the tool wrapper unless the wrapper is truly trivial.
 
-```python
-# tools/netbrain_tools.py  (example: get_device_interfaces)
+Current examples:
+- `services/nornir_client.py`
+- `services/path_trace_service.py`
+- `services/device_diagnostics_service.py`
+- `services/routing_diagnostics_service.py`
+- `services/connectivity_snapshot_service.py`
+- `services/servicenow_search_service.py`
 
-async def _get_device_interfaces_impl(device_name: str) -> dict:
-    """Internal implementation — called by the MCP tool wrapper."""
-    auth_token = netbrainauth.get_auth_token()
-    if not auth_token:
-        return {"error": "Failed to get authentication token"}
-
-    url = f"{NETBRAIN_URL}/ServicesAPI/API/V1/CMDB/Interfaces"
-    headers = {"Token": auth_token, "Content-Type": "application/json"}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params={"hostname": device_name},
-                                   ssl=False, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status != 200:
-                    return {"error": f"NetBrain API returned {resp.status}"}
-                data = await resp.json()
-    except asyncio.TimeoutError:
-        return {"device_name": device_name, "interfaces": [], "error": "Request timed out"}
-    except Exception as e:
-        logger.debug("get_device_interfaces error: %s", e)
-        return {"device_name": device_name, "interfaces": [], "error": str(e)}
-
-    interfaces = data.get("interfaces", [])
-    return {
-        "device_name": device_name,
-        "interfaces": [
-            {"name": i.get("name"), "ip": i.get("ip"), "type": i.get("interfaceType")}
-            for i in interfaces
-        ],
-        "count": len(interfaces),
-    }
-```
-
-**Rules:**
-- Always return a `dict`.
-- On failure, return `{"error": "..."}`. Never raise exceptions out of the impl.
-- Include the main input key(s) in error responses (`"device_name": device_name`) so the frontend can still display context.
-- Use `async`/`await` with `aiohttp` for all HTTP calls.
+Rule of thumb:
+- if the logic talks to a backend, owns caching, or shapes backend results repeatedly, it belongs in a service/client
+- if the logic is only a small agent-facing adapter, it can stay in the tool module
 
 ---
 
-## Step 2: Write the `@mcp.tool()` Wrapper
+## Step 2: Add the Tool in the Correct Module
 
-The wrapper is a thin function — it only validates inputs and delegates to the impl. All logic stays in the impl.
+Example: adding a new product-facing ServiceNow detail tool.
 
 ```python
-@mcp.tool()
-async def get_device_interfaces(
-    device_name: str,
-    include_inactive: bool = False,
-) -> dict:
+# tools/servicenow_agent_tools.py
+from langchain_core.tools import tool
+
+from atlas.mcp_client import call_mcp_tool
+from atlas.services.backend_contracts import lookup_error, not_found
+
+
+@tool
+def get_problem_details(problem_number: str) -> str:
     """
-    Retrieve all interfaces for a given network device from NetBrain.
+    Retrieve details for a ServiceNow problem record.
 
-    Use for: queries asking for device interfaces — "interfaces on leander-dc-leaf1",
-    "what interfaces does router-X have?", "show ports on device Y".
-    Do NOT use for: path queries, address group lookups, rack/location queries.
-
-    Examples:
-    - "interfaces on leander-dc-leaf1" → device_name="leander-dc-leaf1"
-    - "show ports on router-X" → device_name="router-X"
-
-    Args:
-        device_name: Hostname or name of the device (e.g., "leander-dc-leaf1")
-        include_inactive: Include administratively down interfaces (default False)
-
-    Returns:
-        dict: device_name, interfaces (list), count, or error
+    Use for:
+    - "show me PRB0012345"
+    - "details about PRB0012345"
     """
-    return await _get_device_interfaces_impl(device_name, include_inactive)
+    result = call_mcp_tool("get_servicenow_problem", {"number": problem_number})
+    if isinstance(result, dict) and result.get("error"):
+        return lookup_error("ServiceNow", result["error"])
+    if not result:
+        return not_found("Problem", problem_number)
+    return f"Problem {problem_number}: {result}"
 ```
 
-### Docstring format — critical for LLM tool selection
-
-FastMCP uses the docstring as the tool description sent to the LLM. `chat_service._to_openai_tool()` trims everything from `Args:` onward and caps at 600 chars, so everything the LLM needs to make the right choice must appear **before** `Args:`.
-
-| Section | Purpose |
-|---|---|
-| First sentence | What the tool does (shown in full) |
-| `Use for:` | Trigger phrases — the LLM matches these to the user query |
-| `Do NOT use for:` | Disambiguation — guides the LLM away from wrong tool choices |
-| `Examples:` | Concrete query → argument mappings (most effective guidance) |
-| `Args:` | Parameter descriptions (used by FastMCP for schema, not sent to LLM) |
-| `Returns:` | Response shape (for developers) |
-
-### Type hints → JSON Schema
-
-FastMCP auto-generates the tool's `inputSchema` from type hints:
-
-| Python type | JSON Schema result |
-|---|---|
-| `str` | `{"type": "string"}` |
-| `int` | `{"type": "integer"}` |
-| `bool` | `{"type": "boolean"}` |
-| `Optional[str]` or `str = None` | `{"type": "string"}`, marked optional |
-| `str = "default"` | `{"type": "string", "default": "default"}` |
-
-Parameters without defaults are `required` in the schema. Parameters with defaults are optional.
+Keep the tool surface task-level and small.
 
 ---
 
-## Step 3: `TOOL_DISPLAY_NAMES` in chat_service.py
+## Step 3: Add the Capability Manifest Entry
 
-**File:** [chat_service.py](../../chat_service.py)
+Each tool module owns its own capability map.
 
-Add the tool name → UI label mapping. This label appears in the status bar while the query runs (`"Querying NetBrain"`).
+Example:
 
 ```python
-TOOL_DISPLAY_NAMES: dict[str, str] = {
-    "check_path_allowed":                 "Atlas",
-    "query_network_path":                 "Atlas",
-    "get_incident_details":               "ServiceNow",
-    "get_change_request_details":         "ServiceNow",
-    "get_device_interfaces":              "NetBrain",   # ← add this
+# tools/servicenow_agent_tools.py
+SERVICENOW_TOOL_CAPABILITIES = {
+    "servicenow.problem.read": get_problem_details,
 }
 ```
 
-Use the system name (e.g., `"NetBrain"`, `"ServiceNow"`). This is what the user sees.
+Workflow modules do the same thing with their own manifest maps.
+
+This keeps the registration metadata close to the tool implementation instead of centralizing every tool name in one giant registry file.
 
 ---
 
-## Step 4: `_TOOL_TIMEOUTS` in chat_service.py
+## Step 4: Add the Capability to the Right Tool Profile
 
-Set a per-tool timeout in seconds. This is the maximum time `call_mcp_tool()` will wait before giving up.
+`ToolRegistry` owns which agents get which capabilities.
+
+Example:
 
 ```python
-_TOOL_TIMEOUTS: dict[str, float] = {
-    "query_network_path":        385.0,   # NetBrain path polling can be slow
-    "check_path_allowed":        370.0,
-    "get_incident_details":       30.0,
-    "get_change_request_details": 30.0,
-    "get_device_interfaces":      30.0,   # ← add this (fast API call)
+# tools/tool_registry.py
+"network_ops": {
+    "servicenow.incident.read",
+    "servicenow.change.read",
+    "servicenow.problem.read",
 }
 ```
 
-**Guidelines:**
-- Simple single API calls: `30–65s`
-- Calls that require polling (NetBrain path calculation): `90–400s`
-- If a tool is not listed, a default timeout applies — always add it explicitly.
+That is the main step that makes the tool available to an agent.
 
 ---
 
-## Step 5: System prompt in `_build_llm_messages()`
+## Step 5: Keep Error Contracts Consistent
 
-Add a routing rule so the LLM knows when to select the new tool over others.
+Use the shared backend contract helpers instead of inventing ad hoc error strings.
 
-```python
-SystemMessage(content=(
-    "You are a network infrastructure assistant. "
-    "Always call a tool — never answer from memory or prior context. "
-    "Tool selection rules: "
-    "short rack IDs like 'A4', 'B2' → get_rack_details; "
-    "device names with dashes like 'leander-dc-leaf1' → get_device_rack_location; "
-    "incident numbers like INC0012345 → get_incident_details; "
-    "change numbers like CHG0012345 → get_change_request_details; "
-    "list/all racks → list_racks; "
-    "device interfaces/ports → get_device_interfaces. "   # ← add this
-    ...
-))
-```
+Current helpers live in:
+- `services/backend_contracts.py`
 
-**Tips:**
-- Phrase rules as `<trigger pattern> → <tool_name>`.
-- If your tool overlaps with an existing one, add a disambiguation rule: `"interfaces on a device → get_device_interfaces (not get_device_rack_location)"`.
-- Keep rules concise — the system prompt is sent on every query.
+Examples:
+- `backend_unavailable(...)`
+- `lookup_error(...)`
+- `not_found(...)`
+- `operation_failed(...)`
+- `unexpected_response(...)`
+- `verification_failed(...)`
+
+This keeps tool failures predictable in the UI and tests.
 
 ---
 
-## Step 6: `_normalize_result()` in chat_service.py (optional)
+## Step 6: Add Tests
 
-Add normalization only if you want to inject a `direct_answer`, `yes_no_answer`, or `metric_answer` badge in the UI, or to clean up the result before rendering.
+At minimum, add:
 
-```python
-def _normalize_result(tool_name, result, prompt=""):
-    ...
-    # Example: add a direct_answer summary for get_device_interfaces
-    if tool_name == "get_device_interfaces" and isinstance(result, dict) and "error" not in result:
-        count = result.get("count", 0)
-        device = result.get("device_name", "the device")
-        if count > 0:
-            result = dict(result)
-            result["direct_answer"] = f"{device} has {count} interface{'s' if count != 1 else ''}"
-    ...
-    return result
-```
+1. Tool behavior test
+- success path
+- failure path
 
-**Badge types:**
+2. Registry/profile test
+- capability resolves correctly
+- agent profile includes it when expected
 
-| Key | Rendered as | When to use |
-|---|---|---|
-| `direct_answer` | Blue info badge above the table | Plain summary sentence (counts, names) |
-| `yes_no_answer` | Green/red Yes/No badge | Binary verdicts only |
-| `metric_answer` | Metric badge | Single numeric metric (utilization %, height) |
+Good examples:
+- `tests/test_servicenow_agent_tools.py`
+- `tests/test_application_owners.py`
 
-If your tool result renders fine as a table with no extra context needed, skip this step.
+If the tool affects a workflow, add workflow-level coverage too.
 
 ---
 
-## Step 7: RBAC in auth.py
+## Step 7: Update Docs Only Where It Matters
 
-**File:** [auth.py](../../auth.py)
+Update documentation if the tool changes:
+- the agent-facing capability set
+- a documented workflow
+- diagnostics/health surfaces
+- architecture ownership
 
-Add the tool to `ROLE_ALLOWED_TOOLS` for the roles that should have access:
-
-```python
-ROLE_ALLOWED_TOOLS: dict[str, set[str] | None] = {
-    "admin":    None,   # all tools always allowed
-    "netadmin": {
-        "query_network_path",
-        "check_path_allowed",
-        "get_incident_details",
-        "get_change_request_details",
-        "get_device_interfaces",    # ← add for netadmin if appropriate
-    },
-    "guest":    set(),  # no tools
-}
-```
-
-If `admin` should be the only role with access, do not add it to `netadmin` — `admin` always gets all tools (`None` = unrestricted).
-
-Also update `ROLE_ALLOWED_CATEGORIES` if the tool belongs to a sidebar category that should be shown/hidden per role:
-
-```python
-ROLE_ALLOWED_CATEGORIES: dict[str, list[str] | None] = {
-    "admin":    None,
-    "netadmin": ["atlas", "servicenow"],   # add a category slug here if needed
-    "guest":    [],
-}
-```
+Typical places:
+- `README.md`
+- `design.md`
+- `Documentation/End-to-End-flow/troubleshooting-query-flow.md`
 
 ---
 
-## Step 8: Frontend updates (if needed)
+## Summary
 
-Frontend changes are only needed if the response shape is new. If your tool returns a standard dict with array values, it renders as a table automatically.
+In the current architecture, adding a tool means:
 
-### responseClassifier.js — new response types only
+1. decide whether it is product-facing or workflow-facing
+2. put backend logic in the correct owner
+3. add the thin tool wrapper in the right tool module
+4. register its capability in that module
+5. add the capability to a `ToolRegistry` profile
+6. test it
 
-**File:** [frontend/src/utils/responseClassifier.js](../../frontend/src/utils/responseClassifier.js)
-
-Only modify if your tool returns a shape that doesn't fit the existing classifiers (`text`, `batch`, `error`, `path`, `path-summary`, `structured`, `table`, `json`). Most tools return a dict with array keys → classified as `'table'` automatically.
-
-### formatters.js — column ordering and table labels
-
-**File:** [frontend/src/utils/formatters.js](../../frontend/src/utils/formatters.js)
-
-If the table column order matters, add an entry to `TABLE_COLUMN_ORDER`:
-
-```js
-export const TABLE_COLUMN_ORDER = {
-  incidents: ['number', 'short_description', 'state', 'priority'],
-  changes: ['number', 'short_description', 'state', 'risk'],
-  // ↓ add your tool's array key and preferred column order
-  interfaces: ['name', 'ip', 'type'],
-}
-
-export const TABLE_LABELS = {
-  incidents: 'Incidents',
-  changes: 'Change requests',
-  interfaces: 'Device interfaces',   // ← human-readable heading
-}
-```
-
-To hide fields from the table (debug fields, internal IDs), add them to `_HIDDEN_KEYS`:
-
-```js
-const _HIDDEN_KEYS = new Set([
-  'desc_units', 'outer_width', 'outer_unit', 'outer_depth',
-  'intent', 'format', 'vsys', 'queried_ip',
-  'raw_response',   // ← add fields you want hidden
-])
-```
-
-### AssistantMessage.jsx — new render types only
-
-**File:** [frontend/src/components/messages/AssistantMessage.jsx](../../frontend/src/components/messages/AssistantMessage.jsx)
-
-Only modify if your tool uses a new classifier type that needs custom JSX. For standard table/structured responses, no changes are needed.
-
----
-
-## Verification
-
-After making the changes, verify end-to-end:
-
-1. **MCP server** — restart `mcp_server.py`. Check `mcp_server.log` confirms the new tool is registered (`tools_registered: N+1`).
-2. **Tool schema** — hit `GET http://127.0.0.1:8765/health` — confirm tool count increased.
-3. **RBAC** — log in as a `netadmin` user and confirm the tool is allowed/denied as configured.
-4. **LLM selection** — type a query matching your new tool's "Use for" examples and confirm `tool_display_name` in the discover response matches.
-5. **End-to-end** — run the full query and confirm the response renders correctly in the UI.
+That is the current Atlas design, and it is intentionally different from the older “register everything in chat_service and one big tool module” approach.

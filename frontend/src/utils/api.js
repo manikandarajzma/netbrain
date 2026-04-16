@@ -24,15 +24,10 @@ export async function fetchHealth() {
   return res.json()
 }
 
-export async function discoverTool(message, conversationHistory, signal) {
-  const res = await fetch('/api/discover', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, conversation_history: conversationHistory }),
-    signal,
-  })
+export async function fetchDiagnostics() {
+  const res = await fetch('/api/internal/diagnostics', { signal: AbortSignal.timeout(5000) })
   checkAuthRedirect(res)
-  if (!res.ok) throw new Error('Discover failed')
+  if (!res.ok) throw new Error('Failed to load diagnostics')
   return res.json()
 }
 

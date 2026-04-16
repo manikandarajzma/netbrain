@@ -335,63 +335,23 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Return app status, MCP server reachability, and Ollama status."""
-    import os, aiohttp
-    host = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
-    port = os.getenv("MCP_SERVER_PORT", "8765")
-    mcp_url = f"http://{host}:{port}/health"
-    mcp_status = "unknown"
-    mcp_tools = None
+    """Return app status and dependent service health."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(mcp_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    mcp_status = data.get("status", "ok")
-                    mcp_tools = data.get("tools_registered")
-                else:
-                    mcp_status = f"error ({resp.status})"
-    except Exception:
-        mcp_status = "unreachable"
+        from atlas.services.health_service import health_service
+    except ImportError:
+        from services.health_service import health_service  # type: ignore
+    return await health_service.build_snapshot()
 
-    # Ollama status: check reachability and whether the configured model is available
-    from atlas.tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL
-    ollama_status = "unknown"
-    ollama_model_available = None
+
+@app.get("/api/internal/diagnostics")
+async def api_internal_diagnostics(username: str = Depends(require_auth)):
+    """Return internal runtime diagnostics for authenticated users."""
     try:
-        # Use OpenAI-compatible /models endpoint (works with Docker Model Runner and Ollama)
-        base = OLLAMA_BASE_URL.rstrip("/")
-        models_url = f"{base}/models"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                models_url,
-                timeout=aiohttp.ClientTimeout(total=3),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    models = [m.get("id", "") for m in data.get("data", [])]
-                    ollama_model_available = any(
-                        m == OLLAMA_MODEL or m.split(":")[0] == OLLAMA_MODEL.split(":")[0]
-                        for m in models
-                    )
-                    ollama_status = "ok" if ollama_model_available else "model_not_found"
-                else:
-                    ollama_status = f"error ({resp.status})"
-    except Exception:
-        ollama_status = "unreachable"
+        from atlas.atlas_application import atlas_application
+    except ImportError:
+        from atlas_application import atlas_application  # type: ignore
 
-    return {
-        "status": "ok",
-        "auth_mode": AUTH_MODE,
-        "mcp_server": mcp_status,
-        "mcp_tools_registered": mcp_tools,
-        "ollama": {
-            "status": ollama_status,
-            "url": OLLAMA_BASE_URL,
-            "model": OLLAMA_MODEL,
-            "model_available": ollama_model_available,
-        },
-    }
+    return await atlas_application.get_diagnostics_snapshot()
 
 
 # --- Chat API ---
@@ -469,18 +429,6 @@ async def api_topology(request: Request):
         for r in links_rows
     ]
     return {"devices": devices, "links": links}
-
-
-@app.post("/api/discover")
-async def api_discover(request: Request, body: ChatRequest):
-    """Lightweight tool discovery — returns display name without running the graph."""
-    username = get_current_username(request)
-    if not username:
-        return response_401_clear_session(request)
-    # Keep this label neutral. The real intent routing happens in the backend
-    # graph, and a hardcoded troubleshooter label is misleading for ops/ticket
-    # requests before classification completes.
-    return {"tool_display_name": "Atlas"}
 
 
 @app.get("/api/chat/history")

@@ -69,12 +69,15 @@ ollama pull llama3.1:8b
 
 ## External Backend Tools Fail
 
-**Cause:** API credentials or URLs are incorrect
+**Cause:** backend credentials, URLs, or service health are incorrect
 
-**Solution:** Check environment variables and credential files:
-- `netbrainauth.py` for NetBrain credentials
-- `servicenowauth.py` and ServiceNow secrets for ServiceNow credentials
-- any backend-specific host, username, and password values in `.env` or Azure Key Vault
+**Solution:** Check:
+- backend-specific values in `.env` or Azure Key Vault
+- owned backend clients and services such as:
+  - `services/nornir_client.py`
+  - `services/health_service.py`
+  - `services/servicenow_search_service.py`
+- the Diagnostics page or `/api/internal/diagnostics` for current health state
 
 ---
 

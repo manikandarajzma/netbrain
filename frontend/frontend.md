@@ -99,7 +99,7 @@ frontend/
       particles/
         BackgroundParticles.jsx + .module.css  # Floating particles (dark mode only)
     utils/
-      api.js                          # Fetch wrappers: discoverTool, sendChat, etc.
+      api.js                          # Fetch wrappers: sendChat, diagnostics, history, etc.
       csvExport.js                    # CSV escape + blob download
       deviceIcons.js                  # Device type to icon mapping
       formatters.js                   # cellText, normalizeInterface, etc.
@@ -116,7 +116,7 @@ frontend/
 - **No TypeScript** — plain JavaScript to keep the learning curve low
 - **No UI library / Tailwind** — uses existing CSS custom properties
 - **Native fetch** — no axios dependency
-- **Two-phase chat flow** — `/api/discover` identifies the tool, `/api/chat` executes it
+- **Single chat flow** — `/api/chat` handles routing and execution; the frontend only renders progress
 - **`/api/me` endpoint** replaces Jinja2 template variables for user context
 - **Login page stays Jinja2** — server-side auth mode conditionals, no migration needed
 - **`forwardRef` + `useImperativeHandle`** for ChatInput.fillText() (sidebar query fill)

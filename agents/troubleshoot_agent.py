@@ -20,8 +20,11 @@ except ImportError:
 
 logger = logging.getLogger("atlas.troubleshoot_agent")
 
-ALL_TOOLS = tool_registry.get_all_tools()
-CONNECTIVITY_TOOLS = tool_registry.get_connectivity_tools()
+GENERAL_PROFILE = "troubleshoot.general"
+CONNECTIVITY_PROFILE = "troubleshoot.connectivity"
+
+ALL_TOOLS = tool_registry.get_profile_tools(GENERAL_PROFILE)
+CONNECTIVITY_TOOLS = tool_registry.get_profile_tools(CONNECTIVITY_PROFILE)
 
 _SKILLS_DIR    = pathlib.Path(__file__).parent.parent / "skills"
 _CORE_PROMPT   = _SKILLS_DIR / "troubleshooter.md"

@@ -2,95 +2,272 @@
 
 ## Why LangGraph?
 
-Without LangGraph, `chat_service.py` would need a long chain of if/else logic to handle routing — "if intent is network, do this; if risk, do that; if tool fails, retry; if RBAC blocks, return error." This becomes hard to reason about and test. LangGraph lets you define that logic as an explicit graph with named nodes and edges, making the flow visible and each step independently testable.
+Atlas uses LangGraph for one narrow, important job: coarse request routing and controlled execution flow.
 
-The specific reason Atlas needs it: queries don't always follow a straight line. After a tool executes, the LLM might decide to call another tool (chaining), or retry on failure, or stop. That back-edge (`tool_executor → tool_selector`) is trivial in a graph, hard to express cleanly with linear code.
+Without LangGraph, the application entrypoint would need to own:
+- intent routing
+- early exits for unsupported prompts
+- troubleshoot vs network-ops branching
+- final response assembly boundaries
+
+That would turn the runtime layer into a large conditional bucket again. LangGraph keeps that control flow explicit and testable.
+
+What LangGraph does **not** do in the current design:
+- it is not a giant tool-selection loop
+- it is not where backend logic lives
+- it is not where workflow orchestration lives
+
+Those responsibilities now live in owned services and pure agents.
+
+---
+
+## The Current Graph Shape
+
+Atlas now uses a small graph:
+
+```text
+classify_intent
+    ├─► call_troubleshoot_agent
+    ├─► call_network_ops_agent
+    └─► build_final_response
+```
+
+That is intentional.
+
+- `classify_intent` performs deterministic coarse routing
+- the two agent nodes are thin delegation nodes
+- `build_final_response` is the graph exit point
+
+The heavy work happens below the graph:
+- `TroubleshootWorkflowService`
+- `NetworkOpsWorkflowService`
+- pure ReAct agents built by `AgentFactory`
+- capability-based tools from `ToolRegistry`
 
 ---
 
 ## The Three Graph Files
 
-### graph_state.py
+### `graph_state.py`
 
-Defines `AtlasState` — a typed dictionary that is the shared memory passed between every node in the graph. Every node reads from it and writes back to it.
+Defines `AtlasState`, the typed shared state passed between graph nodes.
+
+The state is intentionally small because this graph is intentionally small.
+
+Important fields:
 
 | Field | Purpose |
 |-------|---------|
-| `prompt`, `conversation_history`, `username`, `session_id` | Set once at entry, never mutated |
-| `intent` | Set by `classify_intent`, used by the router to pick the next node |
-| `messages` | The growing LangChain message list passed to the LLM |
-| `selected_tool_name`, `selected_tool_args` | Written by `tool_selector`, read by `tool_executor` |
-| `tool_raw_result`, `accumulated_results` | Written by `tool_executor` as results come in |
-| `tool_error`, `iteration` | Used by the retry loop |
-| `rbac_error` | Set by `check_rbac` to block execution before a tool runs |
-| `final_response` | Once set, the graph routes to `build_final_response` and ends |
-| `prefilled_tool_name/params` | Shortcut path when the answer to a follow-up confirmation is already known |
+| `prompt` | Raw user prompt for this turn |
+| `conversation_history` | Prior chat messages used for context |
+| `username` | Authenticated user identity |
+| `session_id` | Per-browser/session identifier |
+| `request_id` | Per-request observability id |
+| `intent` | Set by `classify_intent` to `troubleshoot`, `network_ops`, or `dismiss` |
+| `rbac_error` | Optional user-facing authorization error |
+| `final_response` | Final assistant payload returned to the caller |
+
+Unlike the older architecture, `AtlasState` no longer carries a large pile of tool-selection loop fields such as selected-tool bookkeeping, accumulated tool outputs, or retry-loop internals.
+
+That logic was removed from the graph layer on purpose.
 
 ---
 
-### graph_builder.py
+### `graph_builder.py`
 
-Wires all nodes together into a compiled graph. Key routing decisions:
+Compiles the graph and wires the nodes together.
 
-- **`classify_intent` branches** to one of 7 paths: `prefilled`, `doc`, `network`, `dismiss`, `risk`, `netbrain`, `troubleshoot`
-- **`tool_selector` → `check_rbac` or done** — if the LLM stopped producing tool calls, the result is already in `accumulated_results`
-- **`tool_executor` → `tool_selector`** (back-edge) — after a tool runs, the result is fed back to the LLM which decides whether to call another tool or produce a final answer. This is the tool-chaining loop
-- **`tool_executor` → `synthesize_error`** — if all retry attempts are exhausted
-- All terminal paths converge at `build_final_response → END`
+Current routing behavior:
 
-The compiled graph (`atlas_graph`) is a singleton instantiated once on import and reused for every request.
+- `classify_intent` routes to one of:
+  - `call_troubleshoot_agent`
+  - `call_network_ops_agent`
+  - `build_final_response`
+- both agent nodes always flow into `build_final_response`
+- `build_final_response` flows to `END`
+
+So `graph_builder.py` now owns:
+- graph topology
+- entry point
+- conditional routing map
+
+It does **not** own workflow logic.
 
 ---
 
-### graph_nodes.py
+### `graph_nodes.py`
 
-Implements every node as an async function. Each node receives `AtlasState`, does its work, and returns a dict of fields to update in the state.
+Implements the graph nodes, but only at the graph boundary.
+
+Current node responsibilities:
 
 | Node | What it does |
-|------|-------------|
-| `classify_intent` | Calls the LLM with a strict system prompt to classify the query into one of 7 intents. Also handles follow-up confirmations ("yes"/"no") by checking the previous `follow_up_action` in conversation history |
-| `tool_selector` | Calls the LLM with all MCP tool descriptions bound and forces it to pick a tool (`tool_choice="required"` on first iteration, `"auto"` on retries). Returns the tool name and args |
-| `check_rbac` | Checks whether the user's role permits the selected tool. Sets `rbac_error` if not |
-| `tool_executor` | Calls the MCP tool. Also contains deterministic chaining logic when a follow-up tool is known in advance, without bouncing back to the LLM |
-| `prefilled_tool_executor` | Skips LLM tool selection entirely — runs a known tool directly. Used when the user confirms a follow-up offer ("yes, show me the members") |
-| `enrich_with_insights` | After the main result is ready, adds proactive hints — e.g. "this group has no policies referencing it" |
-| `troubleshoot_orchestrator` | Checks if the troubleshoot query has enough context (port, issue type). If not, asks a clarifying question and saves the original prompt in memory keyed by session ID. The next message from the same session is combined with it |
-| `synthesize_error` | If the tool failed after retries, asks the LLM to produce a friendly error message |
-| `netbrain_agent` | Delegates path queries to the NetBrain A2A agent over HTTP — no MCP involved |
-| `risk_orchestrator` | Delegates risk queries to the risk orchestrator which can fan out to external backend agents in parallel |
+|------|--------------|
+| `classify_intent` | Uses deterministic regex-based coarse routing for `troubleshoot`, `network_ops`, or `dismiss` |
+| `call_troubleshoot_agent` | Thin delegation node that calls `TroubleshootWorkflowService.run(...)` |
+| `call_network_ops_agent` | Thin delegation node that calls `NetworkOpsWorkflowService.run(...)` |
+| `build_final_response` | Returns any final graph-owned response such as an RBAC error or previously prepared payload |
+
+This is a major simplification from the older design.
+
+`graph_nodes.py` is now responsible for:
+- routing
+- graph boundary delegation
+- minimal graph exit handling
+
+It is no longer responsible for:
+- tool execution
+- retry loops
+- tool chaining
+- backend integration
+- response formatting
+- workflow-specific orchestration
 
 ---
 
-## Query Flow (network intent)
+## Where the Real Work Happens Now
 
-```
+LangGraph is now the router, not the whole application.
+
+The owned services below it do the rest:
+
+### `TroubleshootWorkflowService`
+
+Owns troubleshoot-side orchestration:
+- run-scoped state reset
+- pending-context recovery
+- agent execution
+- required follow-up enforcement
+- session-side-effect merge
+- presenter handoff
+
+### `NetworkOpsWorkflowService`
+
+Owns network-ops orchestration:
+- network-ops agent execution
+- follow-up clarification handling
+- payload shaping for incident/change/ticket workflows
+
+### `AgentFactory`
+
+Builds the pure ReAct agents.
+
+The graph does not build agent internals directly.
+
+### `ToolRegistry`
+
+Owns the uniform agent-facing tool surface:
+- capability registration
+- profile-to-capability mapping
+- capability-to-tool resolution
+
+### `ResponsePresenter`
+
+Owns final payload shaping such as:
+- path visualization payloads
+- ServiceNow section replacement
+- interface-counter grouping
+
+---
+
+## End-to-End Flow
+
+### Troubleshoot Flow
+
+```text
+chat_service.py
+    ▼
+AtlasApplication
+    ▼
+AtlasRuntime
+    ▼
+atlas_graph
+    ▼
 classify_intent
-    │ intent = "network"
     ▼
-fetch_mcp_tools
+call_troubleshoot_agent
     ▼
-tool_selector  ←──────────────────────────────┐
-    │ tool selected                            │
-    ▼                                          │ (tool result fed back — LLM may chain)
-check_rbac                                     │
-    │ allowed                                  │
-    ▼                                          │
-tool_executor ─────────────────────────────────┘
-    │ success (no more tool calls)
+TroubleshootWorkflowService
     ▼
-enrich_with_insights
+Troubleshoot ReAct agent
+    ▼
+ToolRegistry tools
+    ▼
+owned services / backend clients
+    ▼
+ResponsePresenter
     ▼
 build_final_response
 ```
 
-## Query Flow (netbrain intent)
+### Network Ops Flow
 
-```
-classify_intent
-    │ intent = "netbrain"
+```text
+chat_service.py
     ▼
-netbrain_agent  ──► HTTP POST localhost:8004 (NetBrain agent)
-                        └── ask_external_agent ──► HTTP POST localhost:<port> (external agent)
+AtlasApplication
+    ▼
+AtlasRuntime
+    ▼
+atlas_graph
+    ▼
+classify_intent
+    ▼
+call_network_ops_agent
+    ▼
+NetworkOpsWorkflowService
+    ▼
+Network Ops ReAct agent
+    ▼
+ToolRegistry tools
+    ▼
+owned services / backend adapters
     ▼
 build_final_response
 ```
+
+---
+
+## Why This Design Is Better
+
+This structure is cleaner because each layer has one job:
+
+- `chat_service.py`
+  - request entrypoint
+- `AtlasApplication`
+  - top-level ownership and wiring
+- `AtlasRuntime`
+  - graph invocation
+- LangGraph
+  - coarse routing
+- workflow services
+  - execution orchestration
+- agents
+  - reasoning and tool choice
+- tools
+  - stable agent-facing actions
+- services/clients
+  - backend behavior and state ownership
+- presenter
+  - UI payload shaping
+
+That separation is what makes the current architecture much easier to reason about than the older graph-heavy design.
+
+---
+
+## Summary
+
+LangGraph in Atlas is now deliberately small.
+
+It is used to:
+- classify the request
+- choose the right workflow lane
+- terminate cleanly
+
+It is **not** used as the main place for:
+- backend logic
+- tool-chaining internals
+- retry orchestration
+- formatting
+
+That work now lives in the proper owners below the graph, which is the right final direction for Atlas.

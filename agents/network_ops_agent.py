@@ -22,7 +22,8 @@ except ImportError:
 
 logger = logging.getLogger("atlas.network_ops_agent")
 
-NETWORK_OPS_TOOLS = tool_registry.get_network_ops_tools()
+PROFILE_NAME = "network_ops"
+NETWORK_OPS_TOOLS = tool_registry.get_profile_tools(PROFILE_NAME)
 
 _SKILL_PATH = pathlib.Path(__file__).parent.parent / "skills" / "network_ops.md"
 

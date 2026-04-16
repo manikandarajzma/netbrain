@@ -5,7 +5,7 @@ Atlas is an AI-assisted network operations application with two primary workflow
 - **Troubleshooting** for live investigations such as connectivity, performance, and intermittent issues
 - **Network operations** for operational actions such as ServiceNow incident/change work and firewall or policy review
 
-The current architecture is built around a small LangGraph router, two specialized ReAct agents, a centralized tool layer, and a separate Nornir HTTP service for live network collection.
+The current architecture is built around a small LangGraph router, two specialized ReAct agents, a uniform tool layer, an owned `NornirClient`, and a separate Nornir HTTP service for live network collection.
 
 ## What Atlas Does
 
@@ -40,42 +40,118 @@ Atlas now has clear owners for the main application responsibilities:
   - final response payload owner
 - [`services/memory_manager.py`](<services/memory_manager.py>)
   - pending-context and recall-policy owner
+- [`services/path_trace_service.py`](<services/path_trace_service.py>)
+  - live path tracing and path metadata owner for troubleshoot workflows
+- [`services/device_diagnostics_service.py`](<services/device_diagnostics_service.py>)
+  - active tests and interface diagnostic workflow owner for troubleshoot workflows
+- [`services/session_store.py`](<services/session_store.py>)
+  - transient per-session tool side-effect store owner
+- [`services/status_service.py`](<services/status_service.py>)
+  - UI status-bus owner
+- [`services/workflow_state_service.py`](<services/workflow_state_service.py>)
+  - session-side-effect merge and workflow guard owner
+- [`services/connectivity_snapshot_service.py`](<services/connectivity_snapshot_service.py>)
+  - connectivity evidence bundle owner for troubleshoot workflows
+- [`services/routing_diagnostics_service.py`](<services/routing_diagnostics_service.py>)
+  - routing history, OSPF, and syslog diagnostic workflow owner for troubleshoot workflows
+- [`services/servicenow_search_service.py`](<services/servicenow_search_service.py>)
+  - Atlas-specific incident/change correlation owner for troubleshoot workflows
+- [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
+  - troubleshoot orchestration owner above the pure agent layer
+- [`services/network_ops_workflow_service.py`](<services/network_ops_workflow_service.py>)
+  - network-ops orchestration owner above the pure agent layer
 - [`tools/tool_registry.py`](<tools/tool_registry.py>)
   - tool-set owner
+- [`services/observability.py`](<services/observability.py>)
+  - structured request and tool observability owner
+- [`services/metrics.py`](<services/metrics.py>)
+  - lightweight in-process metrics owner
+- [`services/diagnostics_service.py`](<services/diagnostics_service.py>)
+  - internal diagnostics snapshot owner
 
 ### Request Flow
 
 ```mermaid
 flowchart TD
-    UI["React UI"] --> DISC["POST /api/discover"]
-    UI --> CHAT["POST /api/chat (SSE)"]
+    UI["React UI"] --> CHAT["POST /api/chat (SSE)"]
     CHAT --> APP["FastAPI app.py"]
     APP --> CS["chat_service.process_message()"]
     CS --> AA["AtlasApplication"]
     AA --> RT["AtlasRuntime"]
+    AA --> OBS["structured logs<br/>request_id / session_id / timing"]
     RT --> CP["Redis checkpointer (optional)"]
     RT --> GRAPH["LangGraph atlas_graph"]
 
     GRAPH --> CI["classify_intent"]
-    CI -->|troubleshoot| TA["call_troubleshoot_agent"]
-    CI -->|network_ops| NA["call_network_ops_agent"]
+    CI -->|troubleshoot| TWF["TroubleshootWorkflowService"]
+    CI -->|network_ops| NWF["NetworkOpsWorkflowService"]
     CI -->|dismiss| BF["build_final_response"]
 
-    TA --> TRAG["Troubleshoot ReAct agent"]
-    NA --> NOAG["Network Ops ReAct agent"]
+    TWF --> TRAG["Troubleshoot ReAct agent"]
+    NWF --> NOAG["Network Ops ReAct agent"]
 
-    TRAG --> TOOLS["tools/all_tools.py"]
-    NOAG --> TOOLS
+    TRAG --> REG["ToolRegistry"]
+    NOAG --> REG
 
-    TOOLS --> NORNIR["Nornir HTTP service :8006"]
-    TOOLS --> MCP["MCP-backed systems"]
-    TOOLS --> STORE["Per-session side-effect store + Redis run cache"]
+    REG --> PATH["tools/path_agent_tools.py"]
+    REG --> DEVICE["tools/device_agent_tools.py"]
+    REG --> ROUTING["tools/routing_agent_tools.py"]
+    REG --> CONN["tools/connectivity_agent_tools.py"]
+    REG --> SNWF["tools/servicenow_workflow_tools.py"]
+    REG --> SNTOOLS["tools/servicenow_agent_tools.py"]
 
-    TA --> PRES["ResponsePresenter"]
-    NA --> PRES
+    PATH --> NORNIR["Nornir HTTP service :8006"]
+    DEVICE --> NORNIR
+    ROUTING --> NORNIR
+    CONN --> NORNIR
+    SNWF --> MCP["MCP-backed systems"]
+    PATH --> PATHSVC["PathTraceService"]
+    DEVICE --> DDSVC["DeviceDiagnosticsService"]
+    ROUTING --> RDSVC["RoutingDiagnosticsService"]
+    CONN --> CSSVC["ConnectivitySnapshotService"]
+    SNWF --> SNSVC["ServiceNowSearchService"]
+    PATH --> STORE["Per-session side-effect store + Redis run cache"]
+    DEVICE --> STORE
+    ROUTING --> STORE
+    CONN --> STORE
+    SNWF --> STORE
+    SNTOOLS --> MCP
+
+    TWF --> PRES["ResponsePresenter"]
+    NWF --> PRES
     PRES --> BF
     BF --> APP
     APP --> UI
+```
+
+### Agent Execution View
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant App as "AtlasApplication"
+    participant Runtime as "AtlasRuntime"
+    participant Router as "classify_intent"
+    participant Agent as "ReAct agent"
+    participant Registry as "ToolRegistry"
+    participant Workflow as "workflow tools"
+    participant Product as "product-facing tools"
+    participant Backends as "Nornir / MCP"
+    participant Presenter as "ResponsePresenter"
+
+    User->>App: process query
+    App->>Runtime: invoke graph (request_id)
+    Runtime->>Router: classify intent
+    Router->>Agent: choose troubleshoot or network_ops
+    Agent->>Registry: resolve allowed tools
+    Registry-->>Agent: uniform tool list
+    Agent->>Workflow: trace/snapshot/correlation tools
+    Agent->>Product: ServiceNow CRUD/detail tools
+    Workflow->>Backends: Nornir HTTP / MCP
+    Product->>Backends: MCP
+    Backends-->>Agent: tool results
+    Agent-->>Presenter: final text + side effects
+    Presenter-->>App: structured response payload
 ```
 
 ### Layer Boundaries
@@ -89,14 +165,18 @@ flowchart TD
   - SSE lifecycle
   - chat-history persistence
   - cache flush after write operations
+  - internal diagnostics endpoint
 - **Chat entrypoint**
   - `chat_service.py` is intentionally thin
   - delegates to `AtlasApplication`
 - **Application/runtime**
   - `AtlasApplication` owns the top-level processing flow
   - `AtlasRuntime` owns graph invocation, initial state, config, and final-response extraction
+  - `services/observability.py` owns shared request ids and structured event logging
+  - `services/metrics.py` owns lightweight counters and timing aggregates
+  - workflow services own troubleshoot and network-ops execution around the pure agents
 - **Graph**
-  - coarse routing only: `troubleshoot`, `network_ops`, `dismiss`
+  - coarse routing and thin node delegation only: `troubleshoot`, `network_ops`, `dismiss`
 - **Agents**
   - pure specialized ReAct agents with minimal wrappers
 - **Tools**
@@ -110,7 +190,7 @@ flowchart TD
 ### Entry and runtime
 
 - [`app.py`](<app.py>)
-  - FastAPI routes, SSE streaming, chat persistence, built-frontend serving
+  - FastAPI routes, SSE streaming, chat persistence, built-frontend serving, and internal diagnostics
 - [`run_web.py`](<run_web.py>)
   - recommended development launcher for the web app
 - `chat_service.py`
@@ -121,13 +201,19 @@ flowchart TD
   - graph execution owner
 - [`services/checkpointer_runtime.py`](<services/checkpointer_runtime.py>)
   - Redis-backed LangGraph checkpointer lifecycle
+- [`services/diagnostics_service.py`](<services/diagnostics_service.py>)
+  - read-only runtime diagnostics snapshot for internal inspection
+- [`services/status_service.py`](<services/status_service.py>)
+  - status-bus owner reused by workflow services and tool runtime
+- [`services/workflow_state_service.py`](<services/workflow_state_service.py>)
+  - merge/guard owner for transient workflow state
 
 ### Graph
 
 - [`graph_builder.py`](<graph_builder.py>)
   - graph structure
 - [`graph_nodes.py`](<graph_nodes.py>)
-  - routing node, troubleshoot node, network-ops node, final response node
+  - routing node and thin delegation nodes
 - [`graph_state.py`](<graph_state.py>)
   - typed graph state
 
@@ -144,21 +230,47 @@ flowchart TD
 
 - [`services/memory_manager.py`](<services/memory_manager.py>)
   - pending clarification state and evidence-driven recall signals
+- [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
+  - troubleshoot agent orchestration, mandatory evidence follow-up, and fail-closed execution
+- [`services/network_ops_workflow_service.py`](<services/network_ops_workflow_service.py>)
+  - network-ops agent orchestration and follow-up handling
+- [`services/path_trace_service.py`](<services/path_trace_service.py>)
+  - owned forward/reverse path tracing and path metadata extraction
+- [`services/device_diagnostics_service.py`](<services/device_diagnostics_service.py>)
+  - owned ping, TCP, routing-check, and interface diagnostic workflow
 - [`services/request_preprocessor.py`](<services/request_preprocessor.py>)
   - incident expansion, IP/port extraction, clarification helpers
 - [`services/response_presenter.py`](<services/response_presenter.py>)
   - deterministic payload shaping for troubleshoot and network-ops answers
-- [`services/runtime_helpers.py`](<services/runtime_helpers.py>)
-  - session-data merge, snapshot/path completeness checks, status push helpers
+- [`services/connectivity_snapshot_service.py`](<services/connectivity_snapshot_service.py>)
+  - owned connectivity snapshot collection and summarization workflow
+- [`services/routing_diagnostics_service.py`](<services/routing_diagnostics_service.py>)
+  - owned routing-history, OSPF, and syslog diagnostic workflow
+- [`services/servicenow_search_service.py`](<services/servicenow_search_service.py>)
+  - Atlas-specific ServiceNow incident/change correlation and summary formatting
 
 ### Tools and external integrations
 
 - [`tools/all_tools.py`](<tools/all_tools.py>)
-  - centralized tool implementations
+  - thin compatibility export layer for workflow tools
+- [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
+  - path tracing workflow entrypoints
+- [`tools/device_agent_tools.py`](<tools/device_agent_tools.py>)
+  - active test and interface diagnostic workflow entrypoints
+- [`tools/routing_agent_tools.py`](<tools/routing_agent_tools.py>)
+  - routing, OSPF, and syslog workflow entrypoints
+- [`tools/connectivity_agent_tools.py`](<tools/connectivity_agent_tools.py>)
+  - connectivity snapshot workflow entrypoints
+- [`tools/servicenow_workflow_tools.py`](<tools/servicenow_workflow_tools.py>)
+  - troubleshooting-oriented ServiceNow correlation workflow entrypoints
+- [`tools/servicenow_agent_tools.py`](<tools/servicenow_agent_tools.py>)
+  - thin product-facing ServiceNow adapters for incident/change CRUD and record lookup
 - [`tools/tool_registry.py`](<tools/tool_registry.py>)
-  - tool-set ownership
+  - capability registration and agent profile resolution
 - [`mcp_client.py`](<mcp_client.py>)
   - MCP calls for systems such as ServiceNow
+- [`services/nornir_client.py`](<services/nornir_client.py>)
+  - owned HTTP + retry + run-cache client for the local Nornir service
 - [`nornir/server.py`](<nornir/server.py>)
   - live network collection service on port `8006`
 
@@ -167,7 +279,7 @@ flowchart TD
 - [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
   - chat lifecycle and status timeline
 - [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
-  - `/api/discover` and `/api/chat` helpers
+  - `/api/chat`, diagnostics, and history helpers
 - [`frontend/src/components/messages/AssistantMessage.jsx`](<frontend/src/components/messages/AssistantMessage.jsx>)
   - payload-driven assistant rendering
 - [`frontend/src/components/path/PathVisualization.jsx`](<frontend/src/components/path/PathVisualization.jsx>)
@@ -199,24 +311,87 @@ That means:
 
 ## Tool Model
 
-Every tool in [`tools/all_tools.py`](<tools/all_tools.py>) follows the same model:
+Atlas exposes one uniform agent-facing tool model through [`tools/tool_registry.py`](<tools/tool_registry.py>), but the implementation now uses a few distinct owner-backed tool styles:
+
+- workflow tools split across:
+  - [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
+  - [`tools/device_agent_tools.py`](<tools/device_agent_tools.py>)
+  - [`tools/routing_agent_tools.py`](<tools/routing_agent_tools.py>)
+  - [`tools/connectivity_agent_tools.py`](<tools/connectivity_agent_tools.py>)
+  - [`tools/servicenow_workflow_tools.py`](<tools/servicenow_workflow_tools.py>)
+- live path ownership in [`services/path_trace_service.py`](<services/path_trace_service.py>)
+- active tests and interface diagnostics in [`services/device_diagnostics_service.py`](<services/device_diagnostics_service.py>)
+- thin product-facing ServiceNow adapters in [`tools/servicenow_agent_tools.py`](<tools/servicenow_agent_tools.py>)
+
+Every agent-facing tool follows the same model:
 
 - accept typed arguments the LLM can fill
 - accept hidden runtime config for `session_id`
 - optionally push status updates
 - write structured side effects into the per-session store
+
+## Observability
+
+Atlas now uses a shared observability helper in [`services/observability.py`](<services/observability.py>).
+
+Current behavior:
+- every query gets a `request_id`
+- the `request_id` flows through:
+  - `AtlasApplication`
+  - `AtlasRuntime`
+  - `graph_nodes.py`
+- major events are logged as structured JSON messages, including:
+  - query start / completion
+  - graph invoke start / completion
+  - intent classification
+  - agent completion / failure
+  - Nornir request timing and cache hits
+
+This makes it easier to correlate one UI request with:
+- graph routing
+- backend execution
+- final rendered output
+
+Atlas also now has a lightweight metrics owner in [`services/metrics.py`](<services/metrics.py>).
+
+Current metrics include:
+- query started / completed counters
+- query duration timing
+- graph invocation counters and timing
+- agent completion / failure counters and timing
+- Nornir request timing
+- Nornir cache hit / store counters
 - return a human-readable string for the LLM
 
-### Tool sets
+These metrics are inspectable through the internal diagnostics surface instead of only appearing in logs.
 
-- `ALL_TOOLS`
+## Internal Diagnostics
+
+Authenticated users can inspect a lightweight runtime snapshot at:
+
+- `GET /api/internal/diagnostics`
+
+It returns:
+
+- owner summary
+- checkpointer readiness
+- tool profiles and tool-capability mappings
+- in-process metric counters and timing aggregates
+
+This is an internal/admin endpoint for debugging and architecture inspection, not an end-user workflow.
+
+### Agent profiles
+
+`ToolRegistry` resolves named agent profiles to capabilities and then to concrete tools:
+
+- `troubleshoot.general`
   - full troubleshooting surface
-- `CONNECTIVITY_TOOLS`
-  - restricted set for the connectivity scenario
-  - deliberately excludes `recall_similar_cases(...)`
-- `NETWORK_OPS_TOOLS`
-  - restricted ops surface
-  - includes ServiceNow creation/update/detail tools
+- `troubleshoot.connectivity`
+  - restricted connectivity surface
+  - deliberately excludes memory recall
+- `network_ops`
+  - operational record/change surface
+  - includes product-facing ServiceNow tools
   - may use `trace_path(...)` for CI selection
 
 ## State and Memory
@@ -231,7 +406,7 @@ Atlas uses three distinct state layers:
 
 ### 2. Per-session tool side-effect store
 
-Stored inside [`tools/all_tools.py`](<tools/all_tools.py>) and cleared between runs.
+Owned by [`services/session_store.py`](<services/session_store.py>) and cleared between runs.
 
 Examples:
 
@@ -244,7 +419,7 @@ Examples:
 
 ### 3. Run-scoped Redis cache
 
-Also used in `all_tools.py` for read-only backend results during a run:
+Also used by the workflow tool layer for read-only backend results during a run:
 
 - route lookups
 - find-device lookups
@@ -340,15 +515,14 @@ FastAPI serves the built app automatically from `frontend/dist` when it exists.
 
 ## Key HTTP Endpoints
 
-- `POST /api/discover`
-  - lightweight preflight label for the UI
-  - currently returns a neutral `Atlas` label
 - `POST /api/chat`
   - SSE chat stream
   - emits `status` events and one `done` event
 - `GET /api/chat/history`
 - `GET /api/chat/conversations`
 - `GET /api/chat/conversations/{conversation_id}`
+- `GET /api/internal/diagnostics`
+  - authenticated internal diagnostics snapshot
 
 ## Troubleshooting the Application
 

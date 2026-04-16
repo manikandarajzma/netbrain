@@ -3,6 +3,7 @@ import { useUserStore } from './stores/userStore.js'
 import ChatLayout from './components/layout/ChatLayout.jsx'
 import BackgroundParticles from './components/particles/BackgroundParticles.jsx'
 import Dashboard from './components/dashboard/Dashboard.jsx'
+import Diagnostics from './components/diagnostics/Diagnostics.jsx'
 import AppHeader from './components/layout/AppHeader.jsx'
 import styles from './App.module.css'
 
@@ -27,7 +28,9 @@ export default function App() {
       <div className={styles.appMain}>
         {view === 'dashboard'
           ? <Dashboard />
-          : <ChatLayout headerless />
+          : view === 'diagnostics'
+            ? <Diagnostics />
+            : <ChatLayout headerless />
         }
       </div>
     </>

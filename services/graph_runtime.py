@@ -1,12 +1,21 @@
 """Graph execution helpers for Atlas chat entrypoints."""
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from typing import Any
 
 try:
     from atlas.services.checkpointer_runtime import ensure_checkpointer
+    from atlas.services.metrics import metrics_recorder
+    from atlas.services.observability import elapsed_ms, log_event, new_request_id
 except ImportError:
     from services.checkpointer_runtime import ensure_checkpointer  # type: ignore
+    from services.metrics import metrics_recorder  # type: ignore
+    from services.observability import elapsed_ms, log_event, new_request_id  # type: ignore
+
+
+logger = logging.getLogger("atlas.graph_runtime")
 
 
 class AtlasRuntime:
@@ -18,12 +27,14 @@ class AtlasRuntime:
         conversation_history: list[dict[str, str]],
         username: str | None,
         session_id: str | None,
+        request_id: str | None,
     ) -> dict[str, Any]:
         return {
             "prompt": prompt,
             "conversation_history": conversation_history or [],
             "username": username,
             "session_id": session_id,
+            "request_id": request_id or new_request_id(),
             "intent": None,
             "rbac_error": None,
             "final_response": None,
@@ -42,13 +53,42 @@ class AtlasRuntime:
         *,
         username: str | None = None,
         session_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
+        started_at = perf_counter()
         await ensure_checkpointer()
         from atlas.graph_builder import atlas_graph
 
-        initial_state = self.build_initial_state(prompt, conversation_history, username, session_id)
+        initial_state = self.build_initial_state(prompt, conversation_history, username, session_id, request_id)
+        request_id = initial_state.get("request_id")
         config = self.build_graph_config(session_id)
-        return await atlas_graph.ainvoke(initial_state, config=config)
+        metrics_recorder.increment("atlas.graph.invoke.started")
+        log_event(
+            logger,
+            "graph_invoke_started",
+            request_id=request_id,
+            session_id=session_id,
+            prompt_chars=len(prompt or ""),
+            history_messages=len(conversation_history or []),
+            recursion_limit=config.get("recursion_limit"),
+        )
+        result = await atlas_graph.ainvoke(initial_state, config=config)
+        duration_ms = elapsed_ms(started_at)
+        metrics_recorder.increment(
+            "atlas.graph.invoke.completed",
+            has_final_response=bool(isinstance(result, dict) and result.get("final_response")),
+        )
+        metrics_recorder.observe_ms("atlas.graph.invoke.duration_ms", duration_ms)
+        log_event(
+            logger,
+            "graph_invoke_completed",
+            request_id=request_id,
+            session_id=session_id,
+            elapsed_ms=duration_ms,
+            state_keys=list(result.keys()) if isinstance(result, dict) else [],
+            has_final_response=bool(isinstance(result, dict) and result.get("final_response")),
+        )
+        return result
 
     def extract_final_response(self, result_state: dict[str, Any]) -> dict[str, Any]:
         return result_state.get("final_response") or {

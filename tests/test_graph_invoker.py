@@ -1,6 +1,6 @@
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from services.graph_runtime import atlas_runtime
 
@@ -27,6 +27,7 @@ class GraphInvokerTests(unittest.IsolatedAsyncioTestCase):
                 "conversation_history": [{"role": "user", "content": "previous"}],
                 "username": "alice",
                 "session_id": "session-1",
+                "request_id": ANY,
                 "intent": None,
                 "rbac_error": None,
                 "final_response": None,

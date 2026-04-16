@@ -9,6 +9,8 @@ logger = logging.getLogger("atlas.checkpointer_runtime")
 
 _checkpointer_lock = asyncio.Lock()
 _checkpointer_ready = False
+_checkpointer_state = "pending"
+_checkpointer_error: str | None = None
 
 
 async def ensure_checkpointer() -> None:
@@ -17,7 +19,7 @@ async def ensure_checkpointer() -> None:
 
     If Redis is unavailable the graph keeps running without persistence.
     """
-    global _checkpointer_ready
+    global _checkpointer_ready, _checkpointer_state, _checkpointer_error
     if _checkpointer_ready:
         return
     async with _checkpointer_lock:
@@ -35,6 +37,8 @@ async def ensure_checkpointer() -> None:
             await cp.asetup()
             _gb.atlas_graph = _gb.build_graph(cp)
             _checkpointer_ready = True
+            _checkpointer_state = "enabled"
+            _checkpointer_error = None
             logger.info(
                 "Atlas graph re-compiled with AsyncRedisSaver (thread_id=%s, Redis=%s)",
                 "session_id",
@@ -47,3 +51,20 @@ async def ensure_checkpointer() -> None:
                 exc,
             )
             _checkpointer_ready = True
+            _checkpointer_state = "disabled"
+            _checkpointer_error = str(exc)
+
+
+def get_checkpointer_status() -> dict[str, bool | str | None]:
+    """Return checkpointer lifecycle state for diagnostics."""
+    labels = {
+        "pending": "Pending first graph run",
+        "enabled": "Enabled",
+        "disabled": "Disabled (running without Redis persistence)",
+    }
+    return {
+        "ready": _checkpointer_state == "enabled",
+        "state": _checkpointer_state,
+        "label": labels.get(_checkpointer_state, _checkpointer_state),
+        "error": _checkpointer_error,
+    }

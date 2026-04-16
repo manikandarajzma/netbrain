@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import {
-  discoverTool,
   sendChat,
   uploadBatch,
   fetchChatHistory,
@@ -147,7 +146,7 @@ export const useChatStore = create((set, get) => ({
     pushHistory('user', text)
 
     const ctrl = new AbortController()
-    set({ isLoading: true, currentStatus: 'Identifying query', statusSteps: [], _stepStart: nowMs(), abortController: ctrl })
+    set({ isLoading: true, currentStatus: 'Routing request', statusSteps: [], _stepStart: nowMs(), abortController: ctrl })
     const signal = ctrl.signal
     const historySlice = get().conversationHistory
     const parentIdForNew = nextConversationParentId || null
@@ -155,29 +154,6 @@ export const useChatStore = create((set, get) => ({
     const conversationIdToUse = null
 
     try {
-      // Start both calls simultaneously — discover only drives a neutral routing label
-      let toolDisplayName = null
-      const discoverPromise = discoverTool(textToSend, historySlice, signal)
-        .then(d => {
-          toolDisplayName = d.tool_display_name
-          const newStatus = 'Routing request'
-          const now = nowMs()
-          const { currentStatus, statusSteps, _stepStart } = get()
-          if (currentStatus && _stepStart) {
-            set({
-              statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
-              currentStatus: newStatus,
-              _stepStart: now,
-            })
-          } else {
-            set({ currentStatus: newStatus, _stepStart: now })
-          }
-        })
-        .catch(err => {
-          if (err && err.name === 'AbortError') throw err
-          set({ currentStatus: 'Routing request' })
-        })
-
       const data = await sendChat(textToSend, historySlice, signal, conversationIdToUse, parentIdForNew, (msg) => {
         const now = nowMs()
         const { currentStatus, statusSteps, _stepStart } = get()
@@ -191,20 +167,17 @@ export const useChatStore = create((set, get) => ({
           set({ currentStatus: msg, _stepStart: now })
         }
       })
-      await discoverPromise
 
-      if (toolDisplayName) {
-        const now = nowMs()
-        const { currentStatus, statusSteps, _stepStart } = get()
-        if (currentStatus && _stepStart) {
-          set({
-            statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
-            currentStatus: 'Preparing response',
-            _stepStart: now,
-          })
-        } else {
-          set({ currentStatus: 'Preparing response', _stepStart: now })
-        }
+      const now = nowMs()
+      const { currentStatus, statusSteps, _stepStart } = get()
+      if (currentStatus && _stepStart) {
+        set({
+          statusSteps: [...statusSteps, { label: currentStatus, duration: stepSeconds(_stepStart, now) }],
+          currentStatus: 'Preparing response',
+          _stepStart: now,
+        })
+      } else {
+        set({ currentStatus: 'Preparing response', _stepStart: now })
       }
 
       await new Promise(r => setTimeout(r, 400))

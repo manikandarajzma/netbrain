@@ -13,7 +13,7 @@ Atlas follows a **Hierarchical Specialized ReAct Agent** pattern:
 
 - **LangGraph** acts as the **Supervisor / High-level Router**
 - **Specialized ReAct Agents** perform the actual reasoning and work
-- **Centralized Tools** (`tools/all_tools.py`) are the only way agents interact with external systems
+- **Uniform agent-facing tools** are the only way agents interact with external systems
 
 ```
 User Prompt
@@ -21,17 +21,20 @@ User Prompt
     ▼
 classify_intent  (graph_nodes.py)
     │
-    ├──► call_troubleshoot_agent  ──► troubleshoot_agent.build_agent()
+    ├──► call_troubleshoot_agent  ──► TroubleshootWorkflowService
     │                                      │
-    ├──► call_network_ops_agent   ──► network_ops_agent.build_agent()
+    ├──► call_network_ops_agent   ──► NetworkOpsWorkflowService
     │                                      │
     └──► build_final_response              ▼
                                    create_react_agent(llm, tools)
                                       Reason → Act → Observe
                                           │
                                           ▼
-                                    tools/all_tools.py
-                                (MCP / HTTP / DB backends)
+                            ToolRegistry → agent-facing tools
+                         (workflow tools + product-facing adapters)
+                                          │
+                                          ▼
+                              MCP / HTTP / DB backends
 ```
 
 ---
@@ -40,7 +43,21 @@ classify_intent  (graph_nodes.py)
 
 ### 2.1 Tools Are the Single Source of Truth
 
-- All external capabilities must be implemented as tools in `tools/all_tools.py`
+- All external capabilities must be implemented as agent-facing tools
+- Workflow/composed Atlas tools are split across:
+  - `tools/path_agent_tools.py`
+  - `tools/device_agent_tools.py`
+  - `tools/routing_agent_tools.py`
+  - `tools/connectivity_agent_tools.py`
+  - `tools/servicenow_workflow_tools.py`
+- `tools/all_tools.py` remains only as a thin compatibility export layer
+- Live path tracing and path metadata extraction live in `services/path_trace_service.py`
+- Active tests and interface diagnostics live in `services/device_diagnostics_service.py`
+- Transient per-session tool side effects live in `services/session_store.py`
+- OSPF, routing-history, and syslog diagnostic workflow lives in `services/routing_diagnostics_service.py`
+- Atlas-specific ServiceNow correlation for troubleshoot flows lives in `services/servicenow_search_service.py`
+- Product-facing ServiceNow adapters live in `tools/servicenow_agent_tools.py`
+- `tools/tool_registry.py` is the agent-facing source of truth for tool exposure
 - Tools use MCP (Model Context Protocol) or direct HTTP to communicate with backends (Nornir, ServiceNow, and other external systems)
 - Agent files must never contain direct API calls, HTTP logic, XML parsing, or backend-specific code
 
@@ -57,7 +74,7 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 
 - No A2A (agent-to-agent) HTTP calls
 - Agents must never call each other directly
-- All shared capabilities are accessed exclusively through tools in `all_tools.py`
+- All shared capabilities are accessed exclusively through the tool layer
 
 > **Why?** A2A is fragile, complex, and breaks the clean ReAct pattern. Agents calling each other via HTTP leads to unstructured text passing, error-prone coordination, tight coupling, and debugging nightmares. Shared tools keep the architecture simple, reliable, and maintainable — each specialized agent stays focused on its own strength using the ReAct loop.
 
@@ -66,7 +83,7 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 - Both agents use `create_react_agent` from `langgraph.prebuilt`
 - The LLM fully drives the Reason → Act → Observe loop
 - Agent files (`troubleshoot_agent.py`, `network_ops_agent.py`) expose only `build_agent()` — no orchestration logic
-- Infrastructure concerns (status bus, session handling, INC→IP resolution, response formatting) belong in `graph_nodes.py`, not in agent files
+- Infrastructure concerns (status bus, session handling, INC→IP resolution, response formatting) belong in workflow/services layers, not in agent files
 
 ### 2.5 Routing Belongs in LangGraph
 
@@ -86,10 +103,21 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 ## 3. Development Rules
 
 ### Adding a New Tool
-1. Implement it in `tools/all_tools.py`
-2. Use MCP or the existing `_nornir_post()` / CB+retry pattern for external calls
-3. Add it to `ALL_TOOLS` (and `NETWORK_OPS_TOOLS` if the network-ops agent needs it)
-4. Write a clear docstring — the LLM reads it to decide when to call the tool
+1. Decide the tool type:
+   - path tracing workflow entrypoint → implement in `tools/path_agent_tools.py`
+   - active test / interface diagnostic workflow entrypoint → implement in `tools/device_agent_tools.py`
+   - routing / OSPF / syslog workflow entrypoint → implement in `tools/routing_agent_tools.py`
+   - connectivity snapshot workflow entrypoint → implement in `tools/connectivity_agent_tools.py`
+   - troubleshoot-side ServiceNow correlation workflow entrypoint → implement in `tools/servicenow_workflow_tools.py`
+   - live path tracing / path metadata owner → implement in `services/path_trace_service.py`
+   - active test / interface diagnostic workflow owner → implement in `services/device_diagnostics_service.py`
+   - routing / OSPF / syslog diagnostic workflow owner → implement in `services/routing_diagnostics_service.py`
+   - Atlas-specific ServiceNow incident/change correlation → implement in `services/servicenow_search_service.py`
+   - product-facing ServiceNow CRUD/detail action → implement in `tools/servicenow_agent_tools.py`
+2. Use MCP or the owned backend clients (for example `services/nornir_client.py`) for external calls
+3. Register capabilities in `tools/tool_registry.py`
+4. Add or update the relevant agent profile in `tools/tool_registry.py`
+5. Write a clear docstring — the LLM reads it to decide when to call the tool
 
 ### Adding a New Workflow
 1. Determine the nature: diagnostic → `troubleshoot_agent`, constructive → `network_ops_agent`
@@ -111,7 +139,7 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 | Mixing diagnostic and constructive logic in one agent | Violates specialization principle |
 | Custom agent loops outside `create_react_agent` | LangGraph prebuilt is the standard |
 | Scenario-specific rules in `troubleshooter.md` | Belongs in `troubleshooting_scenarios/` |
-| Infrastructure logic (status, formatting) in agent files | Belongs in `graph_nodes.py` |
+| Infrastructure logic (status, formatting) in agent files | Belongs in workflow/services layers |
 
 ---
 
@@ -135,10 +163,10 @@ Implemented via **RedisVL vector store** in `agent_memory.py`.
 
 | Mechanism | What it stores | How it's written | How it's read |
 |-----------|---------------|-----------------|---------------|
-| `store_memory()` | Past troubleshooting findings (query + root cause) | Called automatically in `graph_nodes.py` after each successful troubleshoot run | `recall_similar_cases` tool |
+| `store_memory()` | Past troubleshooting findings (query + root cause) | Called automatically in `TroubleshootWorkflowService` after each successful troubleshoot run | `recall_similar_cases` tool |
 | `store_incident_memory()` | Closed ServiceNow incidents | Nightly sync via `servicenow_memory_sync.py` | `recall_similar_cases` tool |
 
-**Agent usage:** The `recall_similar_cases` tool is in `ALL_TOOLS`. The troubleshoot agent calls it early in its investigation — semantically similar past cases surface root causes before live tools run.
+**Agent usage:** `recall_similar_cases` is available through the `troubleshoot.general` profile. It is evidence-gated and should only be used after live results suggest recurrence or unresolved historical patterns.
 
 **Embedding model:** `sentence-transformers/all-MiniLM-L6-v2` (384-dim, CPU-only)
 **TTL:** 30 days (configurable via `AGENT_MEMORY_TTL_DAYS`)
@@ -147,13 +175,30 @@ Implemented via **RedisVL vector store** in `agent_memory.py`.
 
 ```
 atlas/
-├── graph_nodes.py          # LangGraph supervisor: routing, status bus, response formatting
+├── graph_nodes.py          # LangGraph supervisor: routing and thin node delegation
 ├── graph_builder.py        # LangGraph graph definition
 ├── agents/
 │   ├── troubleshoot_agent.py   # build_agent() only — pure create_react_agent
 │   └── network_ops_agent.py    # build_agent() only — pure create_react_agent
+├── services/
+│   ├── path_trace_service.py   # Live forward/reverse path tracing and path metadata extraction
+│   ├── device_diagnostics_service.py # Ping, TCP, routing-check, and interface diagnostic workflow owner
+│   ├── connectivity_snapshot_service.py  # Connectivity evidence bundle owner
+│   ├── routing_diagnostics_service.py # Routing history, OSPF, and syslog diagnostic workflow owner
+│   ├── servicenow_search_service.py # Atlas-specific ServiceNow correlation owner
+│   ├── troubleshoot_workflow_service.py # Troubleshoot orchestration owner
+│   ├── network_ops_workflow_service.py # Network-ops orchestration owner
+│   ├── workflow_state_service.py # Session-side-effect merge and workflow guard owner
+│   └── status_service.py # Status bus owner
 ├── tools/
-│   └── all_tools.py            # ALL tools — the only way agents touch external systems
+│   ├── all_tools.py                 # Thin compatibility export layer for workflow tools
+│   ├── path_agent_tools.py          # Path tracing workflow entrypoints
+│   ├── device_agent_tools.py        # Active test and interface diagnostic workflow entrypoints
+│   ├── routing_agent_tools.py       # Routing / OSPF / syslog workflow entrypoints
+│   ├── connectivity_agent_tools.py  # Connectivity snapshot workflow entrypoints
+│   ├── servicenow_workflow_tools.py # Troubleshoot-side ServiceNow correlation workflow entrypoints
+│   ├── servicenow_agent_tools.py    # Thin product-facing ServiceNow adapters
+│   └── tool_registry.py             # Capability registry and agent profiles
 ├── skills/
 │   ├── troubleshooter.md       # Core principles + diagnosis framework (no rules)
 │   ├── network_ops.md          # Network ops agent prompt
