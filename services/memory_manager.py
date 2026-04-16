@@ -5,35 +5,25 @@ import asyncio
 from typing import Any
 
 try:
-    from atlas.services.pending_context import (
-        clear_pending_context as _clear_pending_context,
-        get_pending_context as _get_pending_context,
-        has_pending_context as _has_pending_context,
-        set_pending_context as _set_pending_context,
-    )
+    from atlas.services.pending_context import pending_context_store
 except ImportError:
-    from services.pending_context import (  # type: ignore
-        clear_pending_context as _clear_pending_context,
-        get_pending_context as _get_pending_context,
-        has_pending_context as _has_pending_context,
-        set_pending_context as _set_pending_context,
-    )
+    from services.pending_context import pending_context_store  # type: ignore
 
 
 class MemoryManager:
     """Owns pending clarification state and long-term memory storage hooks."""
 
     def set_pending_context(self, session_id: str, prompt: str, issue_type: str = "general") -> None:
-        _set_pending_context(session_id, prompt, issue_type)
+        pending_context_store.set(session_id, prompt, issue_type)
 
     def get_pending_context(self, session_id: str) -> tuple[str | None, str | None]:
-        return _get_pending_context(session_id)
+        return pending_context_store.get(session_id)
 
     def has_pending_context(self, session_id: str) -> bool:
-        return _has_pending_context(session_id)
+        return pending_context_store.has(session_id)
 
     def clear_pending_context(self, session_id: str) -> None:
-        _clear_pending_context(session_id)
+        pending_context_store.clear(session_id)
 
     def get_recall_signals(self, store: dict[str, Any]) -> list[str]:
         signals: list[str] = []

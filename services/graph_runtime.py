@@ -6,11 +6,11 @@ from time import perf_counter
 from typing import Any
 
 try:
-    from atlas.services.checkpointer_runtime import ensure_checkpointer
+    from atlas.services.checkpointer_runtime import checkpointer_runtime
     from atlas.services.metrics import metrics_recorder
     from atlas.services.observability import elapsed_ms, log_event, new_request_id
 except ImportError:
-    from services.checkpointer_runtime import ensure_checkpointer  # type: ignore
+    from services.checkpointer_runtime import checkpointer_runtime  # type: ignore
     from services.metrics import metrics_recorder  # type: ignore
     from services.observability import elapsed_ms, log_event, new_request_id  # type: ignore
 
@@ -56,8 +56,8 @@ class AtlasRuntime:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         started_at = perf_counter()
-        await ensure_checkpointer()
-        from atlas.graph_builder import atlas_graph
+        await checkpointer_runtime.ensure_ready()
+        from atlas.graph_builder import graph_builder
 
         initial_state = self.build_initial_state(prompt, conversation_history, username, session_id, request_id)
         request_id = initial_state.get("request_id")
@@ -72,7 +72,7 @@ class AtlasRuntime:
             history_messages=len(conversation_history or []),
             recursion_limit=config.get("recursion_limit"),
         )
-        result = await atlas_graph.ainvoke(initial_state, config=config)
+        result = await graph_builder.get_graph().ainvoke(initial_state, config=config)
         duration_ms = elapsed_ms(started_at)
         metrics_recorder.increment(
             "atlas.graph.invoke.completed",

@@ -40,12 +40,13 @@ class GraphRuntimeHelperTests(unittest.IsolatedAsyncioTestCase):
             {"recursion_limit": 50, "configurable": {"thread_id": "session-1"}},
         )
 
-    @patch("services.graph_runtime.ensure_checkpointer", new_callable=AsyncMock)
+    @patch("services.graph_runtime.checkpointer_runtime.ensure_ready", new_callable=AsyncMock)
     async def test_invoke_atlas_graph_propagates_request_id(self, _mock_checkpointer):
         import types
 
         fake_graph = types.SimpleNamespace(ainvoke=AsyncMock(return_value={"final_response": {"role": "assistant", "content": "ok"}}))
-        fake_module = types.SimpleNamespace(atlas_graph=fake_graph)
+        fake_builder = types.SimpleNamespace(get_graph=lambda: fake_graph)
+        fake_module = types.SimpleNamespace(graph_builder=fake_builder)
 
         with patch.dict("sys.modules", {"atlas.graph_builder": fake_module}):
             await atlas_runtime.invoke_atlas_graph(

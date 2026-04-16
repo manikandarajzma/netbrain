@@ -4,13 +4,13 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from atlas.services.checkpointer_runtime import get_checkpointer_status
+    from atlas.services.checkpointer_runtime import checkpointer_runtime
     from atlas.services.health_service import health_service
     from atlas.services.metrics import metrics_recorder
     from atlas.services.session_store import session_store
     from atlas.tools.tool_registry import tool_registry
 except ImportError:
-    from services.checkpointer_runtime import get_checkpointer_status  # type: ignore
+    from services.checkpointer_runtime import checkpointer_runtime  # type: ignore
     from services.health_service import health_service  # type: ignore
     from services.metrics import metrics_recorder  # type: ignore
     from services.session_store import session_store  # type: ignore
@@ -42,7 +42,7 @@ class DiagnosticsService:
                 "diagnostics_service": "DiagnosticsService",
             },
             "runtime": {
-                "checkpointer": get_checkpointer_status(),
+                "checkpointer": checkpointer_runtime.get_status(),
                 "active_tool_sessions": session_store.active_session_count(),
             },
             "health": health,

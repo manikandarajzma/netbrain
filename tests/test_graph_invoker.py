@@ -6,10 +6,11 @@ from services.graph_runtime import atlas_runtime
 
 
 class GraphInvokerTests(unittest.IsolatedAsyncioTestCase):
-    @patch("services.graph_runtime.ensure_checkpointer", new_callable=AsyncMock)
+    @patch("services.graph_runtime.checkpointer_runtime.ensure_ready", new_callable=AsyncMock)
     async def test_invoke_atlas_graph_builds_state_and_config_and_calls_graph(self, mock_ensure):
         fake_graph = types.SimpleNamespace(ainvoke=AsyncMock(return_value={"final_response": {"content": "ok"}}))
-        fake_module = types.SimpleNamespace(atlas_graph=fake_graph)
+        fake_builder = types.SimpleNamespace(get_graph=lambda: fake_graph)
+        fake_module = types.SimpleNamespace(graph_builder=fake_builder)
 
         with patch.dict("sys.modules", {"atlas.graph_builder": fake_module}):
             result = await atlas_runtime.invoke_atlas_graph(

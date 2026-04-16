@@ -65,7 +65,7 @@ class AtlasApplicationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MemoryManagerTests(unittest.TestCase):
-    @patch("services.memory_manager._set_pending_context")
+    @patch("services.memory_manager.pending_context_store.set")
     def test_memory_manager_delegates_pending_context_set(self, mock_set_pending_context):
         MemoryManager().set_pending_context("session-1", "prompt", "network_ops")
         mock_set_pending_context.assert_called_once_with("session-1", "prompt", "network_ops")

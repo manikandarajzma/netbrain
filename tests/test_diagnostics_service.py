@@ -6,7 +6,7 @@ from services.diagnostics_service import DiagnosticsService
 
 class DiagnosticsServiceTests(unittest.IsolatedAsyncioTestCase):
     @patch("services.diagnostics_service.session_store.active_session_count")
-    @patch("services.diagnostics_service.get_checkpointer_status")
+    @patch("services.diagnostics_service.checkpointer_runtime.get_status")
     @patch("services.diagnostics_service.metrics_recorder.snapshot")
     @patch("services.diagnostics_service.tool_registry.describe_registered_tools")
     @patch("services.diagnostics_service.tool_registry.describe_profiles")

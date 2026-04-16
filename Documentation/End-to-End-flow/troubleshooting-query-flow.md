@@ -221,8 +221,6 @@ Important operational behavior:
 
 ## 4. `chat_service.py` Is Intentionally Thin
 
-`chat_service.py` is no longer a large orchestration file.
-
 It does one thing:
 
 - delegate to `atlas_application.process_query(...)`
