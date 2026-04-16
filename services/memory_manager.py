@@ -197,9 +197,9 @@ class MemoryManager:
             return
         try:
             try:
-                from atlas.agent_memory import store_memory
+                from atlas.memory.agent_memory import store_memory
             except ImportError:
-                from agent_memory import store_memory  # type: ignore
+                from memory.agent_memory import store_memory  # type: ignore
 
             asyncio.create_task(store_memory(prompt, final_text, agent_type=agent_type))
         except Exception:

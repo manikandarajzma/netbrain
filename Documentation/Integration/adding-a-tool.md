@@ -2,7 +2,7 @@
 
 This guide covers adding a new **agent-facing tool** in the current Atlas architecture.
 
-Atlas no longer registers tools by stuffing everything into one monolithic module or by teaching `chat_service.py` about every tool individually.
+Atlas no longer registers tools by stuffing everything into one monolithic module or by teaching `application/chat_service.py` about every tool individually.
 
 The current pattern is:
 
@@ -60,7 +60,7 @@ That means:
 - the tool module also exports the capability manifest
 - `ToolRegistry` resolves profiles to capabilities and then to concrete tool objects
 
-You do **not** update `chat_service.py` to register a tool.
+You do **not** update `application/chat_service.py` to register a tool.
 
 ---
 
@@ -101,7 +101,7 @@ Example: adding a new product-facing ServiceNow detail tool.
 # tools/servicenow_agent_tools.py
 from langchain_core.tools import tool
 
-from atlas.mcp_client import call_mcp_tool
+from atlas.integrations.mcp_client import call_mcp_tool
 from atlas.services.backend_contracts import lookup_error, not_found
 
 
@@ -213,7 +213,7 @@ Update documentation if the tool changes:
 
 Typical places:
 - `README.md`
-- `design.md`
+- `Documentation/Architecture/design.md`
 - `Documentation/End-to-End-flow/troubleshooting-query-flow.md`
 
 ---

@@ -48,7 +48,13 @@ class GraphRuntimeHelperTests(unittest.IsolatedAsyncioTestCase):
         fake_builder = types.SimpleNamespace(get_graph=lambda: fake_graph)
         fake_module = types.SimpleNamespace(graph_builder=fake_builder)
 
-        with patch.dict("sys.modules", {"atlas.graph_builder": fake_module}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "atlas.graph.graph_builder": fake_module,
+                "graph.graph_builder": fake_module,
+            },
+        ):
             await atlas_runtime.invoke_atlas_graph(
                 "hello",
                 [],

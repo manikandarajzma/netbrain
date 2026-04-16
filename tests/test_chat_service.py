@@ -1,11 +1,11 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from chat_service import process_message
+from application.chat_service import process_message
 
 
 class ChatServiceTests(unittest.IsolatedAsyncioTestCase):
-    @patch("chat_service.atlas_application.process_query", new_callable=AsyncMock)
+    @patch("application.chat_service.atlas_application.process_query", new_callable=AsyncMock)
     async def test_process_message_delegates_to_application(self, mock_process_query):
         mock_process_query.return_value = {"role": "assistant", "content": "done"}
 

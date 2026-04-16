@@ -9,7 +9,7 @@ from atlas.app import api_internal_diagnostics
 
 
 class AppDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
-    @patch("atlas.atlas_application.atlas_application.get_diagnostics_snapshot", new_callable=AsyncMock)
+    @patch("atlas.application.atlas_application.atlas_application.get_diagnostics_snapshot", new_callable=AsyncMock)
     async def test_api_internal_diagnostics_returns_application_snapshot(self, mock_get_snapshot):
         mock_get_snapshot.return_value = {"owners": {}, "metrics": {}, "tools": {}}
 

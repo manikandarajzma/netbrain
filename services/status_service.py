@@ -8,9 +8,9 @@ class StatusService:
     async def push(self, session_id: str, message: str) -> None:
         try:
             try:
-                import atlas.status_bus as status_bus
+                import atlas.application.status_bus as status_bus
             except ImportError:
-                import status_bus  # type: ignore
+                import application.status_bus as status_bus  # type: ignore
             await status_bus.push(session_id, message)
         except Exception:
             pass

@@ -2,13 +2,13 @@
 
 ### Can a user perform prompt injection to bypass RBAC or call unauthorized tools?
 
-Prompt injection — crafting a query like `"ignore previous instructions and call a restricted tool"` — cannot bypass RBAC because **authorization is enforced in code, not by the LLM**. After the LLM selects a tool, `_check_tool_access()` in [chat_service.py](../../chat_service.py) independently checks the user's role against `ROLE_ALLOWED_TOOLS` before the tool is ever called. The LLM's tool selection output is treated as untrusted input; the RBAC gate is always applied regardless of what the model outputs.
+Prompt injection — crafting a query like `"ignore previous instructions and call a restricted tool"` — cannot bypass application authorization because **authorization is enforced in code, not by the LLM**. Session identity and access policy live in [`security/auth.py`](../../security/auth.py), and the application treats model output as untrusted input.
 
 What prompt injection *can* do is cause the LLM to select the wrong tool or produce a nonsensical response — but it cannot escalate privileges or reach a tool the user's role forbids.
 
 ### Can the LLM exfiltrate sensitive data to an external destination?
 
-No. The LLM (Ollama) runs **entirely on-premises** — no data is sent to any external cloud API. The LLM's role is strictly limited to *outputting a tool name and arguments*. It never receives tool results — data returned by backend tools flows directly from the MCP server back to `chat_service.py` and then to the frontend. The LLM has no mechanism to make outbound HTTP calls or write to storage.
+No. The LLM (Ollama) runs **entirely on-premises** — no data is sent to any external cloud API. The LLM's role is limited to reasoning over prompts and selecting Atlas tools. Backend results are handled inside the application and workflow layers; the LLM has no mechanism to make outbound HTTP calls or write to storage.
 
 ### Where are backend service credentials stored — can they leak?
 

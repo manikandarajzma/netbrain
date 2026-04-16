@@ -62,9 +62,9 @@ async def _detect_vendor(devices: list[str]) -> str:
         return "unknown"
     try:
         try:
-            from atlas.db import fetch
+            from atlas.persistence.db import fetch
         except ImportError:
-            from db import fetch  # type: ignore
+            from persistence.db import fetch  # type: ignore
         rows = await fetch(
             "SELECT platform FROM devices WHERE hostname = ANY($1::text[])",
             devices,

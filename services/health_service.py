@@ -7,10 +7,10 @@ from typing import Any
 import aiohttp
 
 try:
-    from atlas.auth import AUTH_MODE
+    from atlas.security.auth import AUTH_MODE
     from atlas.tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL
 except ImportError:
-    from auth import AUTH_MODE  # type: ignore
+    from security.auth import AUTH_MODE  # type: ignore
     from tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL  # type: ignore
 
 

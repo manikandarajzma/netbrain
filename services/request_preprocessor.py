@@ -55,9 +55,9 @@ async def resolve_incident_prompt(prompt: str) -> tuple[str, dict | None]:
     inc_num = match.group(0).upper()
     try:
         try:
-            from atlas.mcp_client import call_mcp_tool
+            from atlas.integrations.mcp_client import call_mcp_tool
         except ImportError:
-            from mcp_client import call_mcp_tool  # type: ignore
+            from integrations.mcp_client import call_mcp_tool  # type: ignore
 
         data = await call_mcp_tool(
             "get_servicenow_incident",
@@ -102,4 +102,3 @@ async def resolve_incident_prompt(prompt: str) -> tuple[str, dict | None]:
     except Exception as exc:
         logger.warning("INC→IP resolution failed: %s", exc)
         return prompt, None
-

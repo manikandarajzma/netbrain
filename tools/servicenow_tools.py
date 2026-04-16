@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from tools.shared import mcp, setup_logging
 from tools.resilience import retry_async, CircuitBreaker, CircuitOpenError
-import servicenowauth
+from atlas.integrations import servicenowauth
 
 logger = setup_logging(__name__)
 

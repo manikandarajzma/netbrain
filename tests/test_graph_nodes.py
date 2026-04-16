@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from graph_nodes import classify_intent
+from graph.graph_nodes import classify_intent
 
 
 class GraphNodeRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -36,8 +36,8 @@ class GraphNodeRoutingTests(unittest.IsolatedAsyncioTestCase):
         result = await classify_intent(state)
         self.assertEqual(result["intent"], "dismiss")
 
-    @patch("graph_nodes.memory_manager.get_pending_context", return_value=("create a change request", "network_ops"))
-    @patch("graph_nodes.memory_manager.has_pending_context", return_value=True)
+    @patch("graph.graph_nodes.memory_manager.get_pending_context", return_value=("create a change request", "network_ops"))
+    @patch("graph.graph_nodes.memory_manager.has_pending_context", return_value=True)
     async def test_pending_network_ops_follow_up_stays_network_ops(self, _has_pending_context, _get_pending_context):
         state = {"prompt": "1. Short Description: route map update", "session_id": "s4"}
         result = await classify_intent(state)

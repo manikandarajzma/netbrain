@@ -30,7 +30,7 @@ Atlas supports work in these broad categories:
 
 Atlas has clear owners for the main application responsibilities:
 
-- [`atlas_application.py`](<atlas_application.py>)
+- [`application/atlas_application.py`](<application/atlas_application.py>)
   - top-level application owner
 - [`services/graph_runtime.py`](<services/graph_runtime.py>)
   - graph execution owner
@@ -72,8 +72,8 @@ Atlas has clear owners for the main application responsibilities:
 ### Request Flow
 
 1. The React UI sends the user request to `POST /api/chat` over SSE.
-2. `app.py` authenticates the request, creates the SSE lifecycle, and delegates to `chat_service.py`.
-3. `chat_service.py` hands the request to `AtlasApplication`.
+2. `app.py` authenticates the request, creates the SSE lifecycle, and delegates to `application/chat_service.py`.
+3. `application/chat_service.py` hands the request to `AtlasApplication`.
 4. `AtlasApplication` calls `AtlasRuntime`, which prepares graph state, request metadata, and optional checkpointer context.
 5. LangGraph classifies the intent and routes to either the troubleshoot workflow, the network-ops workflow, or a dismiss path.
 6. The selected workflow service invokes the appropriate pure ReAct agent.
@@ -105,7 +105,7 @@ Atlas has clear owners for the main application responsibilities:
   - cache flush after write operations
   - internal diagnostics endpoint
 - **Chat entrypoint**
-  - `chat_service.py` is intentionally thin
+  - `application/chat_service.py` is intentionally thin
   - delegates to `AtlasApplication`
 - **Application/runtime**
   - `AtlasApplication` owns the top-level processing flow
@@ -131,9 +131,9 @@ Atlas has clear owners for the main application responsibilities:
   - FastAPI routes, SSE streaming, chat persistence, built-frontend serving, and internal diagnostics
 - [`run_web.py`](<run_web.py>)
   - recommended development launcher for the web app
-- `chat_service.py`
+- `application/chat_service.py`
   - thin entrypoint from HTTP into the application
-- [`atlas_application.py`](<atlas_application.py>)
+- [`application/atlas_application.py`](<application/atlas_application.py>)
   - application owner that wires runtime, memory, presenter, tools, and agents
 - [`services/graph_runtime.py`](<services/graph_runtime.py>)
   - graph execution owner
@@ -148,11 +148,11 @@ Atlas has clear owners for the main application responsibilities:
 
 ### Graph
 
-- [`graph_builder.py`](<graph_builder.py>)
+- [`graph/graph_builder.py`](<graph/graph_builder.py>)
   - graph structure
-- [`graph_nodes.py`](<graph_nodes.py>)
+- [`graph/graph_nodes.py`](<graph/graph_nodes.py>)
   - routing node and thin delegation nodes
-- [`graph_state.py`](<graph_state.py>)
+- [`graph/graph_state.py`](<graph/graph_state.py>)
   - typed graph state
 
 ### Agents
@@ -205,7 +205,7 @@ Atlas has clear owners for the main application responsibilities:
   - thin product-facing ServiceNow adapters for incident/change CRUD and record lookup
 - [`tools/tool_registry.py`](<tools/tool_registry.py>)
   - capability registration and agent profile resolution
-- [`mcp_client.py`](<mcp_client.py>)
+- [`integrations/mcp_client.py`](<integrations/mcp_client.py>)
   - MCP calls for systems such as ServiceNow
 - [`services/nornir_client.py`](<services/nornir_client.py>)
   - owned HTTP + retry + run-cache client for the local Nornir service
@@ -225,7 +225,7 @@ Atlas has clear owners for the main application responsibilities:
 
 ## Intent Routing
 
-Atlas uses **coarse routing** in [`graph_nodes.py`](<graph_nodes.py>) `classify_intent(...)`.
+Atlas uses **coarse routing** in [`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)`.
 
 This routing is intentionally simple and deterministic:
 
@@ -277,7 +277,7 @@ Current behavior:
 - the `request_id` flows through:
   - `AtlasApplication`
   - `AtlasRuntime`
-  - `graph_nodes.py`
+  - `graph/graph_nodes.py`
 - major events are logged as structured JSON messages, including:
   - query start / completion
   - graph invoke start / completion

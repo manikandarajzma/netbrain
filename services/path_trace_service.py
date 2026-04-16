@@ -351,9 +351,9 @@ class PathTraceService:
             return "default"
         try:
             try:
-                from atlas.db import fetchrow
+                from atlas.persistence.db import fetchrow
             except ImportError:
-                from db import fetchrow  # type: ignore
+                from persistence.db import fetchrow  # type: ignore
             row = await fetchrow(
                 "SELECT vrf FROM routing_table WHERE device=$1 AND $2::inet << prefix "
                 "ORDER BY masklen(prefix) DESC LIMIT 1",

@@ -106,8 +106,8 @@ class RoutingDiagnosticsServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(
             "sys.modules",
             {
-                "atlas.db": fake_db,
-                "db": fake_db,
+                "atlas.persistence.db": fake_db,
+                "persistence.db": fake_db,
             },
         ):
             result = await service.routing_history_summary(

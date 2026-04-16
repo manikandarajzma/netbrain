@@ -8,13 +8,13 @@ It is based on the owner hierarchy:
   - [`frontend/src/stores/chatStore.js`](<frontend/src/stores/chatStore.js>)
   - [`frontend/src/utils/api.js`](<frontend/src/utils/api.js>)
   - [`app.py`](<app.py>)
-  - [`chat_service.py`](<chat_service.py>)
-  - [`atlas_application.py`](<atlas_application.py>)
+  - [`application/chat_service.py`](<application/chat_service.py>)
+  - [`application/atlas_application.py`](<application/atlas_application.py>)
   - [`services/graph_runtime.py`](<services/graph_runtime.py>)
 - Graph boundary:
-  - [`graph_builder.py`](<graph_builder.py>)
-  - [`graph_nodes.py`](<graph_nodes.py>)
-  - [`graph_state.py`](<graph_state.py>)
+  - [`graph/graph_builder.py`](<graph/graph_builder.py>)
+  - [`graph/graph_nodes.py`](<graph/graph_nodes.py>)
+  - [`graph/graph_state.py`](<graph/graph_state.py>)
 - Workflow owners:
   - [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
   - [`services/network_ops_workflow_service.py`](<services/network_ops_workflow_service.py>)
@@ -49,7 +49,7 @@ It is based on the owner hierarchy:
 1. The user submits a troubleshooting request in the React UI.
 2. The frontend opens `POST /api/chat` as an SSE stream.
 3. `app.py` owns authentication, session lookup, the status queue, and the SSE lifecycle.
-4. `chat_service.py` delegates the request to `AtlasApplication`.
+4. `application/chat_service.py` delegates the request to `AtlasApplication`.
 5. `AtlasApplication` invokes `AtlasRuntime`.
 6. `AtlasRuntime` builds graph state and calls the compiled LangGraph graph.
 7. LangGraph classifies the intent and routes to the troubleshoot workflow.
@@ -128,7 +128,7 @@ Later statuses come from graph nodes and tools.
 
 ## Internal Diagnostics Surface
 
-Atlas exposes an authenticated internal diagnostics endpoint:
+Authenticated internal diagnostics endpoint:
 
 - `GET /api/internal/diagnostics`
 
@@ -150,7 +150,7 @@ Responsibilities:
 
 1. authenticate the user
 2. load `session_id`
-3. register a status queue via [`status_bus.py`](<status_bus.py>)
+3. register a status queue via [`application/status_bus.py`](<application/status_bus.py>)
 4. start `process_message(...)` in a background task
 5. stream:
    - `status` events from the queue
@@ -164,7 +164,7 @@ Important operational behavior:
 - stopping the browser request cancels the in-flight backend task
 - after write-like requests, `app.py` also clears relevant Redis caches so later reads do not serve stale ticket data
 
-## 4. `chat_service.py` Is Intentionally Thin
+## 4. `application/chat_service.py` Is Intentionally Thin
 
 It does one thing:
 
@@ -174,7 +174,7 @@ It also exports `_IP_OR_CIDR_RE` so the graph node can reuse the same IP/CIDR de
 
 ## 5. `AtlasApplication` Owns Top-Level Query Processing
 
-[`atlas_application.py`](<atlas_application.py>) is the top-level owner.
+[`application/atlas_application.py`](<application/atlas_application.py>) is the top-level owner.
 
 It owns these collaborating objects:
 
@@ -240,7 +240,7 @@ Current behavior:
 - the `request_id` is carried through:
   - `AtlasApplication`
   - `AtlasRuntime`
-  - `graph_nodes.py`
+  - `graph/graph_nodes.py`
   - diagnostics-visible runtime snapshots
 - major runtime events are logged as structured JSON messages, including:
   - `query_started`
@@ -283,7 +283,7 @@ This is important:
 
 ## 8. LangGraph Performs Coarse Routing
 
-The graph itself is defined in [`graph_builder.py`](<graph_builder.py>).
+The graph itself is defined in [`graph/graph_builder.py`](<graph/graph_builder.py>).
 
 Graph shape:
 
@@ -304,7 +304,7 @@ Atlas does **not** use the graph for deep reasoning. The graph only owns:
 
 ## 9. `classify_intent()` Decides Which Agent Runs
 
-[`graph_nodes.py`](<graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
+[`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
 
 Possible values:
 
@@ -325,7 +325,7 @@ That means:
 
 ## 10. Troubleshoot Node Starts a Fresh Live Investigation
 
-`call_troubleshoot_agent(...)` in [`graph_nodes.py`](<graph_nodes.py>) is a thin delegation node. The orchestration lives in [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>).
+`call_troubleshoot_agent(...)` in [`graph/graph_nodes.py`](<graph/graph_nodes.py>) is a thin delegation node. The orchestration lives in [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>).
 
 Before the agent runs, `TroubleshootWorkflowService` explicitly resets run-scoped live state:
 
@@ -649,7 +649,7 @@ Then it renders:
 - auth
 - history persistence
 
-### `chat_service.py`
+### `application/chat_service.py`
 
 - thin entrypoint only
 
@@ -661,7 +661,7 @@ Then it renders:
 
 - graph state/config/invocation/final extraction
 
-### `graph_nodes.py`
+### `graph/graph_nodes.py`
 
 - routing and thin node delegation
 

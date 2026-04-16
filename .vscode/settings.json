@@ -1,0 +1,13 @@
+{
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "pyproject.toml": "uv.lock,.python-version,.env,.env.example,.gitignore,docker-compose.yml,__init__.py",
+    "app.py": "run_web.py,mcp_server.py"
+  },
+  "files.exclude": {
+    "**/.DS_Store": true,
+    "**/__pycache__": true,
+    "**/atlas.egg-info": true
+  }
+}

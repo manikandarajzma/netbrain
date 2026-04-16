@@ -73,9 +73,9 @@ async def collect_connectivity_snapshot(
     if not store.get("routing_history"):
         try:
             try:
-                from atlas.db import fetch as _fetch, fetchrow as _fetchrow
+                from atlas.persistence.db import fetch as _fetch, fetchrow as _fetchrow
             except ImportError:
-                from db import fetch as _fetch, fetchrow as _fetchrow  # type: ignore
+                from persistence.db import fetch as _fetch, fetchrow as _fetchrow  # type: ignore
 
             hist_devs = await _fetch(
                 """

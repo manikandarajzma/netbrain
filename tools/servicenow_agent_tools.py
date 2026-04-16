@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 try:
-    from atlas.mcp_client import call_mcp_tool
+    from atlas.integrations.mcp_client import call_mcp_tool
     from atlas.services.backend_contracts import (
         lookup_error,
         not_found,
@@ -18,7 +18,7 @@ try:
     )
     from atlas.tools.tool_runtime import push_status, sid_from_config
 except ImportError:
-    from mcp_client import call_mcp_tool  # type: ignore
+    from integrations.mcp_client import call_mcp_tool  # type: ignore
     from services.backend_contracts import (  # type: ignore
         lookup_error,
         not_found,

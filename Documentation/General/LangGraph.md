@@ -48,7 +48,7 @@ The heavy work happens below the graph:
 
 ## The Three Graph Files
 
-### `graph_state.py`
+### `graph/graph_state.py`
 
 Defines `AtlasState`, the typed shared state passed between graph nodes.
 
@@ -73,7 +73,7 @@ That logic stays out of the graph layer on purpose.
 
 ---
 
-### `graph_builder.py`
+### `graph/graph_builder.py`
 
 Compiles the graph and wires the nodes together.
 
@@ -86,7 +86,7 @@ Current routing behavior:
 - both agent nodes always flow into `build_final_response`
 - `build_final_response` flows to `END`
 
-`graph_builder.py` owns:
+`graph/graph_builder.py` owns:
 - graph topology
 - entry point
 - conditional routing map
@@ -95,7 +95,7 @@ It does **not** own workflow logic.
 
 ---
 
-### `graph_nodes.py`
+### `graph/graph_nodes.py`
 
 Implements the graph nodes, but only at the graph boundary.
 
@@ -108,7 +108,7 @@ Current node responsibilities:
 | `call_network_ops_agent` | Thin delegation node that calls `NetworkOpsWorkflowService.run(...)` |
 | `build_final_response` | Returns any final graph-owned response such as an RBAC error or previously prepared payload |
 
-`graph_nodes.py` is responsible for:
+`graph/graph_nodes.py` is responsible for:
 - routing
 - graph boundary delegation
 - minimal graph exit handling
@@ -173,7 +173,7 @@ Owns final payload shaping such as:
 ### Troubleshoot Flow
 
 ```text
-chat_service.py
+application/chat_service.py
     ▼
 AtlasApplication
     ▼
@@ -201,7 +201,7 @@ build_final_response
 ### Network Ops Flow
 
 ```text
-chat_service.py
+application/chat_service.py
     ▼
 AtlasApplication
     ▼
@@ -230,7 +230,7 @@ build_final_response
 
 This structure is cleaner because each layer has one job:
 
-- `chat_service.py`
+- `application/chat_service.py`
   - request entrypoint
 - `AtlasApplication`
   - top-level ownership and wiring

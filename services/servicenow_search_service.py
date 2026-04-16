@@ -7,9 +7,9 @@ import re
 from typing import Any
 
 try:
-    from atlas.mcp_client import call_mcp_tool
+    from atlas.integrations.mcp_client import call_mcp_tool
 except ImportError:
-    from mcp_client import call_mcp_tool  # type: ignore
+    from integrations.mcp_client import call_mcp_tool  # type: ignore
 
 logger = logging.getLogger("atlas.servicenow_search")
 
@@ -71,9 +71,9 @@ class ServiceNowSearchService:
         if not discovered_devices and dest_ip:
             try:
                 try:
-                    from atlas.db import fetch as _fetch
+                    from atlas.persistence.db import fetch as _fetch
                 except ImportError:
-                    from db import fetch as _fetch  # type: ignore
+                    from persistence.db import fetch as _fetch  # type: ignore
                 hist_rows = await _fetch(
                     """
                     SELECT DISTINCT device FROM routing_history

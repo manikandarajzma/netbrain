@@ -155,9 +155,9 @@ class ServiceNowToolTests(unittest.IsolatedAsyncioTestCase):
             "line_protocol": "down",
         }
         try:
-            memory_module = importlib.import_module("atlas.agent_memory")
+            memory_module = importlib.import_module("atlas.memory.agent_memory")
         except ImportError:
-            memory_module = importlib.import_module("agent_memory")
+            memory_module = importlib.import_module("memory.agent_memory")
 
         with (
             patch.object(memory_module, "recall_memory", new_callable=AsyncMock) as mock_recall_memory,

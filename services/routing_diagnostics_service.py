@@ -399,9 +399,9 @@ class RoutingDiagnosticsService:
     async def ospf_history_summary(self, *, session_id: str, devices: list[str]) -> str:
         try:
             try:
-                from atlas.db import fetch as _fetch
+                from atlas.persistence.db import fetch as _fetch
             except ImportError:
-                from db import fetch as _fetch  # type: ignore
+                from persistence.db import fetch as _fetch  # type: ignore
         except Exception as exc:
             return f"OSPF history DB unavailable: {exc}"
 
@@ -443,9 +443,9 @@ class RoutingDiagnosticsService:
     async def routing_history_summary(self, *, session_id: str, destination_ip: str) -> str:
         try:
             try:
-                from atlas.db import fetch as _fetch, fetchrow as _fetchrow
+                from atlas.persistence.db import fetch as _fetch, fetchrow as _fetchrow
             except ImportError:
-                from db import fetch as _fetch, fetchrow as _fetchrow  # type: ignore
+                from persistence.db import fetch as _fetch, fetchrow as _fetchrow  # type: ignore
         except Exception as exc:
             return f"Routing history DB unavailable: {exc}"
 

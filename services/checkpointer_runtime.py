@@ -29,7 +29,10 @@ class CheckpointerRuntime:
             if self._ready:
                 return
             try:
-                import atlas.graph_builder as _gb
+                try:
+                    import atlas.graph.graph_builder as _gb
+                except ImportError:
+                    import graph.graph_builder as _gb  # type: ignore
                 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
                 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")

@@ -248,7 +248,7 @@ def _collect_device(task):
 # Database upsert
 # ---------------------------------------------------------------------------
 async def _upsert_routes(device: str, rows: list[dict]) -> None:
-    from db import execute, executemany
+    from persistence.db import execute, executemany
 
     # Clear stale routes for this device before inserting fresh data
     await execute("DELETE FROM routing_table WHERE device = $1", device)
@@ -276,7 +276,7 @@ async def _upsert_routes(device: str, rows: list[dict]) -> None:
 
 
 async def _upsert_arp(device: str, rows: list[dict]) -> None:
-    from db import execute, executemany
+    from persistence.db import execute, executemany
 
     await execute("DELETE FROM arp_table WHERE device = $1", device)
     if not rows:
@@ -295,7 +295,7 @@ async def _upsert_arp(device: str, rows: list[dict]) -> None:
 
 
 async def _upsert_device(device: dict) -> None:
-    from db import execute
+    from persistence.db import execute
     await execute(
         """
         INSERT INTO devices (hostname, mgmt_ip, platform, last_seen)
@@ -311,7 +311,7 @@ async def _upsert_device(device: dict) -> None:
 
 
 async def _upsert_interfaces(device: str, rows: list[dict]) -> None:
-    from db import execute, executemany
+    from persistence.db import execute, executemany
     await execute("DELETE FROM interface_ips WHERE device = $1", device)
     if not rows:
         return
@@ -329,7 +329,7 @@ async def _upsert_interfaces(device: str, rows: list[dict]) -> None:
 
 
 async def _upsert_mac(device: str, rows: list[dict]) -> None:
-    from db import execute, executemany
+    from persistence.db import execute, executemany
     await execute("DELETE FROM mac_table WHERE device = $1", device)
     if not rows:
         return
@@ -352,7 +352,7 @@ async def _upsert_mac(device: str, rows: list[dict]) -> None:
 async def _insert_arp_history(rows: list[dict]) -> None:
     if not rows:
         return
-    from db import executemany
+    from persistence.db import executemany
     await executemany(
         """
         INSERT INTO arp_history (device, vrf, ip, mac, interface)
@@ -365,7 +365,7 @@ async def _insert_arp_history(rows: list[dict]) -> None:
 async def _insert_routing_history(rows: list[dict]) -> None:
     if not rows:
         return
-    from db import executemany
+    from persistence.db import executemany
     await executemany(
         """
         INSERT INTO routing_history
@@ -381,7 +381,7 @@ async def _insert_routing_history(rows: list[dict]) -> None:
 
 
 async def _upsert_ospf(device: str, rows: list[dict]) -> None:
-    from db import execute, executemany
+    from persistence.db import execute, executemany
     await execute("DELETE FROM ospf_neighbors WHERE device = $1", device)
     if not rows:
         return
@@ -405,7 +405,7 @@ async def _upsert_ospf(device: str, rows: list[dict]) -> None:
 async def _insert_ospf_history(rows: list[dict]) -> None:
     if not rows:
         return
-    from db import executemany
+    from persistence.db import executemany
     await executemany(
         """
         INSERT INTO ospf_history
@@ -420,7 +420,7 @@ async def _insert_ospf_history(rows: list[dict]) -> None:
 async def _insert_mac_history(rows: list[dict]) -> None:
     if not rows:
         return
-    from db import executemany
+    from persistence.db import executemany
     await executemany(
         """
         INSERT INTO mac_history (device, mac, vlan, interface, entry_type)
@@ -431,7 +431,7 @@ async def _insert_mac_history(rows: list[dict]) -> None:
 
 
 async def _log_run(device: str, run_type: str, status: str, duration_ms: int, error: str = None):
-    from db import execute
+    from persistence.db import execute
     await execute(
         "INSERT INTO collection_runs (device, run_type, status, duration_ms, error) VALUES ($1,$2,$3,$4,$5)",
         device, run_type, status, duration_ms, error,

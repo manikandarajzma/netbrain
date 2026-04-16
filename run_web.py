@@ -19,7 +19,8 @@ _log_file = Path("/var/log/atlas/atlas_web.log")
 try:
     _log_file.parent.mkdir(parents=True, exist_ok=True)
 except PermissionError:
-    _log_file = _root / "atlas_web.log"
+    _log_file = _root / "logs" / "atlas_web.log"
+    _log_file.parent.mkdir(parents=True, exist_ok=True)
 _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
 _file_handler.setFormatter(logging.Formatter(
     "%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -53,7 +54,7 @@ if __name__ == "__main__":
     import uvicorn
 
     _host, _port = "0.0.0.0", 8001
-    _log_config_path = _root / "log_config.json"
+    _log_config_path = _root / "config" / "log_config.json"
     if _log_config_path.exists():
         _log_cfg = json.loads(_log_config_path.read_text())
         _log_cfg["handlers"]["file"]["filename"] = str(_log_file)

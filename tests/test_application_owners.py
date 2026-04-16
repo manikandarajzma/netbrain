@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import ANY, AsyncMock, patch
 
-from atlas_application import AtlasApplication
+from application.atlas_application import AtlasApplication
 from services.memory_manager import MemoryManager
 from services.session_store import session_store
 from tools import all_tools, knowledge_agent_tools, memory_agent_tools, servicenow_agent_tools
@@ -9,10 +9,10 @@ from tools.tool_registry import ToolRegistry
 
 
 class AtlasApplicationTests(unittest.IsolatedAsyncioTestCase):
-    @patch("atlas_application.atlas_runtime.extract_final_response")
-    @patch("atlas_application.atlas_runtime.invoke_atlas_graph", new_callable=AsyncMock)
-    @patch("atlas_application.metrics_recorder.observe_ms")
-    @patch("atlas_application.metrics_recorder.increment")
+    @patch("application.atlas_application.atlas_runtime.extract_final_response")
+    @patch("application.atlas_application.atlas_runtime.invoke_atlas_graph", new_callable=AsyncMock)
+    @patch("application.atlas_application.metrics_recorder.observe_ms")
+    @patch("application.atlas_application.metrics_recorder.increment")
     async def test_process_query_delegates_to_runtime(self, mock_increment, mock_observe_ms, mock_invoke, mock_extract):
         mock_invoke.return_value = {"final_response": {"role": "assistant", "content": "ok"}}
         mock_extract.return_value = {"role": "assistant", "content": "ok"}
@@ -53,7 +53,7 @@ class AtlasApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(type(app.workflow_state_service).__name__, "WorkflowStateService")
         self.assertEqual(type(app.status_service).__name__, "StatusService")
 
-    @patch("atlas_application.diagnostics_service.build_snapshot", new_callable=AsyncMock)
+    @patch("application.atlas_application.diagnostics_service.build_snapshot", new_callable=AsyncMock)
     async def test_get_diagnostics_snapshot_delegates_to_service(self, mock_build_snapshot):
         mock_build_snapshot.return_value = {"metrics": {}, "tools": {}}
 

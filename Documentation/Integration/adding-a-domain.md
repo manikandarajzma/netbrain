@@ -22,7 +22,7 @@ For most integrations, you will add some combination of:
 - health/diagnostics reporting
 - tests
 
-You should **not** add a new integration by putting everything into `chat_service.py`, `graph_nodes.py`, or a giant shared tool file.
+You should **not** add a new integration by putting everything into `application/chat_service.py`, `graph/graph_nodes.py`, or a giant shared tool file.
 
 ---
 

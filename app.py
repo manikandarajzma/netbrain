@@ -24,7 +24,7 @@ try:
 except ImportError:
     from starlette.templating import Jinja2Templates
 
-from atlas.auth import (
+from atlas.security.auth import (
     AUTH_MODE,
     AZURE_AUTHORITY,
     AZURE_CLIENT_ID,
@@ -56,7 +56,7 @@ async def _midnight_sync_loop():
             sleep_secs = (next_midnight - now).total_seconds()
             _sse_log.info("servicenow_memory_sync: next run in %.0fs (at midnight)", sleep_secs)
             await asyncio.sleep(sleep_secs)
-            from servicenow_memory_sync import sync_closed_incidents
+            from atlas.memory.servicenow_memory_sync import sync_closed_incidents
             await sync_closed_incidents()
         except asyncio.CancelledError:
             break
@@ -71,7 +71,7 @@ from contextlib import asynccontextmanager
 async def lifespan(app):
     # Run an initial sync on startup so memory is populated immediately
     try:
-        from servicenow_memory_sync import sync_closed_incidents
+        from atlas.memory.servicenow_memory_sync import sync_closed_incidents
         asyncio.create_task(sync_closed_incidents())
     except Exception as exc:
         _sse_log.warning("servicenow_memory_sync: startup sync failed: %s", exc)
@@ -347,9 +347,9 @@ async def health_check():
 async def api_internal_diagnostics(username: str = Depends(require_auth)):
     """Return internal runtime diagnostics for authenticated users."""
     try:
-        from atlas.atlas_application import atlas_application
+        from atlas.application.atlas_application import atlas_application
     except ImportError:
-        from atlas_application import atlas_application  # type: ignore
+        from application.atlas_application import atlas_application  # type: ignore
 
     return await atlas_application.get_diagnostics_snapshot()
 
@@ -378,7 +378,7 @@ async def api_topology(request: Request):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from db import fetch
+    from atlas.persistence.db import fetch
     devices_rows = await fetch(
         "SELECT hostname, host(mgmt_ip) AS mgmt_ip, platform, site, role FROM devices ORDER BY hostname"
     )
@@ -437,7 +437,7 @@ async def api_chat_history(request: Request):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from atlas.chat_history import load_history
+    from atlas.persistence.chat_history import load_history
     messages = load_history(APP_DIR, username)
     return {"messages": messages}
 
@@ -448,7 +448,7 @@ async def api_chat_history_clear(request: Request):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from atlas.chat_history import clear_history
+    from atlas.persistence.chat_history import clear_history
     clear_history(APP_DIR, username)
     return {"ok": True}
 
@@ -459,7 +459,7 @@ async def api_chat_conversations(request: Request):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from atlas.chat_history import list_conversations
+    from atlas.persistence.chat_history import list_conversations
     convs = list_conversations(APP_DIR, username)
     return {"conversations": convs}
 
@@ -470,7 +470,7 @@ async def api_chat_conversation(request: Request, conversation_id: str):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from atlas.chat_history import get_conversation
+    from atlas.persistence.chat_history import get_conversation
     messages = get_conversation(APP_DIR, username, conversation_id)
     if messages is None:
         return JSONResponse({"detail": "Not found"}, status_code=404)
@@ -483,7 +483,7 @@ async def api_chat_conversation_delete(request: Request, conversation_id: str):
     username = get_current_username(request)
     if not username:
         return response_401_clear_session(request)
-    from atlas.chat_history import delete_conversation
+    from atlas.persistence.chat_history import delete_conversation
     delete_conversation(APP_DIR, username, conversation_id)
     return {"ok": True}
 
@@ -495,9 +495,9 @@ async def api_chat(request: Request, body: ChatRequest):
     if not username:
         return response_401_clear_session(request)
 
-    import atlas.status_bus as status_bus
-    from atlas.chat_service import process_message
-    from atlas.chat_history import create_conversation, append_to_conversation
+    import atlas.application.status_bus as status_bus
+    from atlas.application.chat_service import process_message
+    from atlas.persistence.chat_history import create_conversation, append_to_conversation
 
     sid = get_session_id(request)
     conversation_id = (body.conversation_id or "").strip() or None

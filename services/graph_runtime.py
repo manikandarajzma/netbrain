@@ -57,7 +57,10 @@ class AtlasRuntime:
     ) -> dict[str, Any]:
         started_at = perf_counter()
         await checkpointer_runtime.ensure_ready()
-        from atlas.graph_builder import graph_builder
+        try:
+            from atlas.graph.graph_builder import graph_builder
+        except ImportError:
+            from graph.graph_builder import graph_builder  # type: ignore
 
         initial_state = self.build_initial_state(prompt, conversation_history, username, session_id, request_id)
         request_id = initial_state.get("request_id")

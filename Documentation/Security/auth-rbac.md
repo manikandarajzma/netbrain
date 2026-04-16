@@ -163,7 +163,7 @@ If the cookie is missing, tampered, or older than 30 minutes → 401 + redirect 
 
 ---
 
-## How Tool Access is Enforced (auth.py and chat_service.py)
+## How Access Policy Is Defined (`security/auth.py`)
 
 Group membership is enforced twice: at sign-in (group is locked into the signed cookie) and on every tool call.
 

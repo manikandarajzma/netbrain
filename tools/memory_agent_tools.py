@@ -46,9 +46,9 @@ async def recall_similar_cases(
 
     try:
         try:
-            from atlas.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
+            from atlas.memory.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context
         except ImportError:
-            from agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context  # type: ignore
+            from memory.agent_memory import recall_memory, recall_incidents_by_devices, format_memory_context  # type: ignore
 
         past_sessions = await recall_memory(query, agent_type="troubleshoot", top_k=3)
         past_incidents = await recall_incidents_by_devices(devices, query=query, top_k=5) if devices else []

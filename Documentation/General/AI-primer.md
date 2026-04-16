@@ -184,7 +184,13 @@ A Python framework for building applications with LLMs. It provides abstractions
 - **Messages** — `HumanMessage`, `AIMessage`, `SystemMessage` wrappers that get serialized into the prompt format the model expects
 - **Chains** — composable sequences of steps (prompt → model → parser)
 
-Atlas uses LangChain in `chat_service.py` and `mcp_client_tool_selection.py` to call the LLM and parse tool calls. It does not use LangChain for anything else — MCP, API routing, and auth are all handled independently.
+Atlas uses LangChain in the agent layer through:
+- `agents/agent_factory.py`
+- `agents/troubleshoot_agent.py`
+- `agents/network_ops_agent.py`
+- the agent-facing tool modules under `tools/`
+
+Atlas uses LangChain for model/tool binding and ReAct agent execution. API routing, auth, backend clients, and workflow orchestration live outside LangChain.
 
 ---
 
@@ -194,7 +200,12 @@ A LangChain extension for building **stateful, multi-step agents** as graphs. Ea
 
 Used when a task requires multiple LLM calls in sequence — e.g. "call a tool, observe the result, decide whether to call another tool". LangGraph manages the state between steps.
 
-Atlas does not currently use LangGraph. Tool selection is a single LLM call — the model picks one tool, Atlas executes it, and the result goes directly to a final answer synthesis step without further LLM-driven branching.
+Atlas uses LangGraph as a small routing and execution boundary:
+- `graph/graph_builder.py`
+- `graph/graph_nodes.py`
+- `graph/graph_state.py`
+
+LangGraph handles coarse routing between troubleshoot, network-ops, and dismiss paths. Heavier orchestration lives in owned services such as `services/troubleshoot_workflow_service.py` and `services/network_ops_workflow_service.py`.
 
 ---
 
@@ -204,9 +215,9 @@ An open protocol (developed by Anthropic) for connecting LLMs to external tools 
 
 In Atlas:
 - `mcp_server.py` is the MCP server — it registers tools (`get_incident_details`, etc.) and handles execution
-- `mcp_client_tool_selection.py` is the MCP client — it fetches the tool list and feeds it to the LLM
+- `integrations/mcp_client.py` is the MCP client transport
 
-This separation means tools can be added to the MCP server without touching the LLM integration code.
+MCP is one backend integration path behind the Atlas tool layer; it is not the direct agent-facing tool surface.
 
 ---
 
@@ -225,7 +236,7 @@ Ollama uses GGUF quantized models. vLLM typically runs full or half precision (b
 
 The maximum amount of text (measured in tokens) a model can "see" in a single inference call — both the input prompt and the generated output count toward this limit.
 
-If a conversation grows beyond the context window, the application must truncate older messages. Atlas caps history at the last 10 messages (`conversation_history[-10:]` in `chat_service.py`) before building the prompt, so hitting the context limit is unlikely in practice.
+If a conversation grows beyond the context window, the application must truncate older messages. Atlas caps history at the last 10 messages before building graph state in `services/graph_runtime.py`, so hitting the context limit is unlikely in practice.
 
 `llama3.1:8b` context window: 128,000 tokens (~96,000 words).
 
@@ -235,4 +246,6 @@ If a conversation grows beyond the context window, the application must truncate
 
 The first message in a prompt, marked with role `system`, that instructs the model how to behave. It is set by the application, not the user.
 
-Atlas uses a system prompt in `chat_service.py` to tell the model to always respond with a tool call rather than prose, and to format arguments correctly.
+Atlas uses system prompts in the specialized agent builders:
+- `agents/troubleshoot_agent.py`
+- `agents/network_ops_agent.py`
