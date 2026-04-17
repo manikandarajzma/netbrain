@@ -21,6 +21,7 @@ try:
         resolve_incident_prompt,
     )
     from atlas.services.response_presenter import response_presenter
+    from atlas.services.troubleshoot_scenario_service import troubleshoot_scenario_service
     from atlas.services.session_store import session_store
     from atlas.services.status_service import status_service
     from atlas.services.workflow_state_service import workflow_state_service
@@ -33,6 +34,7 @@ except ImportError:
     from services.observability import elapsed_ms, log_event  # type: ignore
     from services.request_preprocessor import extract_final_text, extract_ips, extract_port, resolve_incident_prompt  # type: ignore
     from services.response_presenter import response_presenter  # type: ignore
+    from services.troubleshoot_scenario_service import troubleshoot_scenario_service  # type: ignore
     from services.session_store import session_store  # type: ignore
     from services.status_service import status_service  # type: ignore
     from services.workflow_state_service import workflow_state_service  # type: ignore
@@ -75,7 +77,6 @@ class TroubleshootWorkflowService:
                     pending = last_user_before
                     pending_issue_type = "general"
 
-        issue_type = pending_issue_type or "general"
         full_prompt = f"{pending}\n\nUser clarification: {prompt}" if pending else prompt
 
         if not pending:
@@ -94,26 +95,23 @@ class TroubleshootWorkflowService:
                 }
 
         full_prompt, inc_summary = await resolve_incident_prompt(full_prompt)
-        if inc_summary:
-            src_ip_hint, dst_ip_hint = extract_ips(full_prompt)
-            if src_ip_hint and dst_ip_hint:
-                issue_type = "connectivity"
+        scenario = await troubleshoot_scenario_service.select_scenario(full_prompt)
 
         config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
         agent_input = full_prompt
 
         try:
-            agent = build_agent(full_prompt, issue_type)
+            agent = build_agent(full_prompt, scenario)
             result = await agent.ainvoke({"messages": [HumanMessage(content=agent_input)]}, config=config)
         except Exception as exc:
-            metrics_recorder.increment("atlas.agent.failed", agent_type="troubleshoot", issue_type=issue_type)
+            metrics_recorder.increment("atlas.agent.failed", agent_type="troubleshoot", issue_type=scenario)
             log_event(
                 logger,
                 "troubleshoot_agent_failed",
                 level="error",
                 request_id=request_id,
                 session_id=session_id,
-                issue_type=issue_type,
+                issue_type=scenario,
                 error=str(exc),
             )
             logger.error("Troubleshoot agent failed: %s\n%s", exc, _tb.format_exc())
@@ -135,7 +133,7 @@ class TroubleshootWorkflowService:
                 "- If it surfaces multiple independent issues, keep the strongest end-to-end blocker as Root Cause and preserve the others under Additional Findings or Connectivity Test.\n"
                 "- Do not stop at one issue if the snapshot shows more than one blocker."
             )
-            agent = build_agent(full_prompt, issue_type)
+            agent = build_agent(full_prompt, scenario)
             result = await agent.ainvoke({"messages": [HumanMessage(content=follow_up)]}, config=config)
             final_text = extract_final_text(result.get("messages", []))
             session_data = workflow_state_service.merge_session_data(session_data, session_store.pop(session_id))
@@ -153,7 +151,7 @@ class TroubleshootWorkflowService:
             recall_follow_up = memory_manager.build_recall_follow_up(full_prompt, session_data)
             if recall_follow_up:
                 await status_service.push(session_id, "Checking similar past cases...")
-                agent = build_agent(full_prompt, issue_type)
+                agent = build_agent(full_prompt, scenario)
                 result = await agent.ainvoke({"messages": [HumanMessage(content=recall_follow_up)]}, config=config)
                 final_text = extract_final_text(result.get("messages", [])) or final_text
                 session_data = workflow_state_service.merge_session_data(session_data, session_store.pop(session_id))
@@ -169,14 +167,14 @@ class TroubleshootWorkflowService:
             len(content.get("interface_counters", []) or []),
         )
         duration_ms = elapsed_ms(started_at)
-        metrics_recorder.increment("atlas.agent.completed", agent_type="troubleshoot", issue_type=issue_type)
-        metrics_recorder.observe_ms("atlas.agent.duration_ms", duration_ms, agent_type="troubleshoot", issue_type=issue_type)
+        metrics_recorder.increment("atlas.agent.completed", agent_type="troubleshoot", issue_type=scenario)
+        metrics_recorder.observe_ms("atlas.agent.duration_ms", duration_ms, agent_type="troubleshoot", issue_type=scenario)
         log_event(
             logger,
             "troubleshoot_agent_completed",
             request_id=request_id,
             session_id=session_id,
-            issue_type=issue_type,
+            issue_type=scenario,
             elapsed_ms=duration_ms,
             content_keys=list(content.keys()),
             path_hops=len(content.get("path_hops", []) or []),

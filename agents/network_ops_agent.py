@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import re
 
 try:
     from atlas.agents.agent_factory import agent_factory
@@ -30,33 +29,26 @@ _SKILLS_DIR = pathlib.Path(__file__).parent.parent / "skills"
 _CORE_PROMPT = _SKILLS_DIR / "network_ops.md"
 _SCENARIOS_DIR = _SKILLS_DIR / "network_ops_scenarios"
 
-_ACCESS_CHANGE_RE = re.compile(
-    r"\b(open\s+port|need\s+port|whitelist|allow\s+access|grant\s+access|"
-    r"(add|create|remove|delete|update|modify)\s+(a\s+)?(firewall\s+)?rule|"
-    r"new\s+rule|firewall\s+policy|security\s+policy|fw\s+policy|allow\s+traffic|"
-    r"block\s+traffic|permit\s+traffic|deny\s+traffic)\b",
-    re.IGNORECASE,
-)
-_CHANGE_RECORD_RE = re.compile(
-    r"\b(create|open|submit|raise)\s+(a\s+)?change\s+request\b|\bchange\s+request\b",
-    re.IGNORECASE,
-)
+_SCENARIO_FILES = {
+    "incident_record": "incident_record.md",
+    "record_lookup": "record_lookup.md",
+    "change_record": "change_record.md",
+    "change_update": "change_update.md",
+    "access_change": "access_change.md",
+}
 
 
-def _pick_scenario(prompt: str) -> str | None:
-    text = prompt or ""
-    if _ACCESS_CHANGE_RE.search(text):
-        path = _SCENARIOS_DIR / "access_change.md"
-        return str(path) if path.exists() else None
-    if _CHANGE_RECORD_RE.search(text):
-        path = _SCENARIOS_DIR / "change_record.md"
-        return str(path) if path.exists() else None
-    return None
+def _get_scenario_path(scenario: str) -> str | None:
+    fname = _SCENARIO_FILES.get(str(scenario or "").strip())
+    if not fname:
+        return None
+    path = _SCENARIOS_DIR / fname
+    return str(path) if path.exists() else None
 
 
-def load_system_prompt(prompt: str = "") -> str:
+def load_system_prompt(scenario: str = "general") -> str:
     core = _CORE_PROMPT.read_text(encoding="utf-8").strip() if _CORE_PROMPT.exists() else ""
-    scenario_path = _pick_scenario(prompt)
+    scenario_path = _get_scenario_path(scenario)
     if scenario_path:
         scenario_text = pathlib.Path(scenario_path).read_text(encoding="utf-8").strip()
         logger.info("Loaded network-ops scenario: %s", scenario_path)
@@ -64,7 +56,12 @@ def load_system_prompt(prompt: str = "") -> str:
     return core
 
 
-def build_agent(prompt: str = "", *, llm=None):
+def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
     llm = llm or agent_factory.build_default_llm()
-    return agent_factory.create_specialized_agent(llm, NETWORK_OPS_TOOLS, load_system_prompt(prompt), "network_ops")
+    return agent_factory.create_specialized_agent(
+        llm,
+        NETWORK_OPS_TOOLS,
+        load_system_prompt(scenario),
+        "network_ops",
+    )

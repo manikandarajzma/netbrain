@@ -12,6 +12,7 @@ try:
     from atlas.agents.network_ops_agent import build_agent
     from atlas.services.memory_manager import memory_manager
     from atlas.services.metrics import metrics_recorder
+    from atlas.services.network_ops_scenario_service import network_ops_scenario_service
     from atlas.services.nornir_client import nornir_client
     from atlas.services.observability import elapsed_ms, log_event
     from atlas.services.request_preprocessor import extract_final_text, looks_like_clarification_request
@@ -22,6 +23,7 @@ except ImportError:
     from agents.network_ops_agent import build_agent  # type: ignore
     from services.memory_manager import memory_manager  # type: ignore
     from services.metrics import metrics_recorder  # type: ignore
+    from services.network_ops_scenario_service import network_ops_scenario_service  # type: ignore
     from services.nornir_client import nornir_client  # type: ignore
     from services.observability import elapsed_ms, log_event  # type: ignore
     from services.request_preprocessor import extract_final_text, looks_like_clarification_request  # type: ignore
@@ -52,18 +54,20 @@ class NetworkOpsWorkflowService:
         nornir_client.clear_session_cache(session_id)
         session_store.pop(session_id)
         config = {"configurable": {"session_id": session_id, "thread_id": session_id}}
+        scenario = await network_ops_scenario_service.select_scenario(prompt)
 
         try:
-            agent = build_agent(prompt)
+            agent = build_agent(prompt, scenario)
             result = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]}, config=config)
         except Exception as exc:
-            metrics_recorder.increment("atlas.agent.failed", agent_type="network_ops")
+            metrics_recorder.increment("atlas.agent.failed", agent_type="network_ops", scenario=scenario)
             log_event(
                 logger,
                 "network_ops_agent_failed",
                 level="error",
                 request_id=request_id,
                 session_id=session_id,
+                scenario=scenario,
                 error=str(exc),
             )
             logger.error("Network ops agent failed: %s\n%s", exc, _tb.format_exc())
@@ -77,13 +81,14 @@ class NetworkOpsWorkflowService:
         content = response_presenter.build_network_ops_content(final_text, session_data, prompt)
 
         duration_ms = elapsed_ms(started_at)
-        metrics_recorder.increment("atlas.agent.completed", agent_type="network_ops")
-        metrics_recorder.observe_ms("atlas.agent.duration_ms", duration_ms, agent_type="network_ops")
+        metrics_recorder.increment("atlas.agent.completed", agent_type="network_ops", scenario=scenario)
+        metrics_recorder.observe_ms("atlas.agent.duration_ms", duration_ms, agent_type="network_ops", scenario=scenario)
         log_event(
             logger,
             "network_ops_agent_completed",
             request_id=request_id,
             session_id=session_id,
+            scenario=scenario,
             elapsed_ms=duration_ms,
             content_keys=list(content.keys()),
             has_path_hops=bool(content.get("path_hops")),
