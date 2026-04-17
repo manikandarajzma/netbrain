@@ -28,8 +28,17 @@ function ServiceCard({ name, service = {} }) {
   if (name === 'mcp' && service.tools_registered != null) {
     details.push(`tools ${service.tools_registered}`)
   }
-  if (name === 'ollama' && service.model) {
-    details.push(service.model)
+  if (name === 'ollama') {
+    const models = service.models || {}
+    const uniqueModels = [...new Set(Object.values(models).filter(Boolean))]
+    if (uniqueModels.length === 1) {
+      details.push(uniqueModels[0])
+    } else if (uniqueModels.length > 1) {
+      details.push(`${uniqueModels.length} models`)
+    }
+    if (Array.isArray(service.missing_models) && service.missing_models.length > 0) {
+      details.push(`missing ${service.missing_models.length}`)
+    }
   }
   if (name === 'nornir') {
     details.push(service.device_count != null ? `${service.device_count} devices` : 'device count unavailable')

@@ -58,7 +58,7 @@ def load_system_prompt(scenario: str = "general") -> str:
 
 def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
-    llm = llm or agent_factory.build_default_llm()
+    llm = llm or agent_factory.build_network_ops_llm()
     return agent_factory.create_specialized_agent(
         llm,
         NETWORK_OPS_TOOLS,

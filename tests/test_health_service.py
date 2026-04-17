@@ -15,7 +15,17 @@ class HealthServiceTests(unittest.IsolatedAsyncioTestCase):
         mock_check_nornir,
     ):
         mock_check_mcp.return_value = {"status": "ok", "tools_registered": 12}
-        mock_check_ollama.return_value = {"status": "ok", "model": "gemma4", "model_available": True}
+        mock_check_ollama.return_value = {
+            "status": "ok",
+            "models": {
+                "router": "gemma4:latest",
+                "selector": "gemma4:latest",
+                "network_ops": "gemma4:latest",
+                "troubleshoot": "gemma4:latest",
+            },
+            "missing_models": [],
+            "all_models_available": True,
+        }
         mock_check_nornir.return_value = {"status": "ok", "device_count": 4}
 
         snapshot = await HealthService().build_snapshot()
@@ -34,7 +44,17 @@ class HealthServiceTests(unittest.IsolatedAsyncioTestCase):
         mock_check_nornir,
     ):
         mock_check_mcp.return_value = {"status": "ok", "tools_registered": 12}
-        mock_check_ollama.return_value = {"status": "ok", "model": "gemma4", "model_available": True}
+        mock_check_ollama.return_value = {
+            "status": "ok",
+            "models": {
+                "router": "gemma4:latest",
+                "selector": "gemma4:latest",
+                "network_ops": "gemma4:latest",
+                "troubleshoot": "gemma4:latest",
+            },
+            "missing_models": [],
+            "all_models_available": True,
+        }
         mock_check_nornir.return_value = {"status": "unreachable", "device_count": None}
 
         snapshot = await HealthService().build_snapshot()

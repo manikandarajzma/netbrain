@@ -8,10 +8,12 @@ import aiohttp
 
 try:
     from atlas.security.auth import AUTH_MODE
-    from atlas.tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL
+    from atlas.agents.agent_factory import agent_factory
+    from atlas.tools.shared import OLLAMA_BASE_URL
 except ImportError:
     from security.auth import AUTH_MODE  # type: ignore
-    from tools.shared import OLLAMA_BASE_URL, OLLAMA_MODEL  # type: ignore
+    from agents.agent_factory import agent_factory  # type: ignore
+    from tools.shared import OLLAMA_BASE_URL  # type: ignore
 
 
 class HealthService:
@@ -38,6 +40,7 @@ class HealthService:
     async def _check_ollama(self) -> dict[str, Any]:
         base = OLLAMA_BASE_URL.rstrip("/")
         models_url = f"{base}/models"
+        configured_models = agent_factory.configured_models()
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(models_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
@@ -45,27 +48,37 @@ class HealthService:
                         return {
                             "status": f"error ({resp.status})",
                             "url": OLLAMA_BASE_URL,
-                            "model": OLLAMA_MODEL,
-                            "model_available": None,
+                            "models": configured_models,
+                            "missing_models": list(configured_models.values()),
+                            "all_models_available": None,
                         }
                     data = await resp.json()
-                    models = [m.get("id", "") for m in data.get("data", [])]
-                    model_available = any(
-                        m == OLLAMA_MODEL or m.split(":")[0] == OLLAMA_MODEL.split(":")[0]
-                        for m in models
+                    available = [m.get("id", "") for m in data.get("data", [])]
+                    missing_models = sorted(
+                        {
+                            model
+                            for model in configured_models.values()
+                            if not any(
+                                candidate == model or candidate.split(":")[0] == model.split(":")[0]
+                                for candidate in available
+                            )
+                        }
                     )
+                    all_models_available = not missing_models
                     return {
-                        "status": "ok" if model_available else "model_not_found",
+                        "status": "ok" if all_models_available else "model_not_found",
                         "url": OLLAMA_BASE_URL,
-                        "model": OLLAMA_MODEL,
-                        "model_available": model_available,
+                        "models": configured_models,
+                        "missing_models": missing_models,
+                        "all_models_available": all_models_available,
                     }
         except Exception:
             return {
                 "status": "unreachable",
                 "url": OLLAMA_BASE_URL,
-                "model": OLLAMA_MODEL,
-                "model_available": None,
+                "models": configured_models,
+                "missing_models": list(configured_models.values()),
+                "all_models_available": None,
             }
 
     async def _check_nornir(self) -> dict[str, Any]:

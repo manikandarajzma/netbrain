@@ -18,13 +18,13 @@ class TroubleshootScenarioServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(decision, {"scenario": "performance", "reason": "latency complaint"})
 
-    @patch("services.troubleshoot_scenario_service.agent_factory.build_default_llm")
-    async def test_select_scenario_returns_model_choice(self, mock_build_default_llm):
+    @patch("services.troubleshoot_scenario_service.agent_factory.build_selector_llm")
+    async def test_select_scenario_returns_model_choice(self, mock_build_selector_llm):
         llm = AsyncMock()
         llm.ainvoke.return_value = SimpleNamespace(
             content='{"scenario":"connectivity","reason":"endpoint-to-endpoint failure"}'
         )
-        mock_build_default_llm.return_value = llm
+        mock_build_selector_llm.return_value = llm
 
         scenario = await troubleshoot_scenario_service.select_scenario(
             "help me troubleshoot connectivity from 10.0.100.100 to 10.0.200.200"
@@ -32,11 +32,11 @@ class TroubleshootScenarioServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(scenario, "connectivity")
 
-    @patch("services.troubleshoot_scenario_service.agent_factory.build_default_llm")
-    async def test_select_scenario_defaults_to_general_on_failure(self, mock_build_default_llm):
+    @patch("services.troubleshoot_scenario_service.agent_factory.build_selector_llm")
+    async def test_select_scenario_defaults_to_general_on_failure(self, mock_build_selector_llm):
         llm = AsyncMock()
         llm.ainvoke.side_effect = RuntimeError("model unavailable")
-        mock_build_default_llm.return_value = llm
+        mock_build_selector_llm.return_value = llm
 
         scenario = await troubleshoot_scenario_service.select_scenario("why is bgp down on core-rtr-01")
 

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Atlas LLM Tool Instruction Flow</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      margin: 40px;
+      color: #1f2937;
+      line-height: 1.55;
+    }
+    h1, h2, h3 {
+      color: #111827;
+    }
+    h1 {
+      margin-bottom: 8px;
+    }
+    h2 {
+      margin-top: 28px;
+      border-bottom: 1px solid #d1d5db;
+      padding-bottom: 6px;
+    }
+    pre {
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 11pt;
+    }
+    code {
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 11pt;
+    }
+    ul, ol {
+      margin-top: 8px;
+    }
+    .path {
+      color: #374151;
+      font-style: italic;
+    }
+    .summary {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Atlas LLM Tool Instruction Flow</h1>
+  <p>This document explains how Atlas tells the LLM what tools it can use, how the LLM is guided to use them, and which parts are still enforced by code.</p>
+
+  <h2>1. The LLM role is chosen first</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/agents/agent_factory.py</p>
+  <pre><code>class AgentFactory:
+    def __init__(self) -> None:
+        self.router_model = os.getenv("ATLAS_ROUTER_MODEL", "gemma4:latest")
+        self.selector_model = os.getenv("ATLAS_SELECTOR_MODEL", "gemma4:latest")
+        self.network_ops_model = os.getenv("ATLAS_NETWORK_OPS_MODEL", "gemma4:latest")
+        self.troubleshoot_model = os.getenv("ATLAS_TROUBLESHOOT_MODEL", "gemma4:latest")</code></pre>
+  <p>Atlas chooses a model role before any agent run starts:</p>
+  <ul>
+    <li>router model</li>
+    <li>selector model</li>
+    <li>network-ops agent model</li>
+    <li>troubleshoot agent model</li>
+  </ul>
+
+  <h2>2. The first LLM decides the top-level lane</h2>
+  <p class="path">Files: /Users/manig/Documents/coding/atlas/graph/graph_nodes.py and /Users/manig/Documents/coding/atlas/services/intent_routing_service.py</p>
+  <pre><code>llm_decision = await intent_routing_service.route_prompt(prompt)
+if llm_decision:
+    llm_intent = str(llm_decision.get("intent") or "").strip()
+    return {"intent": llm_intent}</code></pre>
+  <pre><code>_ROUTER_SYSTEM_PROMPT = """You are Atlas's coarse request router.
+
+Classify the user's request into exactly one intent:
+- troubleshoot
+- network_ops
+- dismiss
+"""</code></pre>
+  <pre><code>llm = agent_factory.build_router_llm()
+response = await llm.ainvoke(
+    [
+        SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+        HumanMessage(content=prompt),
+    ]
+)</code></pre>
+  <p>The LLM is asked to choose exactly one of:</p>
+  <ul>
+    <li><code>troubleshoot</code></li>
+    <li><code>network_ops</code></li>
+    <li><code>dismiss</code></li>
+  </ul>
+
+  <h2>3. A second LLM chooses the scenario</h2>
+  <p>After the lane is chosen, a selector LLM picks the scenario.</p>
+
+  <h3>Troubleshooting scenarios</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/services/troubleshoot_scenario_service.py</p>
+  <pre><code>_SCENARIO_SYSTEM_PROMPT = """You are Atlas's troubleshooting scenario selector.
+
+Choose exactly one scenario:
+- connectivity
+- performance
+- intermittent
+- general
+"""</code></pre>
+
+  <h3>Network-ops scenarios</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/services/network_ops_scenario_service.py</p>
+  <pre><code>_SCENARIO_SYSTEM_PROMPT = """You are Atlas's network-operations scenario selector.
+
+Choose exactly one scenario:
+- incident_record
+- record_lookup
+- change_record
+- change_update
+- access_change
+- general
+"""</code></pre>
+
+  <p>Both selectors use the selector model:</p>
+  <pre><code>llm = agent_factory.build_selector_llm()</code></pre>
+
+  <h2>4. Code decides which tools are even visible</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/tools/tool_registry.py</p>
+  <p>The LLM does not automatically see every tool in the repo. Code decides visibility in three steps.</p>
+
+  <h3>4A. Tools are tagged with capabilities</h3>
+  <pre><code>PATH_TOOL_CAPABILITIES = (
+    (trace_path, ("workflow.path.trace",)),
+    (trace_reverse_path, ("workflow.path.reverse_trace",)),
+)</code></pre>
+  <p class="path">Source: /Users/manig/Documents/coding/atlas/tools/path_agent_tools.py</p>
+
+  <h3>4B. Agent profiles define allowed capabilities</h3>
+  <pre><code>self.register_profile(
+    "troubleshoot.connectivity",
+    (
+        "workflow.path.trace",
+        "workflow.path.reverse_trace",
+        "workflow.connectivity.ping",
+        "workflow.routing.check",
+        "workflow.connectivity.snapshot",
+        "workflow.routing.history",
+        "servicenow.search",
+        "servicenow.incident.read",
+        "memory.recall",
+        "knowledge.vendor.lookup",
+    ),
+)</code></pre>
+
+  <pre><code>self.register_profile(
+    "network_ops",
+    (
+        "workflow.path.trace",
+        "servicenow.search",
+        "servicenow.incident.read",
+        "servicenow.change.read",
+        "servicenow.incident.create",
+        "servicenow.change.create",
+        "servicenow.change.update",
+    ),
+)</code></pre>
+
+  <h3>4C. ToolRegistry resolves the profile into the final tool list</h3>
+  <pre><code>def get_profile_tools(self, profile_name: ProfileName) -> tuple[Any, ...]:
+    capabilities = self._profiles.get(profile_name)
+    tools = self.get_tools_for_capabilities(capabilities)
+    return tools</code></pre>
+
+  <p>In plain English:</p>
+  <ol>
+    <li>Each tool is tagged with capabilities.</li>
+    <li>Each agent profile is assigned a capability set.</li>
+    <li>ToolRegistry resolves that profile into the final visible tool list.</li>
+    <li>The agent only receives that tool list.</li>
+  </ol>
+
+  <h2>5. The agent builder loads the prompt and the allowed tools</h2>
+  <h3>Troubleshoot agent</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/agents/troubleshoot_agent.py</p>
+  <pre><code>ALL_TOOLS = tool_registry.get_profile_tools("troubleshoot.general")
+CONNECTIVITY_TOOLS = tool_registry.get_profile_tools("troubleshoot.connectivity")
+
+def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
+    llm = llm or agent_factory.build_troubleshoot_llm()
+    system_prompt = load_system_prompt(scenario)
+    tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
+    return agent_factory.create_specialized_agent(llm, tools, system_prompt, "troubleshoot")</code></pre>
+
+  <h3>Network-ops agent</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/agents/network_ops_agent.py</p>
+  <pre><code>NETWORK_OPS_TOOLS = tool_registry.get_profile_tools("network_ops")
+
+def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
+    llm = llm or agent_factory.build_network_ops_llm()
+    return agent_factory.create_specialized_agent(
+        llm,
+        NETWORK_OPS_TOOLS,
+        load_system_prompt(scenario),
+        "network_ops",
+    )</code></pre>
+
+  <p>By this point, Atlas has already decided:</p>
+  <ul>
+    <li>which model role to use</li>
+    <li>which scenario prompt to load</li>
+    <li>which tools are visible</li>
+  </ul>
+
+  <h2>6. The system prompt tells the LLM how to use tools</h2>
+  <h3>Troubleshooting prompt</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/skills/troubleshooter.md</p>
+  <pre><code>You are a network troubleshooting agent. Investigate network problems by calling tools, reasoning about findings, and writing a precise root cause analysis.
+
+- Always call tools yourself.
+- Only report what tools returned.
+- Always call `search_servicenow`
+- Treat the scenario-specific runbook as the source of truth</code></pre>
+
+  <h3>Network-ops prompt</h3>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/skills/network_ops.md</p>
+  <pre><code>For explicit requests to create/open/raise an incident or ticket:
+- use `create_servicenow_incident(...)`
+- if source and destination IPs are present, you may call `trace_path(...)`
+- if useful, call `search_servicenow(...)`</code></pre>
+
+  <p>This is prompt-level instruction about when and why tools should be used.</p>
+
+  <h2>7. The scenario runbook gives more tool-specific guidance</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/skills/troubleshooting_scenarios/connectivity.md</p>
+  <pre><code>Step 1 — `trace_path(source_ip, dest_ip)` — always first.
+
+Step 2 — in parallel:
+- `trace_reverse_path(...)`
+- `lookup_routing_history(...)`
+- `search_servicenow(...)`
+
+Step 3 — `collect_connectivity_snapshot(...)`</code></pre>
+  <p>This is more detailed task-specific instruction layered on top of the core system prompt.</p>
+
+  <h2>8. The tool itself also instructs the LLM</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/tools/path_agent_tools.py</p>
+  <pre><code>@tool
+async def trace_path(source_ip: str, dest_ip: str, config: RunnableConfig) -> str:
+    """
+    Trace the hop-by-hop network path from source_ip to dest_ip via live SSH.
+    Always call this FIRST for any connectivity troubleshooting query.
+    ...
+    The result tells you:
+    - All device hostnames in the path
+    - The first-hop device
+    - The last-hop device
+    """
+</code></pre>
+  <p>The tool decorator plus the docstring gives the LLM:</p>
+  <ul>
+    <li>tool name</li>
+    <li>arguments</li>
+    <li>return shape</li>
+    <li>usage guidance</li>
+  </ul>
+
+  <h2>9. The ReAct agent binds prompt and tools together</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/agents/agent_factory.py</p>
+  <pre><code>def create_specialized_agent(self, llm, tools, system_prompt: str, agent_name: str):
+    return create_react_agent(
+        llm,
+        tools,
+        prompt=SystemMessage(content=system_prompt),
+        name=agent_name,
+    )</code></pre>
+  <p>This is the binding point. The LLM gets:</p>
+  <ul>
+    <li>the system prompt</li>
+    <li>the scenario prompt</li>
+    <li>the visible tool list</li>
+    <li>the tool schemas and docstrings</li>
+  </ul>
+
+  <h2>10. The workflow invokes the agent with the user message</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/services/troubleshoot_workflow_service.py</p>
+  <pre><code>agent = build_agent(full_prompt, scenario)
+result = await agent.ainvoke({"messages": [HumanMessage(content=agent_input)]}, config=config)</code></pre>
+  <p>At that point the LLM can:</p>
+  <ul>
+    <li>read the user request</li>
+    <li>choose one of the visible tools</li>
+    <li>read the tool result</li>
+    <li>choose another visible tool</li>
+    <li>write the answer</li>
+  </ul>
+
+  <h2>11. Some safety-critical steps are still enforced by code</h2>
+  <p class="path">File: /Users/manig/Documents/coding/atlas/services/troubleshoot_workflow_service.py</p>
+  <pre><code>if workflow_state_service.needs_connectivity_snapshot(session_data, src_ip, dst_ip):
+    follow_up = (
+        ...
+        "- Call collect_connectivity_snapshot(...) before writing the report.\n"
+    )
+    agent = build_agent(full_prompt, scenario)
+    result = await agent.ainvoke(...)</code></pre>
+
+  <pre><code>if workflow_state_service.missing_path_visuals(session_data, src_ip, dst_ip):
+    await trace_path.ainvoke(...)
+    await trace_reverse_path.ainvoke(...)</code></pre>
+
+  <p>So the full truth is:</p>
+  <ul>
+    <li>The LLM is instructed through prompts and tool schemas.</li>
+    <li>The LLM chooses many tool calls.</li>
+    <li>Code still forces some safety-critical evidence steps.</li>
+  </ul>
+
+  <h2>12. The updated stack</h2>
+  <div class="summary">
+    <pre><code>1. agent_factory.py chooses which model role is used
+2. intent_routing_service.py uses an LLM to choose the lane
+3. scenario service uses an LLM to choose the scenario
+4. tool_registry.py decides which tools are visible
+5. agent builder loads the core prompt + scenario prompt + visible tool list
+6. tool docstrings describe what each tool does
+7. create_react_agent(...) gives the LLM the prompt and tools
+8. the LLM chooses tools inside that visible set
+9. workflow code still forces safety-critical evidence when needed</code></pre>
+  </div>
+
+  <h2>One-line summary</h2>
+  <p>Atlas instructs the LLM to use tools through role-specific prompts, scenario runbooks, tool docstrings, and a bounded tool list from ToolRegistry; the LLM can only choose from the tools code exposes to it.</p>
+</body>
+</html>

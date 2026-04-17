@@ -19,23 +19,23 @@ class IntentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
             {"intent": "troubleshoot", "confidence": 0.88, "reason": "existing failure"},
         )
 
-    @patch("services.intent_routing_service.agent_factory.build_default_llm")
-    async def test_route_prompt_returns_none_on_model_failure(self, mock_build_default_llm):
+    @patch("services.intent_routing_service.agent_factory.build_router_llm")
+    async def test_route_prompt_returns_none_on_model_failure(self, mock_build_router_llm):
         llm = AsyncMock()
         llm.ainvoke.side_effect = RuntimeError("router unavailable")
-        mock_build_default_llm.return_value = llm
+        mock_build_router_llm.return_value = llm
 
         decision = await intent_routing_service.route_prompt("help")
 
         self.assertIsNone(decision)
 
-    @patch("services.intent_routing_service.agent_factory.build_default_llm")
-    async def test_route_prompt_extracts_json_decision(self, mock_build_default_llm):
+    @patch("services.intent_routing_service.agent_factory.build_router_llm")
+    async def test_route_prompt_extracts_json_decision(self, mock_build_router_llm):
         llm = AsyncMock()
         llm.ainvoke.return_value = SimpleNamespace(
             content='{"intent":"network_ops","confidence":0.91,"reason":"record request"}'
         )
-        mock_build_default_llm.return_value = llm
+        mock_build_router_llm.return_value = llm
 
         decision = await intent_routing_service.route_prompt("show me INC0010043")
 

@@ -87,7 +87,7 @@ class NetworkOpsScenarioService:
 
     async def select_scenario(self, prompt: str) -> str:
         try:
-            llm = agent_factory.build_default_llm()
+            llm = agent_factory.build_selector_llm()
             response = await llm.ainvoke(
                 [
                     SystemMessage(content=_SCENARIO_SYSTEM_PROMPT),

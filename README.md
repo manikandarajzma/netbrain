@@ -227,25 +227,27 @@ Atlas has clear owners for the main application responsibilities:
 
 Atlas uses **coarse routing** in [`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)`.
 
-This routing is intentionally simple and deterministic:
+The routing path is:
 
-- `troubleshoot`
-  - live investigations
-  - connectivity, routing, OSPF, reachability, packet loss, latency
-- `network_ops`
-  - incidents
-  - change requests
-  - policy review
-  - firewall/path review workflows
-- `dismiss`
-  - acknowledgements or unsupported requests
+1. code short-circuits bare acknowledgements and pending clarification follow-ups
+2. normal requests are sent to [`services/intent_routing_service.py`](<services/intent_routing_service.py>)
+3. the router LLM chooses one of:
+   - `troubleshoot`
+   - `network_ops`
+   - `dismiss`
+4. if the request is routed to an agent lane, a second LLM chooses the scenario:
+   - troubleshoot scenarios via [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>)
+   - network-ops scenarios via [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>)
 
-Once Atlas chooses the agent, the **LLM** decides which tools to use inside that agent.
+Once Atlas chooses the lane and scenario, the **LLM** decides which tools to use inside that agent.
 
 That means:
 
-- regex decides **which agent**
-- the ReAct agent decides **which tools**
+- the LLM decides **which agent lane**
+- the LLM decides **which scenario**
+- `ToolRegistry` decides **which tools are visible**
+- the ReAct agent decides **which visible tools to call**
+- workflow code still forces **safety-critical evidence** when required
 
 ## Tool Model
 
@@ -267,6 +269,17 @@ Every agent-facing tool follows the same model:
 - accept hidden runtime config for `session_id`
 - optionally push status updates
 - write structured side effects into the per-session store
+
+### Tool visibility
+
+`ToolRegistry` decides which tools the LLM can even see:
+
+1. each tool is tagged with one or more capabilities
+2. each agent profile is assigned a capability set
+3. `ToolRegistry` resolves that profile into the final tool tuple
+4. the agent is created with only that tool tuple
+
+So the LLM can only choose from the tools code exposes to it.
 
 ## Observability
 
@@ -299,7 +312,6 @@ Current metrics include:
 - agent completion / failure counters and timing
 - Nornir request timing
 - Nornir cache hit / store counters
-- return a human-readable string for the LLM
 
 These metrics are inspectable through the internal diagnostics surface instead of only appearing in logs.
 
@@ -326,7 +338,7 @@ This is an internal/admin endpoint for debugging and architecture inspection, no
   - full troubleshooting surface
 - `troubleshoot.connectivity`
   - restricted connectivity surface
-  - deliberately excludes memory recall
+  - includes `memory.recall`, but the workflow still decides when recall is justified
 - `network_ops`
   - operational record/change surface
   - includes product-facing ServiceNow tools
@@ -401,6 +413,33 @@ That means the final payload can safely contain:
 - `incident_summary`
 
 without depending on the LLM to keep those structures consistent.
+
+## FAQ
+
+### Does the LLM decide whether a request is troubleshooting or network ops?
+
+Yes, for normal requests. [`graph/graph_nodes.py`](<graph/graph_nodes.py>) first handles bare acknowledgements and pending clarification replies in code. After that, [`services/intent_routing_service.py`](<services/intent_routing_service.py>) asks the router LLM to choose `troubleshoot`, `network_ops`, or `dismiss`.
+
+### Does the LLM also choose the scenario inside that lane?
+
+Yes. Troubleshooting scenarios are selected by [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>). Network-ops scenarios are selected by [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>). The workflow then keeps that scenario fixed for the rest of the run.
+
+### Does code still decide which tools are visible?
+
+Yes. [`tools/tool_registry.py`](<tools/tool_registry.py>) maps tools to capabilities, maps profiles to capabilities, and resolves those profiles into the final tool list given to the agent. The LLM can only call tools from that visible list.
+
+### How does Atlas tell the LLM to use a tool?
+
+Atlas uses four instruction layers:
+
+1. the core system prompt in [`skills/troubleshooter.md`](<skills/troubleshooter.md>) or [`skills/network_ops.md`](<skills/network_ops.md>)
+2. the scenario runbook prompt, such as [`skills/troubleshooting_scenarios/connectivity.md`](<skills/troubleshooting_scenarios/connectivity.md>)
+3. tool docstrings in the `tools/*_agent_tools.py` modules
+4. the ReAct binding in [`agents/agent_factory.py`](<agents/agent_factory.py>), which gives the model the prompt plus the visible tools
+
+### Does the LLM choose every tool call?
+
+Mostly, but not completely. The LLM chooses tool calls inside the visible tool set. For troubleshooting, [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>) still forces safety-critical evidence such as the required connectivity snapshot or missing path visuals when the workflow detects that the agent stopped too early.
 
 ## Running Atlas
 

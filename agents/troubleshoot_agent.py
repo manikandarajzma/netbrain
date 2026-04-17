@@ -56,7 +56,7 @@ def load_system_prompt(scenario: str = "general") -> str:
 
 def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
     """Return a pure specialized troubleshoot agent ready for ainvoke."""
-    llm = llm or agent_factory.build_default_llm()
+    llm = llm or agent_factory.build_troubleshoot_llm()
     system_prompt = load_system_prompt(scenario)
     scenario_path = _get_scenario_path(scenario) or ""
     tools = CONNECTIVITY_TOOLS if scenario_path.endswith("connectivity.md") else ALL_TOOLS
