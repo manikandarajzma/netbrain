@@ -52,9 +52,9 @@ It is based on the owner hierarchy:
 4. `application/chat_service.py` delegates the request to `AtlasApplication`.
 5. `AtlasApplication` invokes `AtlasRuntime`.
 6. `AtlasRuntime` builds graph state and calls the compiled LangGraph graph.
-7. LangGraph classifies the intent and routes to the troubleshoot workflow.
-8. `TroubleshootWorkflowService` invokes the pure troubleshoot ReAct agent.
-9. The agent gets its tool profile from `ToolRegistry`.
+7. LangGraph asks the router LLM to classify the request as `troubleshoot`, `network_ops`, or `dismiss`.
+8. If the request is troubleshooting, `TroubleshootWorkflowService` asks the scenario selector LLM which troubleshoot scenario applies.
+9. The pure troubleshoot ReAct agent gets its tool profile from `ToolRegistry`.
 10. Those tools call owned services and backends such as:
     - `PathTraceService`
     - `DeviceDiagnosticsService`
@@ -70,15 +70,35 @@ It is based on the owner hierarchy:
 ## Agent View
 
 1. `AtlasRuntime` passes prompt, session id, request id, and conversation context into the graph.
-2. The graph selects the troubleshoot agent node.
-3. The troubleshoot workflow builds a pure ReAct agent and gives it a restricted tool profile.
-4. The agent sees one uniform Atlas tool interface.
-5. Under that interface:
+2. The graph asks the LLM router whether this request belongs in `troubleshoot`, `network_ops`, or `dismiss`.
+3. If the request is routed to troubleshooting, `TroubleshootWorkflowService` asks the LLM scenario selector which troubleshoot scenario applies.
+4. The troubleshoot workflow builds a pure ReAct agent and gives it a restricted tool profile.
+5. The agent sees one uniform Atlas tool interface.
+6. Under that interface:
    - workflow tools handle path tracing, snapshots, routing diagnostics, and ServiceNow correlation
    - memory tools handle historical recall when live evidence justifies it
    - product-facing ServiceNow tools handle incident and change CRUD/detail operations
-6. Tool results return both human-readable output and structured side effects.
-7. The workflow and presenter turn those results into the final response payload.
+7. Tool results return both human-readable output and structured side effects.
+8. The workflow and presenter turn those results into the final response payload.
+
+## Plain-English Control Split
+
+For a normal troubleshooting request, the current control split is:
+
+1. The LLM chooses the lane:
+   - `troubleshoot`
+   - `network_ops`
+   - `dismiss`
+2. The LLM chooses the troubleshooting scenario:
+   - `connectivity`
+   - `performance`
+   - `intermittent`
+   - `general`
+3. Code decides which tools are visible by resolving an agent profile through `ToolRegistry`.
+4. The LLM chooses which visible tools to call and in what order.
+5. Code still forces safety-critical evidence when the troubleshoot workflow requires it.
+6. The LLM writes the final answer.
+7. `ResponsePresenter` formats the final structured payload for the UI.
 
 ## 1. Frontend Submission
 
@@ -302,26 +322,25 @@ Atlas does **not** use the graph for deep reasoning. The graph only owns:
 - thin node delegation
 - early exit
 
-## 9. `classify_intent()` Decides Which Agent Runs
+## 9. `classify_intent()` Decides Which Agent Path Runs
 
-[`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)` performs deterministic coarse routing.
+[`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)` has two parts:
 
-Possible values:
+1. small code-owned fast paths for:
+   - bare acknowledgements
+   - dismissals
+   - pending clarification follow-ups
+2. normal requests are passed to [`services/intent_routing_service.py`](<services/intent_routing_service.py>), where the router LLM returns:
+   - `troubleshoot`
+   - `network_ops`
+   - `dismiss`
 
-- `troubleshoot`
-- `network_ops`
-- `dismiss`
+That means, for normal requests:
 
-### Important behavior
-
-- bare acknowledgements can dismiss if nothing is pending
-- pending clarification context can continue the previous flow
-- diagnostic phrasing overrides ops keywords
-
-That means:
-
-- regex chooses the **agent**
-- the chosen agent chooses the **tools**
+- the LLM chooses the **agent lane**
+- the selected workflow chooses the **scenario** through an LLM selector
+- `ToolRegistry` chooses which tools are **visible**
+- the agent chooses which visible tools to call
 
 ## 10. Troubleshoot Node Starts a Fresh Live Investigation
 
@@ -361,18 +380,22 @@ the graph uses [`services/request_preprocessor.py`](<services/request_preprocess
 
 That prevents incident troubleshooting from drifting into a vague generic path.
 
-## 12. `AgentFactory` Builds Thin ReAct Agents
+## 12. `AgentFactory` Builds Thin ReAct Agents and Model Roles
 
 [`agents/agent_factory.py`](<agents/agent_factory.py>) owns agent creation.
 
 It provides:
 
 - `build_default_llm()`
+- `build_router_llm()`
+- `build_selector_llm()`
+- `build_network_ops_llm()`
+- `build_troubleshoot_llm()`
 - `create_specialized_agent(...)`
 
 The factory is intentionally minimal:
 
-- it creates `ChatOpenAI(...)`
+- it creates role-specific `ChatOpenAI(...)` clients
 - it wires `create_react_agent(...)`
 - it applies the system prompt
 
@@ -385,16 +408,28 @@ It does **not** own:
 
 Those responsibilities stay outside the agent layer.
 
-## 13. The Troubleshoot Agent Selects the Prompt and Tool Set
+## 13. Workflow Services Select the Scenario; Agent Files Load the Prompt and Tool Set
 
-[`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>) decides:
+The workflow services choose the scenario before the pure agent is built:
+
+- [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
+  - `scenario = await troubleshoot_scenario_service.select_scenario(full_prompt)`
+- [`services/network_ops_workflow_service.py`](<services/network_ops_workflow_service.py>)
+  - `scenario = await network_ops_scenario_service.select_scenario(prompt)`
+
+The selectors are LLM-backed:
+
+- [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>)
+- [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>)
+
+After that, the agent files decide:
 
 - which troubleshooting system prompt to use
 - which tool collection to expose
 
 ### Prompt composition
 
-It loads:
+[`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>) loads:
 
 - core prompt from `skills/troubleshooter.md`
 - scenario prompt from one of:
@@ -423,10 +458,83 @@ Current intent:
 
 - profile `troubleshoot.connectivity`
   - live evidence and correlation tools only
-  - no `recall_similar_cases(...)`
+  - includes `memory.recall`
 - profile `network_ops`
   - ServiceNow + operational review tools
   - may use path lookup for CI context
+
+### 14.1 How tools become visible to the LLM
+
+`ToolRegistry` controls visibility in three steps:
+
+1. Each tool module exports a capability manifest such as:
+
+```python
+PATH_TOOL_CAPABILITIES = (
+    (trace_path, ("workflow.path.trace",)),
+    (trace_reverse_path, ("workflow.path.reverse_trace",)),
+)
+```
+
+2. `ToolRegistry` maps each agent profile to a capability set:
+
+```python
+self.register_profile(
+    "troubleshoot.connectivity",
+    (
+        "workflow.path.trace",
+        "workflow.path.reverse_trace",
+        "workflow.connectivity.ping",
+        "workflow.routing.check",
+        "workflow.connectivity.snapshot",
+        "workflow.routing.history",
+        "servicenow.search",
+        "servicenow.incident.read",
+        "memory.recall",
+        "knowledge.vendor.lookup",
+    ),
+)
+```
+
+3. `get_profile_tools(...)` resolves that profile into the final tool tuple given to the agent.
+
+Plain English:
+
+- code tags tools with capabilities
+- code assigns capabilities to agent profiles
+- `ToolRegistry` resolves the profile into the final visible tool list
+- the LLM can only choose from the tools it was given
+
+### 14.2 How Atlas tells the LLM to use a visible tool
+
+Atlas instructs the LLM through four layers:
+
+1. Core system prompt
+   - [`skills/troubleshooter.md`](<skills/troubleshooter.md>)
+   - [`skills/network_ops.md`](<skills/network_ops.md>)
+2. Scenario runbook prompt
+   - such as [`skills/troubleshooting_scenarios/connectivity.md`](<skills/troubleshooting_scenarios/connectivity.md>)
+3. Tool docstrings
+   - for example the `@tool` docstring in [`tools/path_agent_tools.py`](<tools/path_agent_tools.py>)
+4. The ReAct agent binding in [`agents/agent_factory.py`](<agents/agent_factory.py>):
+
+```python
+return create_react_agent(
+    llm,
+    tools,
+    prompt=SystemMessage(content=system_prompt),
+    name=agent_name,
+)
+```
+
+That means the LLM receives:
+
+- the system prompt
+- the scenario prompt
+- the visible tool list
+- the tool schemas and docstrings
+
+The LLM does not invent tool names or discover hidden tools on its own.
 
 ## 15. The Tool Layer Does the Real Backend Work
 

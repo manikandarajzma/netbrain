@@ -82,7 +82,7 @@ class IntentRoutingService:
 
     async def route_prompt(self, prompt: str) -> dict[str, Any] | None:
         try:
-            llm = agent_factory.build_default_llm()
+            llm = agent_factory.build_router_llm()
             response = await llm.ainvoke(
                 [
                     SystemMessage(content=_ROUTER_SYSTEM_PROMPT),

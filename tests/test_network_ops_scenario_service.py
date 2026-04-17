@@ -18,13 +18,13 @@ class NetworkOpsScenarioServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(decision, {"scenario": "incident_record", "reason": "create a ticket"})
 
-    @patch("services.network_ops_scenario_service.agent_factory.build_default_llm")
-    async def test_select_scenario_returns_model_choice(self, mock_build_default_llm):
+    @patch("services.network_ops_scenario_service.agent_factory.build_selector_llm")
+    async def test_select_scenario_returns_model_choice(self, mock_build_selector_llm):
         llm = AsyncMock()
         llm.ainvoke.return_value = SimpleNamespace(
             content='{"scenario":"access_change","reason":"open port request"}'
         )
-        mock_build_default_llm.return_value = llm
+        mock_build_selector_llm.return_value = llm
 
         scenario = await network_ops_scenario_service.select_scenario(
             "open port 443 from 10.0.100.100 to 10.0.200.200"
@@ -32,11 +32,11 @@ class NetworkOpsScenarioServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(scenario, "access_change")
 
-    @patch("services.network_ops_scenario_service.agent_factory.build_default_llm")
-    async def test_select_scenario_defaults_to_general_on_failure(self, mock_build_default_llm):
+    @patch("services.network_ops_scenario_service.agent_factory.build_selector_llm")
+    async def test_select_scenario_defaults_to_general_on_failure(self, mock_build_selector_llm):
         llm = AsyncMock()
         llm.ainvoke.side_effect = RuntimeError("model unavailable")
-        mock_build_default_llm.return_value = llm
+        mock_build_selector_llm.return_value = llm
 
         scenario = await network_ops_scenario_service.select_scenario("show me the latest ticket status")
 
