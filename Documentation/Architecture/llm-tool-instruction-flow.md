@@ -165,7 +165,7 @@ def get_profile_tools(self, profile_name: ProfileName) -> tuple[Any, ...]:
     return tools
 ```
 
-In plain English:
+Summary:
 
 1. Each tool is tagged with capabilities.
 2. Each agent profile is assigned a capability set.

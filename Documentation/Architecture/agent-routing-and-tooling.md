@@ -139,6 +139,11 @@ Prompt attachment to the actual ReAct agent happens in:
 - a tool list
 - a `SystemMessage` prompt
 
+Here, "build" means instantiate the request-specific runtime agent from the existing
+`troubleshoot_agent` or `network_ops_agent` definition. Atlas is not creating a new
+agent type at runtime. It is assembling the live ReAct agent object for this request
+with the selected model, scenario prompt, and visible tool set.
+
 ## 5. How the Troubleshoot Prompt Is Built
 
 The troubleshoot prompt is assembled in two stages.
@@ -168,7 +173,7 @@ The network-ops prompt follows the same pattern.
 2. [`agents/network_ops_agent.py`](<agents/network_ops_agent.py>) loads:
    - [`skills/network_ops.md`](<skills/network_ops.md>)
    - the selected scenario prompt from `skills/network_ops_scenarios/` when one exists
-3. It asks [`tools/tool_registry.py`](<tools/tool_registry.py>) for the `network_ops` profile and builds the pure ReAct agent
+3. It asks [`tools/tool_registry.py`](<tools/tool_registry.py>) for the `network_ops` profile and instantiates the request-specific ReAct agent from the existing `network_ops_agent` definition
 
 ## 7. How Tool Selection Actually Works
 
@@ -178,7 +183,7 @@ The tool-selection path is:
 
 1. The workflow chooses which agent profile to use.
 2. [`tools/tool_registry.py`](<tools/tool_registry.py>) resolves that profile to a tool tuple.
-3. [`agents/agent_factory.py`](<agents/agent_factory.py>) builds the ReAct agent with those tools.
+3. [`agents/agent_factory.py`](<agents/agent_factory.py>) instantiates the ReAct agent object with those tools.
 4. The LLM decides which tool to call next from the provided tool set.
 
 So the system decides:
