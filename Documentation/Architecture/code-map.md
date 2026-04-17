@@ -136,7 +136,11 @@ Owns:
 - building `create_react_agent(...)` instances
 - attaching the system prompt
 - attaching the allowed tool list
-- default LLM wiring used by both specialized agents
+- role-specific LLM builders for:
+  - router
+  - selector
+  - network ops
+  - troubleshoot
 
 ### [`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>)
 
@@ -145,7 +149,7 @@ Troubleshoot agent builder.
 Owns:
 
 - loading [`skills/troubleshooter.md`](<skills/troubleshooter.md>)
-- choosing one scenario prompt from `skills/troubleshooting_scenarios/`
+- loading one selected scenario prompt from `skills/troubleshooting_scenarios/`
 - choosing the appropriate troubleshoot tool profile from `ToolRegistry`
 - building the troubleshoot ReAct agent
 
@@ -156,6 +160,7 @@ Network-ops agent builder.
 Owns:
 
 - loading [`skills/network_ops.md`](<skills/network_ops.md>)
+- loading one selected scenario prompt from `skills/network_ops_scenarios/` when present
 - requesting the `network_ops` tool profile from `ToolRegistry`
 - building the network-ops ReAct agent
 
@@ -181,6 +186,18 @@ Defines:
 - incident/change/task-oriented operating mode
 - expected behavior for network-ops requests
 
+### `skills/network_ops_scenarios/*`
+
+Scenario-specific network-ops addenda.
+
+Examples:
+
+- `incident_record.md`
+- `record_lookup.md`
+- `change_record.md`
+- `change_update.md`
+- `access_change.md`
+
 ### [`skills/troubleshooting_scenarios/connectivity.md`](<skills/troubleshooting_scenarios/connectivity.md>)
 
 Connectivity-specific troubleshoot instructions.
@@ -201,6 +218,34 @@ Intermittent-issue scenario addendum.
 ## 6. Workflow Orchestration Services
 
 These services sit above the pure agents and below the graph nodes.
+
+### [`services/intent_routing_service.py`](<services/intent_routing_service.py>)
+
+Owns the LLM-backed coarse lane selector for normal requests.
+
+Responsibilities:
+
+- asking the router model to choose `troubleshoot`, `network_ops`, or `dismiss`
+- parsing the router JSON response
+- rejecting invalid router output
+
+### [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>)
+
+Owns LLM-backed troubleshooting scenario selection.
+
+Responsibilities:
+
+- choosing `connectivity`, `performance`, `intermittent`, or `general`
+- keeping scenario selection outside the pure agent file
+
+### [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>)
+
+Owns LLM-backed network-ops scenario selection.
+
+Responsibilities:
+
+- choosing `incident_record`, `record_lookup`, `change_record`, `change_update`, `access_change`, or `general`
+- keeping scenario selection outside the pure agent file
 
 ### [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
 

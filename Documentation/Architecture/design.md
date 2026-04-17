@@ -1,7 +1,7 @@
 # Core Design Principles — Atlas Network Operations AI
 
-**Last Updated:** April 10, 2026
-**Version:** 1.0
+**Last Updated:** April 17, 2026
+**Version:** 1.1
 
 This document defines the fundamental design principles of Atlas. All future development (new tools, agents, features, or changes) must adhere to these principles.
 
@@ -89,14 +89,79 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 
 - Intent classification and routing are the exclusive responsibility of `graph_nodes.py` and `graph_builder.py`
 - Agents do not perform routing or decide which agent should handle a query
-- The classifier (`classify_intent`) routes to `troubleshoot_agent` or `network_ops_agent` based on prompt intent
+- `classify_intent` owns graph-entry lane selection:
+  - small code-owned fast paths for acknowledgements and pending clarifications
+  - LLM-driven lane selection for normal requests
+- Lane selection routes to `troubleshoot`, `network_ops`, or `dismiss`
 
 ### 2.6 Prompt Discipline
 
 - Each agent has one focused system prompt: `skills/troubleshooter.md` and `skills/network_ops.md`
 - `troubleshooter.md` contains only: role definition, core principles, and the layered diagnosis framework
 - Scenario-specific sequences and report formats live in `skills/troubleshooting_scenarios/` to prevent prompt bloat
+- Network-ops scenario-specific addenda live in `skills/network_ops_scenarios/`
 - No scenario-specific rules belong in the general `troubleshooter.md`
+
+### 2.7 Responsibility Boundary: What the LLM Should Do vs What Code Should Do
+
+Atlas is designed as a bounded agent system, not as a code-only workflow engine and not as an unconstrained autonomous agent. The boundary must stay explicit.
+
+#### What the LLM should do
+
+- Understand the user’s intent for normal requests
+- Choose the best semantic lane when the request is genuinely about:
+  - troubleshooting
+  - network operations
+  - dismissal
+- Choose the most appropriate scenario inside the selected lane
+- Decide which visible tools to call, and in what order, inside the allowed tool set
+- Interpret tool results, combine evidence, and update the working hypothesis
+- Ask for clarification when the request is underspecified
+- Write the final natural-language answer
+
+#### What code should do
+
+- Own authentication, authorization, session state, and request lifecycle
+- Own the graph boundary and the workflow boundary
+- Decide which tools are exposed to the LLM
+- Own all backend communication, transport logic, retries, caching, and protocol details
+- Enforce safety-critical evidence requirements when the workflow cannot safely finalize without them
+- Store structured side effects and runtime state outside the LLM
+- Shape the final structured UI payload
+- Fail closed when required evidence or backend availability is missing
+
+#### What the LLM should not do
+
+- Reach backends directly
+- Discover hidden tools or call tools outside the profile it was given
+- Own authorization or trust decisions
+- Be the only enforcement layer for safety-critical evidence
+- Be trusted as the sole source of structured application state
+
+#### What code should not do
+
+- Micromanage every reasoning step when the LLM can make the decision safely
+- Recreate a hardcoded workflow for every investigation branch
+- Embed backend-specific logic inside agent files
+- Replace tool selection with regex or deterministic branching when semantic agent choice is the intended behavior
+- Force the LLM to act as a templating engine only
+
+#### Principle
+
+The LLM should own:
+
+- semantic judgment
+- tool choice inside bounded visibility
+- evidence interpretation
+- answer writing
+
+Code should own:
+
+- system boundaries
+- backend execution
+- safety enforcement
+- state management
+- deterministic payload shaping
 
 ---
 
@@ -199,6 +264,9 @@ atlas/
 ├── security/
 │   └── auth.py                 # Auth and RBAC helpers
 ├── services/
+│   ├── intent_routing_service.py # LLM-backed lane selector
+│   ├── troubleshoot_scenario_service.py # LLM-backed troubleshoot scenario selector
+│   ├── network_ops_scenario_service.py # LLM-backed network-ops scenario selector
 │   ├── path_trace_service.py   # Live forward/reverse path tracing and path metadata extraction
 │   ├── device_diagnostics_service.py # Ping, TCP, routing-check, and interface diagnostic workflow owner
 │   ├── connectivity_snapshot_service.py  # Connectivity evidence bundle owner
@@ -220,6 +288,12 @@ atlas/
 ├── skills/
 │   ├── troubleshooter.md       # Core principles + diagnosis framework (no rules)
 │   ├── network_ops.md          # Network ops agent prompt
+│   ├── network_ops_scenarios/
+│   │   ├── incident_record.md
+│   │   ├── record_lookup.md
+│   │   ├── change_record.md
+│   │   ├── change_update.md
+│   │   └── access_change.md
 │   └── troubleshooting_scenarios/
 │       ├── connectivity.md     # Sequence + root cause patterns + report format
 │       ├── performance.md

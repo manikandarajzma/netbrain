@@ -1,6 +1,6 @@
 # Agent Routing, Prompts, and Tooling
 
-This document explains how Atlas decides which agent runs, where the prompts come from, how tools are selected, where regex is used, and what the autonomy boundaries are.
+This document explains how Atlas decides which agent runs, where the prompts come from, how tools are selected, where regex is still used, and what the autonomy boundaries are.
 
 It is the reference document for the questions:
 
@@ -74,9 +74,9 @@ classify_intent
   └─► build_final_response
 ```
 
-`classify_intent(...)` is a deterministic coarse router.
+`classify_intent(...)` is the graph entrypoint for lane selection.
 
-It sets one of:
+For normal requests it sets one of:
 
 - `troubleshoot`
 - `network_ops`
@@ -87,24 +87,23 @@ The agent does not decide which agent it is.
 
 ## 3. What `classify_intent(...)` Actually Uses
 
-[`graph/graph_nodes.py`](<graph/graph_nodes.py>) uses regex and a few state checks for coarse routing.
+[`graph/graph_nodes.py`](<graph/graph_nodes.py>) does two different things:
 
-Important signals include:
+1. small code-owned fast paths for:
+   - bare acknowledgements and dismissals
+   - pending clarification follow-ups
+   - IP/CIDR detection used to decide whether a short follow-up should stay attached to pending context
+2. normal requests are passed to [`services/intent_routing_service.py`](<services/intent_routing_service.py>), which asks the router LLM to choose:
+   - `troubleshoot`
+   - `network_ops`
+   - `dismiss`
 
-- `_NETWORK_OPS_RE`
-- `_TROUBLESHOOT_RE`
-- `_DIAGNOSTIC_FRAMING_RE`
-- `_ACTION_RE`
-- acknowledgement and dismissal sets
-- pending clarification context from [`services/memory_manager.py`](<services/memory_manager.py>)
+That means coarse routing is currently:
 
-This regex is used only for:
+- LLM-driven for normal requests
+- code-owned only for short-circuit acknowledgement and pending-context behavior
 
-- agent routing
-- follow-up/clarification handling
-- simple deterministic overrides such as diagnostic phrasing beating ops keywords
-
-It is not used for tool selection inside the ReAct loop.
+It is not regex-driven for ordinary lane selection anymore.
 
 ## 4. Where the Prompts Live
 
@@ -125,9 +124,12 @@ Prompt loading happens in:
 
 - [`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>)
   - `load_system_prompt(...)`
-  - `_pick_scenario(...)`
 - [`agents/network_ops_agent.py`](<agents/network_ops_agent.py>)
-  - `load_system_prompt()`
+  - `load_system_prompt(...)`
+- [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>)
+  - LLM-based troubleshoot scenario selection
+- [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>)
+  - LLM-based network-ops scenario selection
 
 Prompt attachment to the actual ReAct agent happens in:
 
@@ -141,34 +143,34 @@ Prompt attachment to the actual ReAct agent happens in:
 
 ## 5. How the Troubleshoot Prompt Is Built
 
-[`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>) builds the troubleshoot prompt in two layers:
+The troubleshoot prompt is assembled in two stages.
 
-1. Load the core prompt from [`skills/troubleshooter.md`](<skills/troubleshooter.md>)
-2. Optionally append one scenario file from [`skills/troubleshooting_scenarios/`](<skills/troubleshooting_scenarios/>)
+1. [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>) asks the selector LLM which scenario applies:
+   - `connectivity`
+   - `performance`
+   - `intermittent`
+   - `general`
+2. [`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>) loads:
+   - the core prompt from [`skills/troubleshooter.md`](<skills/troubleshooter.md>)
+   - the selected scenario prompt from [`skills/troubleshooting_scenarios/`](<skills/troubleshooting_scenarios/>)
 
-Scenario selection uses:
-
-- explicit `issue_type` hints
-- `_SCENARIO_KEYWORDS` regex
-
-This scenario regex is not tool selection.
-It is prompt assembly.
-
-Its only job is:
-
-- decide whether the troubleshoot agent gets the connectivity prompt
-- or the performance prompt
-- or the intermittent prompt
+The agent file no longer performs regex scenario picking itself.
 
 ## 6. How the Network Ops Prompt Is Built
 
-[`agents/network_ops_agent.py`](<agents/network_ops_agent.py>) is simpler.
+The network-ops prompt follows the same pattern.
 
-It:
-
-1. loads [`skills/network_ops.md`](<skills/network_ops.md>)
-2. asks [`tools/tool_registry.py`](<tools/tool_registry.py>) for the `network_ops` profile
-3. calls [`agents/agent_factory.py`](<agents/agent_factory.py>) to build the pure ReAct agent
+1. [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>) asks the selector LLM which scenario applies:
+   - `incident_record`
+   - `record_lookup`
+   - `change_record`
+   - `change_update`
+   - `access_change`
+   - `general`
+2. [`agents/network_ops_agent.py`](<agents/network_ops_agent.py>) loads:
+   - [`skills/network_ops.md`](<skills/network_ops.md>)
+   - the selected scenario prompt from `skills/network_ops_scenarios/` when one exists
+3. It asks [`tools/tool_registry.py`](<tools/tool_registry.py>) for the `network_ops` profile and builds the pure ReAct agent
 
 ## 7. How Tool Selection Actually Works
 
@@ -183,7 +185,8 @@ The tool-selection path is:
 
 So the system decides:
 
-- which agent
+- which lane
+- which scenario
 - which prompt
 - which tool profile
 
@@ -202,9 +205,7 @@ Regex is used in Atlas, but not for the agent’s ReAct tool choice.
 Regex is used in:
 
 - [`graph/graph_nodes.py`](<graph/graph_nodes.py>)
-  - intent routing
-- [`agents/troubleshoot_agent.py`](<agents/troubleshoot_agent.py>)
-  - scenario prompt selection
+  - short follow-up / acknowledgement handling
 - [`services/request_preprocessor.py`](<services/request_preprocessor.py>)
   - extracting IPs, ports, incident references, and related context
 - a few validation/presentation helpers
@@ -399,13 +400,14 @@ It is a bounded semi-autonomous system.
 
 The system decides:
 
-- which agent runs
-- which prompt is attached
+- which tools are visible
 - which tool profile is exposed
 - which workflow boundaries and guardrails apply
 
 The LLM decides:
 
+- which lane to use for normal requests
+- which scenario applies inside that lane
 - which tool to call next
 - how to interpret returned evidence within the prompt
 - when to stop and answer
@@ -427,7 +429,8 @@ That is why Atlas is best described as:
 
 If you want the shortest accurate mental model:
 
-- [`graph/graph_nodes.py`](<graph/graph_nodes.py>) decides which agent path runs
+- [`graph/graph_nodes.py`](<graph/graph_nodes.py>) handles fast-path acknowledgements and delegates normal lane selection to the router LLM
+- the scenario services decide which scenario prompt applies
 - `skills/*.md` define the system prompts
 - [`tools/tool_registry.py`](<tools/tool_registry.py>) defines what tools each agent can see
 - the LLM inside the ReAct agent chooses tools
@@ -436,4 +439,4 @@ If you want the shortest accurate mental model:
 
 In one sentence:
 
-Atlas uses deterministic graph routing plus pure ReAct agents with a uniform Atlas tool layer, while hiding backend protocols such as MCP and Nornir behind owned services and agent-facing tools.
+Atlas uses LLM-driven lane selection and LLM-driven scenario selection above pure ReAct agents with a bounded Atlas tool layer, while hiding backend protocols such as MCP and Nornir behind owned services and agent-facing tools.
