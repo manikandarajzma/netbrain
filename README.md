@@ -414,33 +414,6 @@ That means the final payload can safely contain:
 
 without depending on the LLM to keep those structures consistent.
 
-## FAQ
-
-### Does the LLM decide whether a request is troubleshooting or network ops?
-
-Yes, for normal requests. [`graph/graph_nodes.py`](<graph/graph_nodes.py>) first handles bare acknowledgements and pending clarification replies in code. After that, [`services/intent_routing_service.py`](<services/intent_routing_service.py>) asks the router LLM to choose `troubleshoot`, `network_ops`, or `dismiss`.
-
-### Does the LLM also choose the scenario inside that lane?
-
-Yes. Troubleshooting scenarios are selected by [`services/troubleshoot_scenario_service.py`](<services/troubleshoot_scenario_service.py>). Network-ops scenarios are selected by [`services/network_ops_scenario_service.py`](<services/network_ops_scenario_service.py>). The workflow then keeps that scenario fixed for the rest of the run.
-
-### Does code still decide which tools are visible?
-
-Yes. [`tools/tool_registry.py`](<tools/tool_registry.py>) maps tools to capabilities, maps profiles to capabilities, and resolves those profiles into the final tool list given to the agent. The LLM can only call tools from that visible list.
-
-### How does Atlas tell the LLM to use a tool?
-
-Atlas uses four instruction layers:
-
-1. the core system prompt in [`skills/troubleshooter.md`](<skills/troubleshooter.md>) or [`skills/network_ops.md`](<skills/network_ops.md>)
-2. the scenario runbook prompt, such as [`skills/troubleshooting_scenarios/connectivity.md`](<skills/troubleshooting_scenarios/connectivity.md>)
-3. tool docstrings in the `tools/*_agent_tools.py` modules
-4. the ReAct binding in [`agents/agent_factory.py`](<agents/agent_factory.py>), which gives the model the prompt plus the visible tools
-
-### Does the LLM choose every tool call?
-
-Mostly, but not completely. The LLM chooses tool calls inside the visible tool set. For troubleshooting, [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>) still forces safety-critical evidence such as the required connectivity snapshot or missing path visuals when the workflow detects that the agent stopped too early.
-
 ## Running Atlas
 
 ### Prerequisites

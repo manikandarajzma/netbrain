@@ -1,7 +1,7 @@
 # Core Design Principles — Atlas Network Operations AI
 
-**Last Updated:** April 10, 2026
-**Version:** 1.0
+**Last Updated:** April 17, 2026
+**Version:** 1.1
 
 This document defines the fundamental design principles of Atlas. All future development (new tools, agents, features, or changes) must adhere to these principles.
 
@@ -97,6 +97,69 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 - `troubleshooter.md` contains only: role definition, core principles, and the layered diagnosis framework
 - Scenario-specific sequences and report formats live in `skills/troubleshooting_scenarios/` to prevent prompt bloat
 - No scenario-specific rules belong in the general `troubleshooter.md`
+
+### 2.7 Responsibility Boundary: What the LLM Should Do vs What Code Should Do
+
+Atlas is designed as a bounded agent system, not as a code-only workflow engine and not as an unconstrained autonomous agent. The boundary must stay explicit.
+
+#### What the LLM should do
+
+- Understand the user’s intent for normal requests
+- Choose the best semantic lane when the request is genuinely about:
+  - troubleshooting
+  - network operations
+  - dismissal
+- Choose the most appropriate scenario inside the selected lane
+- Decide which visible tools to call, and in what order, inside the allowed tool set
+- Interpret tool results, combine evidence, and update the working hypothesis
+- Ask for clarification when the request is underspecified
+- Write the final natural-language answer
+
+#### What code should do
+
+- Own authentication, authorization, session state, and request lifecycle
+- Own the graph boundary and the workflow boundary
+- Decide which tools are exposed to the LLM
+- Own all backend communication, transport logic, retries, caching, and protocol details
+- Enforce safety-critical evidence requirements when the workflow cannot safely finalize without them
+- Store structured side effects and runtime state outside the LLM
+- Shape the final structured UI payload
+- Fail closed when required evidence or backend availability is missing
+
+#### What the LLM should not do
+
+- Reach backends directly
+- Discover hidden tools or call tools outside the profile it was given
+- Own authorization or trust decisions
+- Be the only enforcement layer for safety-critical evidence
+- Be trusted as the sole source of structured application state
+
+#### What code should not do
+
+- Micromanage every reasoning step when the LLM can make the decision safely
+- Recreate a hardcoded workflow for every investigation branch
+- Embed backend-specific logic inside agent files
+- Replace tool selection with regex or deterministic branching when semantic agent choice is the intended behavior
+- Force the LLM to act as a templating engine only
+
+#### Principle
+
+The LLM should own:
+
+- semantic judgment
+- tool choice inside bounded visibility
+- evidence interpretation
+- answer writing
+
+Code should own:
+
+- system boundaries
+- backend execution
+- safety enforcement
+- state management
+- deterministic payload shaping
+
+Atlas should become more agentic by moving more semantic decision-making into the LLM while keeping safety, transport, and application control in code.
 
 ---
 
