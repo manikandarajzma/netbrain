@@ -12,7 +12,7 @@ It is the reference document for the questions:
 
 For the file-by-file ownership reference, see:
 
-- [`Documentation/Architecture/code-map.md`](<Documentation/Architecture/code-map.md>)
+- [`Documentation/Architecture/component-reference.md`](<Documentation/Architecture/component-reference.md>)
 
 ## Scope
 
