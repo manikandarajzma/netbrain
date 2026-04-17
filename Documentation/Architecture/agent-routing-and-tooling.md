@@ -103,8 +103,6 @@ That means coarse routing is currently:
 - LLM-driven for normal requests
 - code-owned only for short-circuit acknowledgement and pending-context behavior
 
-It is not regex-driven for ordinary lane selection anymore.
-
 ## 4. Where the Prompts Live
 
 Atlas prompts are authored in the `skills` directory.

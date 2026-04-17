@@ -53,6 +53,8 @@ It is based on the owner hierarchy:
 5. `AtlasApplication` invokes `AtlasRuntime`.
 6. `AtlasRuntime` builds graph state and calls the compiled LangGraph graph.
 7. LangGraph asks the router LLM to classify the request as `troubleshoot`, `network_ops`, or `dismiss`.
+   - concretely, `classify_intent(...)` sets `state["intent"]`
+   - then `graph_builder.py` reads that value and follows the matching conditional edge
 8. If the request is troubleshooting, `TroubleshootWorkflowService` asks the scenario selector LLM which troubleshoot scenario applies.
 9. The pure troubleshoot ReAct agent gets its tool profile from `ToolRegistry`.
 10. Those tools call owned services and backends such as:
@@ -321,6 +323,41 @@ Atlas does **not** use the graph for deep reasoning. The graph only owns:
 - coarse routing
 - thin node delegation
 - early exit
+
+### How the graph actually routes
+
+The graph route is not inferred magically by LangGraph. It happens in two explicit steps:
+
+1. [`graph/graph_nodes.py`](<graph/graph_nodes.py>) `classify_intent(...)` returns an `intent` value inside graph state
+2. [`graph/graph_builder.py`](<graph/graph_builder.py>) reads that `intent` value and maps it to the next node
+
+The actual edge mapping is:
+
+```python
+g.add_conditional_edges(
+    "classify_intent",
+    self._route_intent,
+    {
+        "troubleshoot": "call_troubleshoot_agent",
+        "network_ops": "call_network_ops_agent",
+        "dismiss": "build_final_response",
+    },
+)
+```
+
+And the routing function is:
+
+```python
+def _route_intent(self, state: AtlasState) -> str:
+    return state.get("intent") or "dismiss"
+```
+
+Plain English:
+
+- `classify_intent(...)` decides what `intent` should be
+- the graph reads `state["intent"]`
+- the graph follows the matching edge
+- if no intent is set, it falls back to `dismiss`
 
 ## 9. `classify_intent()` Decides Which Agent Path Runs
 

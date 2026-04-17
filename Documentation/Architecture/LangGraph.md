@@ -93,6 +93,40 @@ Current routing behavior:
 
 It does **not** own workflow logic.
 
+#### How the route is chosen
+
+The graph route is chosen in two explicit steps:
+
+1. `classify_intent(...)` writes `state["intent"]`
+2. `graph_builder.py` reads that value and picks the next node from the conditional edge map
+
+The actual routing map is:
+
+```python
+g.add_conditional_edges(
+    "classify_intent",
+    self._route_intent,
+    {
+        "troubleshoot": "call_troubleshoot_agent",
+        "network_ops": "call_network_ops_agent",
+        "dismiss": "build_final_response",
+    },
+)
+```
+
+And the resolver is:
+
+```python
+def _route_intent(self, state: AtlasState) -> str:
+    return state.get("intent") or "dismiss"
+```
+
+So when we say “the graph routes,” what really happens is:
+
+- `classify_intent(...)` decides the `intent`
+- the graph reads `state["intent"]`
+- the graph follows the matching edge
+
 ---
 
 ### `graph/graph_nodes.py`
