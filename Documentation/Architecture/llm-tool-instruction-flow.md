@@ -320,6 +320,107 @@ At that point the LLM can:
 - choose another visible tool
 - write the answer
 
+## 10.1 Worked Example: Connectivity Request
+
+Example user query:
+
+```text
+help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443
+```
+
+For this request, the prompt moves through Atlas in four stages.
+
+### Stage 1: Router LLM input
+
+The router does not receive a rewritten troubleshooting prompt. It receives:
+
+```python
+SystemMessage(content=_ROUTER_SYSTEM_PROMPT)
+HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")
+```
+
+The expected router result is JSON like:
+
+```json
+{"intent":"troubleshoot","confidence":0.97,"reason":"existing endpoint-to-endpoint connectivity problem"}
+```
+
+### Stage 2: Troubleshoot scenario selector input
+
+After the lane is `troubleshoot`, Atlas calls `TroubleshootScenarioService.select_scenario(full_prompt)`.
+
+For this example, `full_prompt` is still the original user query because:
+
+- there is no pending clarification to prepend
+- there is no `INC...` incident reference to expand
+
+So the selector receives:
+
+```python
+SystemMessage(content=_SCENARIO_SYSTEM_PROMPT)
+HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")
+```
+
+The expected selector result is:
+
+```json
+{"scenario":"connectivity","reason":"endpoint-to-endpoint connectivity and port reachability"}
+```
+
+### Stage 3: Troubleshoot agent prompt assembly
+
+`agents/troubleshoot_agent.py` then loads:
+
+1. the core prompt from `skills/troubleshooter.md`
+2. the scenario runbook from `skills/troubleshooting_scenarios/connectivity.md`
+
+Those two files are concatenated into one `system_prompt`.
+
+The troubleshoot agent is then invoked with:
+
+```python
+agent = build_agent(full_prompt, "connectivity")
+result = await agent.ainvoke(
+    {"messages": [HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")]},
+    config=config,
+)
+```
+
+So the troubleshoot LLM sees:
+
+- one system prompt = `troubleshooter.md` + `connectivity.md`
+- one human message = the original request text
+- one bounded tool list = `troubleshoot.connectivity`
+
+### Stage 4: First tool choice inside the bounded profile
+
+The LLM is not told the exact next tool by code in the normal first pass. It is guided by:
+
+- the connectivity scenario runbook
+- the visible tools in `troubleshoot.connectivity`
+- the tool docstrings
+
+For this exact request, the intended first tool is:
+
+```text
+trace_path(source_ip="10.0.100.100", dest_ip="10.0.200.200")
+```
+
+because `skills/troubleshooting_scenarios/connectivity.md` says:
+
+```text
+Step 1 — `trace_path(source_ip, dest_ip)` — always first.
+```
+
+After that, the LLM can choose the next visible tools, typically things like:
+
+- `trace_reverse_path(...)`
+- `lookup_routing_history(...)`
+- `search_servicenow(...)`
+- `collect_connectivity_snapshot(...)`
+
+If the LLM does not gather the required snapshot, the workflow can still force the follow-up pass later.
+
 ## 11. Some safety-critical steps are still enforced by code
 
 File: `/Users/manig/Documents/coding/atlas/services/troubleshoot_workflow_service.py`

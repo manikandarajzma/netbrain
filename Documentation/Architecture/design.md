@@ -76,8 +76,6 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 - Agents must never call each other directly
 - All shared capabilities are accessed exclusively through the tool layer
 
-> **Why?** A2A is fragile, complex, and breaks the clean ReAct pattern. Agents calling each other via HTTP leads to unstructured text passing, error-prone coordination, tight coupling, and debugging nightmares. Shared tools keep the architecture simple, reliable, and maintainable — each specialized agent stays focused on its own strength using the ReAct loop.
-
 ### 2.4 Pure ReAct Agents
 
 - Both agents use `create_react_agent` from `langgraph.prebuilt`
@@ -300,17 +298,6 @@ atlas/
 │       └── intermittent.md
 └── mcp_server.py           # FastMCP server — ServiceNow tools over MCP
 ```
-
----
-
-## 5. Goal
-
-A **clean, maintainable, and truly agentic** network operations system where:
-
-- The right agent handles the right type of work
-- The LLM intelligently drives tool usage through the ReAct loop
-- The architecture remains simple and scalable as new tools and capabilities are added
-- Infrastructure concerns are cleanly separated from agent reasoning
 
 ---
 

@@ -417,7 +417,7 @@ Atlas does not currently allow the agent to:
 - route itself to a different agent
 - directly talk to backend protocols without Atlas tools
 
-That is why Atlas is best described as:
+Atlas is described here as:
 
 - bounded
 - semi-autonomous
