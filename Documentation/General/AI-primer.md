@@ -10,9 +10,9 @@ An LLM is a neural network trained on massive amounts of text (books, code, webs
 
 Given an input (called a **prompt**), the model generates a response one token at a time, each token sampled from a probability distribution over the entire vocabulary. The model has no memory between separate conversations — every call is stateless unless you explicitly include prior messages in the prompt.
 
-Examples: LLaMA 3.1, GPT-4, Mistral, Gemma.
+Examples: LLaMA, GPT, Mistral, Gemma.
 
-Atlas currently uses `llama3.1:8b` served via Ollama.
+Atlas currently uses local Ollama-served chat models, with role-specific model assignment configured in `agents/agent_factory.py`.
 
 ---
 
@@ -27,7 +27,7 @@ The transformer is the neural network architecture that all modern LLMs are buil
 - Long-range dependencies → understands context across thousands of tokens
 - Scales well → more parameters + more data = better results (the "scaling law")
 
-Atlas uses LLaMA, which is a transformer. The architecture itself is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
+Atlas uses transformer-based chat models. The architecture family is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
 
 ---
 
@@ -68,7 +68,7 @@ VRAM is the memory on the GPU — separate from system RAM. The entire model mus
 | INT8 (quantized) | ~1 GB |
 | INT4 / Q4 (quantized) | ~0.5 GB |
 
-So `llama3.1:8b` at Q4 quantization needs ~5GB VRAM — fits on a consumer GPU. The same model at bfloat16 needs ~16GB — requires a high-end consumer or datacenter GPU.
+So an 8B model at Q4 quantization needs roughly ~5GB VRAM and often fits on a consumer GPU. The same model at bfloat16 needs much more VRAM.
 
 VRAM is a hard limit: unlike system RAM, you cannot swap to disk without killing performance entirely.
 
@@ -88,7 +88,7 @@ More parameters generally means more capability but also more VRAM and slower in
 
 The unit LLMs operate on. A tokenizer splits text into chunks (tokens) before feeding it to the model. Tokens are roughly 3-4 characters on average in English — "hello" is one token, "unbelievable" might be two.
 
-- **Context window** — the maximum number of tokens a model can process in a single call (input + output combined). `llama3.1:8b` has a 128k token context window.
+- **Context window** — the maximum number of tokens a model can process in a single call (input + output combined). The exact limit depends on the specific model you run.
 - **Token limit** — if a conversation history grows beyond the context window, older messages must be truncated.
 
 ---
@@ -97,7 +97,7 @@ The unit LLMs operate on. A tokenizer splits text into chunks (tokens) before fe
 
 A parameter passed at inference time (not a trained weight) that controls how "creative" or "random" the model's outputs are.
 
-- `0.0` — deterministic, always picks the highest-probability token. Used in Atlas for tool selection so the model reliably outputs structured JSON rather than varied prose.
+- `0.0` — deterministic, always picks the highest-probability token. Used in Atlas to keep routing, scenario selection, tool use, and structured outputs stable.
 - `1.0` — full randomness, outputs vary significantly between runs.
 - Values above `1.0` — increasingly chaotic, rarely useful.
 
@@ -119,7 +119,7 @@ LLM output (tool call):
 }
 ```
 
-The model does not execute the function — it only outputs the intent. Atlas reads the JSON, calls the actual MCP tool, and gets the result.
+The model does not execute the function — it only outputs the intent. Atlas reads the tool call, executes the actual Atlas tool, and that Atlas tool may then call MCP, Nornir, or another owned backend path.
 
 ---
 
@@ -127,7 +127,7 @@ The model does not execute the function — it only outputs the intent. Atlas re
 
 A numerical representation of text as a vector (a list of floats). Similar meanings produce vectors that are close together in vector space. Used for semantic search, RAG (retrieval-augmented generation), and classification.
 
-Atlas does not currently use embeddings — tool selection is done by the LLM directly via tool calling, not vector similarity.
+Atlas does not currently use embeddings in the live runtime — lane selection, scenario selection, and tool use are done through LLM reasoning plus bounded tool visibility, not vector similarity.
 
 ---
 
@@ -148,7 +148,7 @@ A local inference server that makes running open-source LLMs simple. It handles 
 - Model format: GGUF (quantized weights that run on consumer GPUs or CPU)
 - Best for: development, single-user local setups
 
-Atlas currently uses Ollama. The base URL and model are configured via `OLLAMA_BASE_URL` and `OLLAMA_MODEL` in `.env`.
+Atlas currently uses Ollama. The base URL is configured via `OLLAMA_BASE_URL`, and the active model assignments are managed through the role-specific settings in `agents/agent_factory.py`.
 
 > **Planned migration:** Atlas will be migrated from Ollama to vLLM for production use.
 
@@ -163,7 +163,7 @@ A high-performance inference server designed for production. Uses **PagedAttenti
 - Model format: HuggingFace (full-precision or bfloat16 weights)
 - Best for: multi-user production deployments, high request volume
 
-Because vLLM uses the OpenAI API format, switching Atlas from Ollama to vLLM requires swapping `ChatOllama` for `ChatOpenAI` in LangChain and pointing it at the vLLM URL — no changes to tool calling logic.
+Because vLLM uses the OpenAI API format, switching Atlas from Ollama to vLLM mainly requires changing the model endpoint configuration — the tool-calling architecture itself does not change.
 
 | | Ollama | vLLM |
 |---|---|---|
@@ -238,7 +238,7 @@ The maximum amount of text (measured in tokens) a model can "see" in a single in
 
 If a conversation grows beyond the context window, the application must truncate older messages. Atlas caps history at the last 10 messages before building graph state in `services/graph_runtime.py`, so hitting the context limit is unlikely in practice.
 
-`llama3.1:8b` context window: 128,000 tokens (~96,000 words).
+The exact context window depends on the configured model.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Why LangGraph?
 
-Atlas uses LangGraph for one narrow, important job: coarse request routing and controlled execution flow.
+Atlas uses LangGraph for one narrow, important job: lane selection and controlled execution flow.
 
 Without LangGraph, the application entrypoint would need to own:
 - intent routing
@@ -34,7 +34,7 @@ classify_intent
 
 That is intentional.
 
-- `classify_intent` performs deterministic coarse routing
+- `classify_intent` performs graph-entry lane selection
 - the two agent nodes are thin delegation nodes
 - `build_final_response` is the graph exit point
 
@@ -103,7 +103,7 @@ Current node responsibilities:
 
 | Node | What it does |
 |------|--------------|
-| `classify_intent` | Uses deterministic regex-based coarse routing for `troubleshoot`, `network_ops`, or `dismiss` |
+| `classify_intent` | Handles fast-path acknowledgements/pending follow-ups in code, then uses the router LLM for normal `troubleshoot`, `network_ops`, or `dismiss` lane selection |
 | `call_troubleshoot_agent` | Thin delegation node that calls `TroubleshootWorkflowService.run(...)` |
 | `call_network_ops_agent` | Thin delegation node that calls `NetworkOpsWorkflowService.run(...)` |
 | `build_final_response` | Returns any final graph-owned response such as an RBAC error or previously prepared payload |

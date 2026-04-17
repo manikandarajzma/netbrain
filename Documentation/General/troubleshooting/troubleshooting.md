@@ -61,9 +61,11 @@ sudo systemctl start atlas-mcp
 # Start Ollama (if not running)
 ollama serve
 
-# Pull the model (if not already pulled)
-ollama pull llama3.1:8b
+# Pull the model Atlas is configured to use (example)
+ollama pull gemma4:latest
 ```
+
+If Atlas is using role-specific models, compare `ollama list` with the Diagnostics page or `/health` output and pull any missing configured models.
 
 ---
 

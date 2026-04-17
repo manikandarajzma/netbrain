@@ -89,13 +89,17 @@ No agent may perform both diagnostic and constructive work. If a task is ambiguo
 
 - Intent classification and routing are the exclusive responsibility of `graph_nodes.py` and `graph_builder.py`
 - Agents do not perform routing or decide which agent should handle a query
-- The classifier (`classify_intent`) routes to `troubleshoot_agent` or `network_ops_agent` based on prompt intent
+- `classify_intent` owns graph-entry lane selection:
+  - small code-owned fast paths for acknowledgements and pending clarifications
+  - LLM-driven lane selection for normal requests
+- Lane selection routes to `troubleshoot`, `network_ops`, or `dismiss`
 
 ### 2.6 Prompt Discipline
 
 - Each agent has one focused system prompt: `skills/troubleshooter.md` and `skills/network_ops.md`
 - `troubleshooter.md` contains only: role definition, core principles, and the layered diagnosis framework
 - Scenario-specific sequences and report formats live in `skills/troubleshooting_scenarios/` to prevent prompt bloat
+- Network-ops scenario-specific addenda live in `skills/network_ops_scenarios/`
 - No scenario-specific rules belong in the general `troubleshooter.md`
 
 ### 2.7 Responsibility Boundary: What the LLM Should Do vs What Code Should Do
@@ -260,6 +264,9 @@ atlas/
 ├── security/
 │   └── auth.py                 # Auth and RBAC helpers
 ├── services/
+│   ├── intent_routing_service.py # LLM-backed lane selector
+│   ├── troubleshoot_scenario_service.py # LLM-backed troubleshoot scenario selector
+│   ├── network_ops_scenario_service.py # LLM-backed network-ops scenario selector
 │   ├── path_trace_service.py   # Live forward/reverse path tracing and path metadata extraction
 │   ├── device_diagnostics_service.py # Ping, TCP, routing-check, and interface diagnostic workflow owner
 │   ├── connectivity_snapshot_service.py  # Connectivity evidence bundle owner
@@ -281,6 +288,12 @@ atlas/
 ├── skills/
 │   ├── troubleshooter.md       # Core principles + diagnosis framework (no rules)
 │   ├── network_ops.md          # Network ops agent prompt
+│   ├── network_ops_scenarios/
+│   │   ├── incident_record.md
+│   │   ├── record_lookup.md
+│   │   ├── change_record.md
+│   │   ├── change_update.md
+│   │   └── access_change.md
 │   └── troubleshooting_scenarios/
 │       ├── connectivity.md     # Sequence + root cause patterns + report format
 │       ├── performance.md
