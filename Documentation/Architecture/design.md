@@ -159,8 +159,6 @@ Code should own:
 - state management
 - deterministic payload shaping
 
-Atlas should become more agentic by moving more semantic decision-making into the LLM while keeping safety, transport, and application control in code.
-
 ---
 
 ## 3. Development Rules
