@@ -83,7 +83,7 @@ It is based on the owner hierarchy:
 7. Tool results return both human-readable output and structured side effects.
 8. The workflow and presenter turn those results into the final response payload.
 
-## Plain-English Control Split
+## Responsibility Split
 
 For a normal troubleshooting request, the current control split is:
 
@@ -352,7 +352,7 @@ def _route_intent(self, state: AtlasState) -> str:
     return state.get("intent") or "dismiss"
 ```
 
-Plain English:
+Summary:
 
 - `classify_intent(...)` decides what `intent` should be
 - the graph reads `state["intent"]`
@@ -396,10 +396,14 @@ This clears stale live evidence from a prior run before the current one starts.
 2. recovers pending clarification context if present
 3. optionally expands `INC...` prompts into a more explicit troubleshooting prompt
 4. decides the effective `issue_type`
-5. builds the troubleshoot agent
+5. instantiates the request-specific troubleshoot agent from the existing `troubleshoot_agent` definition
 6. invokes the agent
 7. enforces any required evidence follow-up
 8. delegates final payload shaping to `ResponsePresenter`
+
+Here, "instantiates" means Atlas calls `build_agent(...)` to assemble the live ReAct
+agent object for this request using the selected model, scenario prompt, and visible
+tool set. Atlas is not creating a new agent type.
 
 ## 11. Incident-Based Troubleshooting Is Rewritten Before Agent Execution
 
@@ -447,7 +451,7 @@ Those responsibilities stay outside the agent layer.
 
 ## 13. Workflow Services Select the Scenario; Agent Files Load the Prompt and Tool Set
 
-The workflow services choose the scenario before the pure agent is built:
+The workflow services choose the scenario before the request-specific runtime agent is instantiated:
 
 - [`services/troubleshoot_workflow_service.py`](<services/troubleshoot_workflow_service.py>)
   - `scenario = await troubleshoot_scenario_service.select_scenario(full_prompt)`
@@ -632,7 +636,7 @@ self.register_profile(
 
 3. `get_profile_tools(...)` resolves that profile into the final tool tuple given to the agent.
 
-Plain English:
+Summary:
 
 - code tags tools with capabilities
 - code assigns capabilities to agent profiles

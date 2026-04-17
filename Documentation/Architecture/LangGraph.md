@@ -19,15 +19,7 @@ It is used for:
 - routing to `call_troubleshoot_agent`, `call_network_ops_agent`, or `build_final_response`
 - terminating at `END`
 
-It is not used for:
-
-- backend transport
-- tool implementation
-- tool selection inside the ReAct loop
-- troubleshooting orchestration
-- response presentation
-
-Those responsibilities stay below the graph in workflow services, agents, tools, and owned backend services.
+Workflow services, agents, tools, and owned backend services handle execution below the graph.
 
 ---
 
@@ -44,11 +36,7 @@ The application entrypoint does not own:
 LangGraph owns that control flow.
 
 What LangGraph does **not** do in this design:
-- it is not a giant tool-selection loop
-- it is not where backend logic lives
-- it is not where workflow orchestration lives
-
-Those responsibilities live in owned services and pure agents.
+- workflow services, agents, tools, and backend services own execution below the graph.
 
 ---
 
