@@ -180,7 +180,7 @@ Do not invent backend errors ad hoc.
 Use the helpers in:
 - `services/backend_contracts.py`
 
-This keeps failures uniform across:
+This uses the same failure contract across:
 - product-facing tools
 - workflow tools
 - backend services

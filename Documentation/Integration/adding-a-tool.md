@@ -141,7 +141,7 @@ SERVICENOW_TOOL_CAPABILITIES = {
 
 Workflow modules do the same thing with their own manifest maps.
 
-This keeps the registration metadata close to the tool implementation instead of centralizing every tool name in one giant registry file.
+This places the registration metadata next to the tool implementation.
 
 ---
 
@@ -179,7 +179,7 @@ Examples:
 - `unexpected_response(...)`
 - `verification_failed(...)`
 
-This keeps tool failures predictable in the UI and tests.
+This applies the shared backend failure contract to the tool.
 
 ---
 

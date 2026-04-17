@@ -211,7 +211,7 @@ For each query it:
 1. calls `self.runtime.invoke_atlas_graph(...)`
 2. calls `self.runtime.extract_final_response(...)`
 
-This keeps the entrypoint clean and gives the application a single high-level owner.
+`chat_service.py` remains the request handoff, and `AtlasApplication` remains the top-level owner.
 
 ## 6. `AtlasRuntime` Builds State, Ensures the Checkpointer, and Invokes the Graph
 
@@ -388,7 +388,7 @@ Before the agent runs, `TroubleshootWorkflowService` explicitly resets run-scope
 - `nornir_client.clear_session_cache(session_id)`
 - `pop_session_data(session_id)`
 
-This prevents stale live evidence from a prior run from contaminating the current one.
+This clears stale live evidence from a prior run before the current one starts.
 
 `TroubleshootWorkflowService` then:
 
@@ -415,7 +415,7 @@ the graph uses [`services/request_preprocessor.py`](<services/request_preprocess
 - extract IPs and other context
 - rewrite the prompt into a concrete troubleshooting prompt
 
-That prevents incident troubleshooting from drifting into a vague generic path.
+This rewrites incident-based prompts into a concrete troubleshooting path before agent execution.
 
 ## 12. `AgentFactory` Builds Thin ReAct Agents and Model Roles
 
@@ -479,7 +479,104 @@ After that, the agent files decide:
 - connectivity scenario → profile `troubleshoot.connectivity`
 - other troubleshoot cases → profile `troubleshoot.general`
 
-That keeps connectivity runs constrained and reduces accidental tool sprawl.
+Connectivity runs use the `troubleshoot.connectivity` profile.
+
+### Worked example: `help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443`
+
+This request moves through the prompt path in four distinct steps.
+
+#### Step 1: Lane selection prompt
+
+The router LLM receives the original user text directly:
+
+```python
+SystemMessage(content=_ROUTER_SYSTEM_PROMPT)
+HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")
+```
+
+Expected routing result:
+
+```json
+{"intent":"troubleshoot","confidence":0.97,"reason":"existing endpoint-to-endpoint connectivity problem"}
+```
+
+#### Step 2: Scenario selection prompt
+
+`TroubleshootWorkflowService` builds `full_prompt`.
+
+For this example:
+
+- there is no pending clarification
+- there is no incident prompt rewrite
+
+So `full_prompt` stays:
+
+```text
+help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443
+```
+
+The selector LLM receives:
+
+```python
+SystemMessage(content=_SCENARIO_SYSTEM_PROMPT)
+HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")
+```
+
+Expected selector result:
+
+```json
+{"scenario":"connectivity","reason":"endpoint-to-endpoint connectivity and port reachability"}
+```
+
+#### Step 3: Troubleshoot agent prompt
+
+The troubleshoot agent then loads:
+
+- `skills/troubleshooter.md`
+- `skills/troubleshooting_scenarios/connectivity.md`
+
+Those are concatenated into one `system_prompt`.
+
+The agent is invoked with the same `full_prompt` as the human message:
+
+```python
+agent = build_agent(full_prompt, "connectivity")
+result = await agent.ainvoke(
+    {"messages": [HumanMessage(content="help troubleshoot connectivity between 10.0.100.100 and 10.0.200.200 on tcp 443")]},
+    config=config,
+)
+```
+
+So the LLM sees:
+
+- one combined troubleshooting system prompt
+- one human message containing the original request
+- one bounded visible tool set from `troubleshoot.connectivity`
+
+#### Step 4: First tool choice
+
+The first tool is not hardcoded in the normal first pass. The LLM is guided by the scenario runbook and the visible tool list.
+
+For this request, the intended first tool call is:
+
+```text
+trace_path(source_ip="10.0.100.100", dest_ip="10.0.200.200")
+```
+
+because the connectivity scenario prompt says:
+
+```text
+Step 1 — `trace_path(source_ip, dest_ip)` — always first.
+```
+
+After that, the LLM can choose the next visible tools such as:
+
+- `trace_reverse_path(...)`
+- `lookup_routing_history(...)`
+- `search_servicenow(...)`
+- `collect_connectivity_snapshot(...)`
+
+If the required connectivity snapshot is still missing after that first pass, the workflow enforces the follow-up step later.
 
 ## 14. ToolRegistry Owns the Tool Sets
 
@@ -489,7 +586,7 @@ That keeps connectivity runs constrained and reduces accidental tool sprawl.
 - profile registration
 - profile → capability → tool resolution
 
-This gives the application one place to define which tools are allowed for each agent without relying on hand-maintained static lists.
+`ToolRegistry` defines which tools are exposed to each agent profile.
 
 Current intent:
 

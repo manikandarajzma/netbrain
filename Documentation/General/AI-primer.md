@@ -25,7 +25,7 @@ The transformer is the neural network architecture that all modern LLMs are buil
 **Why it matters for LLMs:**
 - Parallelism → can be trained on GPUs efficiently
 - Long-range dependencies → understands context across thousands of tokens
-- Scales well → more parameters + more data = better results (the "scaling law")
+- Scales well → more parameters + more data change model capability and behavior (the "scaling law")
 
 Atlas uses transformer-based chat models. The architecture family is fixed; what differs between models is size (parameter count), training data, and fine-tuning.
 

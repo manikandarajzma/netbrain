@@ -1,16 +1,47 @@
 # LangGraph in Atlas
 
-## Why LangGraph?
+## Why LangGraph
+
+Atlas uses LangGraph because Atlas has a small but explicit application flow that needs:
+
+- one graph entrypoint for every request
+- a typed shared state object passed between steps
+- a single place to define lane routing
+- a fixed transition from routing to workflow execution
+- a clean graph exit that returns the final payload
+
+In Atlas, LangGraph is the runtime layer that holds that flow together.
+
+It is used for:
+
+- entering the request through `classify_intent`
+- reading and writing `AtlasState`
+- routing to `call_troubleshoot_agent`, `call_network_ops_agent`, or `build_final_response`
+- terminating at `END`
+
+It is not used for:
+
+- backend transport
+- tool implementation
+- tool selection inside the ReAct loop
+- troubleshooting orchestration
+- response presentation
+
+Those responsibilities stay below the graph in workflow services, agents, tools, and owned backend services.
+
+---
+
+## LangGraph Role
 
 Atlas uses LangGraph for one narrow, important job: lane selection and controlled execution flow.
 
-Without LangGraph, the application entrypoint would need to own:
+The application entrypoint does not own:
 - intent routing
 - early exits for unsupported prompts
 - troubleshoot vs network-ops branching
 - final response assembly boundaries
 
-That would turn the runtime layer into a large conditional bucket. LangGraph keeps that control flow explicit and testable.
+LangGraph owns that control flow.
 
 What LangGraph does **not** do in this design:
 - it is not a giant tool-selection loop
@@ -32,8 +63,6 @@ classify_intent
     └─► build_final_response
 ```
 
-That is intentional.
-
 - `classify_intent` performs graph-entry lane selection
 - the two agent nodes are thin delegation nodes
 - `build_final_response` is the graph exit point
@@ -52,7 +81,7 @@ The heavy work happens below the graph:
 
 Defines `AtlasState`, the typed shared state passed between graph nodes.
 
-The state is intentionally small because this graph is intentionally small.
+The state is small because the graph has a narrow routing scope.
 
 Important fields:
 
@@ -69,7 +98,7 @@ Important fields:
 
 `AtlasState` does not carry a large pile of tool-selection loop fields such as selected-tool bookkeeping, accumulated tool outputs, or retry-loop internals.
 
-That logic stays out of the graph layer on purpose.
+That logic stays out of the graph layer.
 
 ---
 
@@ -260,36 +289,9 @@ build_final_response
 
 ---
 
-## Why This Design Is Better
-
-This structure is cleaner because each layer has one job:
-
-- `application/chat_service.py`
-  - request entrypoint
-- `AtlasApplication`
-  - top-level ownership and wiring
-- `AtlasRuntime`
-  - graph invocation
-- LangGraph
-  - coarse routing
-- workflow services
-  - execution orchestration
-- agents
-  - reasoning and tool choice
-- tools
-  - stable agent-facing actions
-- services/clients
-  - backend behavior and state ownership
-- presenter
-  - UI payload shaping
-
-That separation makes the architecture easier to reason about.
-
----
-
 ## Summary
 
-LangGraph in Atlas is deliberately small.
+LangGraph in Atlas is small.
 
 It is used to:
 - classify the request
