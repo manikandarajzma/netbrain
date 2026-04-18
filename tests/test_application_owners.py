@@ -23,6 +23,7 @@ class AtlasApplicationTests(unittest.IsolatedAsyncioTestCase):
             [{"role": "user", "content": "previous"}],
             username="alice",
             session_id="session-1",
+            ui_action={"type": "confirm", "approval_id": "approval-1"},
         )
 
         self.assertEqual(result, {"role": "assistant", "content": "ok"})
@@ -32,6 +33,7 @@ class AtlasApplicationTests(unittest.IsolatedAsyncioTestCase):
             username="alice",
             session_id="session-1",
             request_id=ANY,
+            ui_action={"type": "confirm", "approval_id": "approval-1"},
         )
         mock_extract.assert_called_once_with({"final_response": {"role": "assistant", "content": "ok"}})
         mock_increment.assert_any_call("atlas.query.started")

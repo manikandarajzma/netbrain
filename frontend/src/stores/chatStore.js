@@ -123,10 +123,11 @@ export const useChatStore = create((set, get) => ({
     })
   },
 
-  sendMessage: async (text) => {
+  sendMessage: async (text, options = {}) => {
     if (!text.trim()) return
 
     const { addMessage, pushHistory, nextConversationParentId } = get()
+    const uiAction = options?.uiAction || null
 
     // If the last assistant message was a requires_site clarification, combine
     // the user's site reply into a full query so the LLM gets complete context
@@ -134,7 +135,7 @@ export const useChatStore = create((set, get) => ({
     let textToSend = text
     const history = get().conversationHistory
     const lastAssistant = [...history].reverse().find(m => m.role === 'assistant')
-    if (lastAssistant) {
+    if (!uiAction && lastAssistant) {
       let lc = lastAssistant.content
       if (typeof lc === 'string' && lc.startsWith('{')) { try { lc = JSON.parse(lc) } catch (_) {} }
       if (lc && typeof lc === 'object' && lc.requires_site && lc.rack) {
@@ -166,7 +167,7 @@ export const useChatStore = create((set, get) => ({
         } else {
           set({ currentStatus: msg, _stepStart: now })
         }
-      })
+      }, uiAction)
 
       const now = nowMs()
       const { currentStatus, statusSteps, _stepStart } = get()
@@ -215,6 +216,17 @@ export const useChatStore = create((set, get) => ({
         : lastSteps
       set({ isLoading: false, currentStatus: '', statusSteps: finalSteps, _stepStart: null, abortController: null })
     }
+  },
+
+  submitApprovalAction: async (approval, actionType) => {
+    if (!approval?.approval_id || !actionType) return
+    const label = actionType === 'confirm' ? 'Confirm' : 'Cancel'
+    await get().sendMessage(label, {
+      uiAction: {
+        type: actionType,
+        approval_id: approval.approval_id,
+      },
+    })
   },
 
   sendBatch: async (file, message) => {

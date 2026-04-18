@@ -61,6 +61,12 @@ class GraphNodeRoutingTests(unittest.IsolatedAsyncioTestCase):
         result = await classify_intent(state)
         self.assertEqual(result["intent"], "dismiss")
 
+    @patch("graph.graph_nodes.pending_approval_store.has", return_value=True)
+    async def test_pending_network_ops_approval_stays_network_ops(self, _mock_has_pending_approval):
+        state = {"prompt": "confirm", "session_id": "s3c"}
+        result = await classify_intent(state)
+        self.assertEqual(result["intent"], "network_ops")
+
     @patch("graph.graph_nodes.memory_manager.get_pending_context", return_value=("create a change request", "network_ops"))
     @patch("graph.graph_nodes.memory_manager.has_pending_context", return_value=True)
     async def test_pending_network_ops_follow_up_stays_network_ops(self, _has_pending_context, _get_pending_context):

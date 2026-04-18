@@ -65,6 +65,7 @@ class AtlasApplication:
         *,
         username: str | None = None,
         session_id: str | None = None,
+        ui_action: dict | None = None,
     ) -> dict:
         request_id = new_request_id()
         started_at = perf_counter()
@@ -78,12 +79,17 @@ class AtlasApplication:
             prompt_chars=len(prompt or ""),
             history_messages=len(conversation_history or []),
         )
+        runtime_kwargs = {
+            "username": username,
+            "session_id": session_id,
+            "request_id": request_id,
+        }
+        if ui_action is not None:
+            runtime_kwargs["ui_action"] = ui_action
         result_state = await self.runtime.invoke_atlas_graph(
             prompt,
             conversation_history,
-            username=username,
-            session_id=session_id,
-            request_id=request_id,
+            **runtime_kwargs,
         )
         response = self.runtime.extract_final_response(result_state)
         content = response.get("content")

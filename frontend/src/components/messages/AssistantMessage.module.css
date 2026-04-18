@@ -43,3 +43,61 @@
   color: #cdd6f4;
   font-weight: 500;
 }
+
+.approvalCard {
+  margin-top: 0.9rem;
+  padding: 0.95rem 1rem;
+  background: rgba(166, 227, 161, 0.06);
+  border: 1px solid rgba(166, 227, 161, 0.18);
+  border-radius: 12px;
+}
+
+.approvalTitle {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.approvalText {
+  font-size: 0.84rem;
+  color: #bac2de;
+  margin-bottom: 0.75rem;
+}
+
+.approvalActions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.approvalBtn {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.52rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.approvalBtn:hover {
+  transform: translateY(-1px);
+}
+
+.approvalConfirm {
+  background: #a6e3a1;
+  color: #111827;
+}
+
+.approvalCancel {
+  background: rgba(243, 139, 168, 0.16);
+  color: #f38ba8;
+  border: 1px solid rgba(243, 139, 168, 0.22);
+}
+
+.approvalHint {
+  margin-top: 0.7rem;
+  font-size: 0.78rem;
+  color: #a6adc8;
+}

@@ -16,12 +16,13 @@ Optional but useful:
 If the user provides those fields in numbered lists, bullets, inline labels, or `Field: value` pairs, use them directly.
 
 If `ci_name` is not given but source and destination IPs are present, you may call `trace_path(...)` first to identify the most relevant device.
+If `ci_name` is already present, do not call `trace_path(...)`.
 
 ## Flow
 
 1. If helpful and clearly relevant, call `search_servicenow(...)` for recent related incidents or changes.
 2. Call `create_servicenow_incident(...)`.
-3. Report the created incident directly.
+3. Report that the incident is staged for approval and Atlas is waiting for user confirmation.
 
 ## Output format
 
@@ -30,12 +31,13 @@ Use a direct incident confirmation format.
 Preferred structure:
 
 ```
-Incident Created
+Incident Proposed
 
-Number: <created incident number>
 Short Description: <short_description>
 Configuration Item: <ci_name or "Not specified">
 
 Related ServiceNow context:
 <brief summary or "None found">
+
+Next step: user confirms before Atlas executes the write
 ```

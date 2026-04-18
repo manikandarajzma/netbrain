@@ -31,6 +31,7 @@ async def process_message(
     *,
     username: str | None = None,
     session_id: str | None = None,
+    ui_action: dict[str, Any] | None = None,
     # Legacy kwargs accepted but ignored so callers don't need immediate updates
     **_ignored: Any,
 ) -> dict[str, Any]:
@@ -57,9 +58,14 @@ async def process_message(
         Always a ``{"role": "assistant", "content": ...}`` dict, optionally
         with a ``path_hops`` key for the PathVisualization frontend component.
     """
+    kwargs: dict[str, Any] = {
+        "username": username,
+        "session_id": session_id,
+    }
+    if ui_action is not None:
+        kwargs["ui_action"] = ui_action
     return await atlas_application.process_query(
         prompt,
         conversation_history,
-        username=username,
-        session_id=session_id,
+        **kwargs,
     )

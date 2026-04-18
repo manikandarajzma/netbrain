@@ -179,6 +179,7 @@ class ResponsePresenter:
         final_text: str,
         session_data: dict[str, Any],
         prompt: str,
+        pending_approval: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         src_ip, dst_ip = extract_ips(prompt)
         path_hops = session_data.get("path_hops", [])
@@ -194,6 +195,8 @@ class ResponsePresenter:
             content["destination"] = dst_ip
         if include_path and reverse_path_hops:
             content["reverse_path_hops"] = reverse_path_hops
+        if pending_approval:
+            content["pending_approval"] = pending_approval
         return content
 
 

@@ -14,9 +14,11 @@ import DataTable from '../tables/DataTable.jsx'
 import VerticalTable from '../tables/VerticalTable.jsx'
 import MemoryFeedback from './MemoryFeedback.jsx'
 import InterfaceCounters from './InterfaceCounters.jsx'
+import { useChatStore } from '../../stores/chatStore.js'
 import styles from './AssistantMessage.module.css'
 
 export default function AssistantMessage({ content, memories }) {
+  const submitApprovalAction = useChatStore(s => s.submitApprovalAction)
   const classified = useMemo(() => classifyResponse(content), [content])
 
   const hasYesNo = typeof content === 'object' && content?.yes_no_answer
@@ -24,6 +26,7 @@ export default function AssistantMessage({ content, memories }) {
   const hasDirectAnswer = typeof content === 'object' && content?.direct_answer
   const followUp = typeof content === 'object' && content?.follow_up
   const insights = typeof content === 'object' && Array.isArray(content?.insights) && content.insights.length > 0 ? content.insights : null
+  const pendingApproval = typeof content === 'object' && content?.pending_approval ? content.pending_approval : null
 
   const structuredText = useMemo(() => {
     if (classified.type !== 'structured') return null
@@ -140,6 +143,30 @@ export default function AssistantMessage({ content, memories }) {
       )}
 
       {hasDirectAnswer && <DirectAnswerBadge text={content.direct_answer} />}
+
+      {pendingApproval && (
+        <div className={styles.approvalCard}>
+          <p className={styles.approvalTitle}>{pendingApproval.action_label || 'Pending approval'}</p>
+          <p className={styles.approvalText}>Use the approval buttons below to execute or cancel this write action.</p>
+          <div className={styles.approvalActions}>
+            <button
+              type="button"
+              className={`${styles.approvalBtn} ${styles.approvalConfirm}`}
+              onClick={() => submitApprovalAction(pendingApproval, 'confirm')}
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              className={`${styles.approvalBtn} ${styles.approvalCancel}`}
+              onClick={() => submitApprovalAction(pendingApproval, 'cancel')}
+            >
+              Cancel
+            </button>
+          </div>
+          <p className={styles.approvalHint}>To edit the proposal, type your changes in the chat input below.</p>
+        </div>
+      )}
 
       {classified.type === 'error' && <ErrorMessage content={content} />}
 

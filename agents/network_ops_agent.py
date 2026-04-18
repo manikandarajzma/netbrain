@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 
 try:
     from atlas.agents.agent_factory import agent_factory
@@ -24,10 +25,19 @@ logger = logging.getLogger("atlas.network_ops_agent")
 
 PROFILE_NAME = "network_ops"
 NETWORK_OPS_TOOLS = tool_registry.get_profile_tools(PROFILE_NAME)
+NETWORK_OPS_TOOLS_NO_PATH = tuple(
+    tool
+    for tool in NETWORK_OPS_TOOLS
+    if getattr(tool, "name", getattr(tool, "__name__", "")) != "trace_path"
+)
 
 _SKILLS_DIR = pathlib.Path(__file__).parent.parent / "skills"
 _CORE_PROMPT = _SKILLS_DIR / "network_ops.md"
 _SCENARIOS_DIR = _SKILLS_DIR / "network_ops_scenarios"
+_EXPLICIT_CI_RE = re.compile(
+    r"\b(?:ci\s*name|configuration\s*item|cmdb[_\s-]*ci)\s*:\s*\S+",
+    re.IGNORECASE,
+)
 
 _SCENARIO_FILES = {
     "incident_record": "incident_record.md",
@@ -56,12 +66,25 @@ def load_system_prompt(scenario: str = "general") -> str:
     return core
 
 
+def _has_explicit_ci(prompt: str) -> bool:
+    return bool(_EXPLICIT_CI_RE.search(prompt or ""))
+
+
+def _select_tools(prompt: str, scenario: str) -> tuple:
+    scenario_name = str(scenario or "").strip().lower()
+    if scenario_name in {"record_lookup", "change_update"}:
+        return NETWORK_OPS_TOOLS_NO_PATH
+    if scenario_name in {"incident_record", "change_record"} and _has_explicit_ci(prompt):
+        return NETWORK_OPS_TOOLS_NO_PATH
+    return NETWORK_OPS_TOOLS
+
+
 def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
     llm = llm or agent_factory.build_network_ops_llm()
     return agent_factory.create_specialized_agent(
         llm,
-        NETWORK_OPS_TOOLS,
+        _select_tools(prompt, scenario),
         load_system_prompt(scenario),
         "network_ops",
     )

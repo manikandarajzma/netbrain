@@ -85,6 +85,34 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
 
     @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
     @patch("agents.network_ops_agent.agent_factory.build_network_ops_llm")
+    def test_incident_request_with_explicit_ci_uses_no_path_toolset(self, mock_build_network_ops_llm, mock_create_specialized_agent):
+        mock_build_network_ops_llm.return_value = "llm"
+        mock_create_specialized_agent.return_value = "agent"
+
+        network_ops_agent.build_agent(
+            "create an incident short description: connectivity failure ci name: arista-ai1",
+            "incident_record",
+        )
+
+        args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS_NO_PATH)
+
+    @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
+    @patch("agents.network_ops_agent.agent_factory.build_network_ops_llm")
+    def test_change_request_with_explicit_ci_uses_no_path_toolset(self, mock_build_network_ops_llm, mock_create_specialized_agent):
+        mock_build_network_ops_llm.return_value = "llm"
+        mock_create_specialized_agent.return_value = "agent"
+
+        network_ops_agent.build_agent(
+            "create a change request short description: route map update ci name: arista-ai1",
+            "change_record",
+        )
+
+        args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS_NO_PATH)
+
+    @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
+    @patch("agents.network_ops_agent.agent_factory.build_network_ops_llm")
     def test_generic_change_request_uses_change_record_scenario(self, mock_build_network_ops_llm, mock_create_specialized_agent):
         mock_build_network_ops_llm.return_value = "llm"
         mock_create_specialized_agent.return_value = "agent"
@@ -127,6 +155,7 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         network_ops_agent.build_agent("show me INC0010035", "record_lookup")
 
         args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS_NO_PATH)
         self.assertIn("Scenario: Record Lookup", args[2])
 
     @patch("agents.network_ops_agent.agent_factory.create_specialized_agent")
@@ -138,6 +167,7 @@ class NetworkOpsAgentBuilderTests(unittest.TestCase):
         network_ops_agent.build_agent("close CHG0030042 with success notes", "change_update")
 
         args, _kwargs = mock_create_specialized_agent.call_args
+        self.assertIs(args[1], network_ops_agent.NETWORK_OPS_TOOLS_NO_PATH)
         self.assertIn("Scenario: Change Update", args[2])
 
 

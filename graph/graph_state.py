@@ -46,6 +46,7 @@ class AtlasState(TypedDict, total=False):
     username: str | None
     session_id: str | None
     request_id: str | None
+    ui_action: dict[str, Any] | None
 
     # ── Routing signals (set by classify_intent) ──────────────────────────
     intent: Literal["troubleshoot", "network_ops", "dismiss"] | None

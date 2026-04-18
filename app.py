@@ -360,6 +360,7 @@ class ChatRequest(BaseModel):
     conversation_history: list[dict[str, Any]] = []
     conversation_id: str | None = None
     parent_conversation_id: str | None = None
+    ui_action: dict[str, Any] | None = None
 
 
 def _strip_l2_noise(d: dict) -> dict:
@@ -503,6 +504,7 @@ async def api_chat(request: Request, body: ChatRequest):
     conversation_id = (body.conversation_id or "").strip() or None
     user_msg = body.message.strip()
     history = body.conversation_history or []
+    ui_action = body.ui_action or None
 
     _WRITE_RE = __import__('re').compile(
         r'\b(create|update|close|resolve|assign|delete|submit|open an? incident|add note)\b',
@@ -519,6 +521,7 @@ async def api_chat(request: Request, body: ChatRequest):
                 default_live=True,
                 username=username,
                 session_id=sid,
+                ui_action=ui_action,
             )
         )
         try:
@@ -558,7 +561,7 @@ async def api_chat(request: Request, body: ChatRequest):
             _sse_log.info("SSE: task completed, reading result")
             result = task.result()
             _sse_log.info("SSE: result obtained, role=%s", result.get("role") if isinstance(result, dict) else type(result))
-            if _WRITE_RE.search(user_msg):
+            if _WRITE_RE.search(user_msg) or str((ui_action or {}).get("type") or "").strip().lower() == "confirm":
                 # After any write (create/update/close), flush tool-level caches so the
                 # next troubleshoot or list query reflects the new state.
                 try:

@@ -87,6 +87,16 @@ class ResponsePresenterTests(unittest.TestCase):
         self.assertIn("path_hops", content)
         self.assertIn("reverse_path_hops", content)
 
+    def test_build_network_ops_content_includes_pending_approval_payload(self):
+        content = response_presenter.build_network_ops_content(
+            "Proposed action: Create ServiceNow change request",
+            {},
+            "create a change request for arista-ai1 route map update",
+            pending_approval={"action_label": "Create ServiceNow change request", "fields": {"ci_name": "arista-ai1"}},
+        )
+
+        self.assertEqual(content["pending_approval"]["action_label"], "Create ServiceNow change request")
+
     def test_build_troubleshoot_content_replaces_servicenow_section_and_groups_counters(self):
         result = response_presenter.build_troubleshoot_content(
             "## Summary\nIssue found\n\n## ServiceNow\nold data",

@@ -28,8 +28,9 @@ class AtlasRuntime:
         username: str | None,
         session_id: str | None,
         request_id: str | None,
+        ui_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        state = {
             "prompt": prompt,
             "conversation_history": conversation_history or [],
             "username": username,
@@ -39,6 +40,9 @@ class AtlasRuntime:
             "rbac_error": None,
             "final_response": None,
         }
+        if ui_action is not None:
+            state["ui_action"] = ui_action
+        return state
 
     def build_graph_config(self, session_id: str | None) -> dict[str, Any]:
         config: dict[str, Any] = {"recursion_limit": 50}
@@ -54,6 +58,7 @@ class AtlasRuntime:
         username: str | None = None,
         session_id: str | None = None,
         request_id: str | None = None,
+        ui_action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started_at = perf_counter()
         await checkpointer_runtime.ensure_ready()
@@ -62,7 +67,7 @@ class AtlasRuntime:
         except ImportError:
             from graph.graph_builder import graph_builder  # type: ignore
 
-        initial_state = self.build_initial_state(prompt, conversation_history, username, session_id, request_id)
+        initial_state = self.build_initial_state(prompt, conversation_history, username, session_id, request_id, ui_action)
         request_id = initial_state.get("request_id")
         config = self.build_graph_config(session_id)
         metrics_recorder.increment("atlas.graph.invoke.started")

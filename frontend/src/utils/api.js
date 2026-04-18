@@ -71,10 +71,11 @@ export async function clearChatHistory() {
 // Chat can take a long time (NetBrain path + troubleshoot orchestrator can take up to ~10 minutes).
 const CHAT_FETCH_TIMEOUT_MS = 600000
 
-export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null, onStatus = null) {
+export async function sendChat(message, conversationHistory, signal, conversationId = null, parentConversationId = null, onStatus = null, uiAction = null) {
   const body = { message, conversation_history: conversationHistory }
   if (conversationId) body.conversation_id = conversationId
   if (parentConversationId) body.parent_conversation_id = parentConversationId
+  if (uiAction) body.ui_action = uiAction
   const timeoutSignal = AbortSignal.timeout ? AbortSignal.timeout(CHAT_FETCH_TIMEOUT_MS) : null
   const combinedSignal = timeoutSignal && signal ? (AbortSignal.any ? AbortSignal.any([signal, timeoutSignal]) : signal) : (timeoutSignal || signal)
   const res = await fetch('/api/chat', {

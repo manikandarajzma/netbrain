@@ -15,6 +15,8 @@ If any are missing, ask for the missing fields directly.
 
 If the user provides those fields in any structured form — numbered list, bullets, inline labels, or `Field: value` pairs — treat them as the answers and proceed.
 
+If `ci_name` is already present, do not call `trace_path(...)` just to identify the same CI again.
+
 Do NOT ask for:
 - source IP
 - destination IP
@@ -27,7 +29,7 @@ unless the user is explicitly asking for an access/rule change rather than a gen
 
 1. Optionally call `search_servicenow(...)` for the referenced CI if it adds useful context.
 2. Call `create_servicenow_change_request(...)`.
-3. Report the created change directly.
+3. Report that the change request is staged for approval and Atlas is waiting for user confirmation.
 
 ## Output format
 
@@ -36,9 +38,8 @@ Use a direct ServiceNow record confirmation format, not a firewall-rule template
 Preferred structure:
 
 ```
-Change Request Created
+Change Request Proposed
 
-Number: <created change number>
 Short Description: <short_description>
 Configuration Item: <ci_name>
 Justification: <justification>
@@ -46,6 +47,8 @@ Implementation Plan: <implementation_plan>
 
 Related ServiceNow context:
 <brief summary or "None found">
+
+Next step: user confirms before Atlas executes the write
 ```
 
 Do NOT output:

@@ -18,6 +18,7 @@ try:
     from atlas.services.metrics import metrics_recorder
     from atlas.services.network_ops_workflow_service import network_ops_workflow_service
     from atlas.services.observability import log_event
+    from atlas.services.pending_approval import pending_approval_store
     from atlas.services.status_service import status_service
     from atlas.services.troubleshoot_workflow_service import troubleshoot_workflow_service
 except ImportError:
@@ -28,6 +29,7 @@ except ImportError:
     from services.metrics import metrics_recorder  # type: ignore
     from services.network_ops_workflow_service import network_ops_workflow_service  # type: ignore
     from services.observability import log_event  # type: ignore
+    from services.pending_approval import pending_approval_store  # type: ignore
     from services.status_service import status_service  # type: ignore
     from services.troubleshoot_workflow_service import troubleshoot_workflow_service  # type: ignore
 
@@ -68,6 +70,17 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     await status_service.push(session_id, "Analyzing your query...")
 
     prompt_lower = prompt.lower().strip().rstrip("!.")
+
+    if pending_approval_store.has(session_id):
+        log_event(
+            logger,
+            "intent_classified",
+            request_id=request_id,
+            session_id=session_id,
+            intent="network_ops",
+            reason="pending_network_ops_approval",
+        )
+        return {"intent": "network_ops"}
 
     # Plain acknowledgement / dismissal with nothing pending → dismiss
     if prompt_lower in (_ACKNOWLEDGEMENTS | _DISMISSALS):

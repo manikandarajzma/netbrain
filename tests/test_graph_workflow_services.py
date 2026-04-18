@@ -127,6 +127,7 @@ class NetworkOpsWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
     @patch("services.network_ops_workflow_service.response_presenter.build_network_ops_content")
     @patch("services.network_ops_workflow_service.extract_final_text", return_value="created CHG0030042")
     @patch("services.network_ops_workflow_service.network_ops_scenario_service.select_scenario", new_callable=AsyncMock, return_value="change_record")
+    @patch("services.network_ops_workflow_service.pending_approval_store.get", return_value=None)
     @patch("services.network_ops_workflow_service.status_service.push", new_callable=AsyncMock)
     @patch("services.network_ops_workflow_service.nornir_client.clear_session_cache")
     @patch("services.network_ops_workflow_service.session_store.pop")
@@ -141,6 +142,7 @@ class NetworkOpsWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
         mock_session_pop,
         _mock_clear_cache,
         _mock_status_push,
+        _mock_get_pending_approval,
         _mock_select_scenario,
         _mock_extract_final_text,
         mock_presenter,
@@ -168,6 +170,199 @@ class NetworkOpsWorkflowServiceTests(unittest.IsolatedAsyncioTestCase):
             "change_record",
         )
         agent.ainvoke.assert_awaited_once()
+
+    @patch("services.network_ops_workflow_service.execute_pending_write_action", new_callable=AsyncMock, return_value="Created ServiceNow change request CHG0030042.\nstate: New")
+    @patch("services.network_ops_workflow_service.response_presenter.build_network_ops_content")
+    @patch("services.network_ops_workflow_service.pending_approval_store.clear")
+    @patch(
+        "services.network_ops_workflow_service.pending_approval_store.get",
+        return_value={
+            "approval_id": "approval-1",
+            "tool_name": "create_servicenow_change_request",
+            "action_label": "Create ServiceNow change request",
+            "fields": {"short_description": "route map update"},
+            "original_prompt": "create a change request for arista-ai1 route map update",
+        },
+    )
+    @patch("services.network_ops_workflow_service.status_service.push", new_callable=AsyncMock)
+    @patch("services.network_ops_workflow_service.nornir_client.clear_session_cache")
+    @patch("services.network_ops_workflow_service.session_store.pop")
+    @patch("services.network_ops_workflow_service.build_agent")
+    async def test_network_ops_workflow_rejects_stale_structured_confirm(
+        self,
+        mock_build_agent,
+        mock_session_pop,
+        _mock_clear_cache,
+        _mock_status_push,
+        _mock_get_pending_approval,
+        mock_clear_pending_approval,
+        mock_presenter,
+        mock_execute_pending,
+    ):
+        mock_session_pop.return_value = {}
+        mock_presenter.return_value = {"direct_answer": "That approval request is no longer current. Use the latest approval card."}
+
+        result = await network_ops_workflow_service.run(
+            {
+                "prompt": "Confirm",
+                "session_id": "s-netops-confirm",
+                "ui_action": {"type": "confirm", "approval_id": "wrong-id"},
+            }
+        )
+
+        self.assertEqual(
+            result["final_response"]["content"]["direct_answer"],
+            "That approval request is no longer current. Use the latest approval card.",
+        )
+        mock_execute_pending.assert_not_awaited()
+        mock_clear_pending_approval.assert_not_called()
+        mock_build_agent.assert_not_called()
+
+    @patch("services.network_ops_workflow_service.execute_pending_write_action", new_callable=AsyncMock, return_value="Created ServiceNow change request CHG0030042.\nstate: New")
+    @patch("services.network_ops_workflow_service.response_presenter.build_network_ops_content")
+    @patch("services.network_ops_workflow_service.pending_approval_store.clear")
+    @patch(
+        "services.network_ops_workflow_service.pending_approval_store.get",
+        return_value={
+            "approval_id": "approval-1",
+            "tool_name": "create_servicenow_change_request",
+            "action_label": "Create ServiceNow change request",
+            "fields": {"short_description": "route map update"},
+            "original_prompt": "create a change request for arista-ai1 route map update",
+        },
+    )
+    @patch("services.network_ops_workflow_service.status_service.push", new_callable=AsyncMock)
+    @patch("services.network_ops_workflow_service.nornir_client.clear_session_cache")
+    @patch("services.network_ops_workflow_service.session_store.pop")
+    @patch("services.network_ops_workflow_service.build_agent")
+    async def test_network_ops_workflow_executes_pending_approval_on_structured_confirm(
+        self,
+        mock_build_agent,
+        mock_session_pop,
+        _mock_clear_cache,
+        _mock_status_push,
+        _mock_get_pending_approval,
+        mock_clear_pending_approval,
+        mock_presenter,
+        mock_execute_pending,
+    ):
+        mock_session_pop.return_value = {}
+        mock_presenter.return_value = {"direct_answer": "Created ServiceNow change request CHG0030042"}
+
+        result = await network_ops_workflow_service.run(
+            {
+                "prompt": "Confirm",
+                "session_id": "s-netops-confirm",
+                "ui_action": {"type": "confirm", "approval_id": "approval-1"},
+            }
+        )
+
+        self.assertEqual(result["final_response"]["content"]["direct_answer"], "Created ServiceNow change request CHG0030042")
+        mock_execute_pending.assert_awaited_once()
+        mock_clear_pending_approval.assert_called_once_with("s-netops-confirm")
+        mock_build_agent.assert_not_called()
+
+    @patch("services.network_ops_workflow_service.response_presenter.build_network_ops_content")
+    @patch("services.network_ops_workflow_service.pending_approval_store.clear")
+    @patch(
+        "services.network_ops_workflow_service.pending_approval_store.get",
+        return_value={
+            "tool_name": "create_servicenow_incident",
+            "action_label": "Create ServiceNow incident",
+            "fields": {"short_description": "Connectivity issue"},
+            "original_prompt": "create an incident for connectivity issue",
+        },
+    )
+    @patch("services.network_ops_workflow_service.status_service.push", new_callable=AsyncMock)
+    @patch("services.network_ops_workflow_service.nornir_client.clear_session_cache")
+    @patch("services.network_ops_workflow_service.session_store.pop")
+    @patch("services.network_ops_workflow_service.build_agent")
+    async def test_network_ops_workflow_cancels_pending_approval(
+        self,
+        mock_build_agent,
+        mock_session_pop,
+        _mock_clear_cache,
+        _mock_status_push,
+        _mock_get_pending_approval,
+        mock_clear_pending_approval,
+        mock_presenter,
+    ):
+        mock_session_pop.return_value = {}
+        mock_presenter.return_value = {"direct_answer": "Cancelled"}
+
+        result = await network_ops_workflow_service.run(
+            {
+                "prompt": "Cancel",
+                "session_id": "s-netops-cancel",
+                "ui_action": {"type": "cancel"},
+            }
+        )
+
+        self.assertEqual(result["final_response"]["content"]["direct_answer"], "Cancelled")
+        mock_clear_pending_approval.assert_called_once_with("s-netops-cancel")
+        mock_build_agent.assert_not_called()
+
+    @patch("services.network_ops_workflow_service.metrics_recorder.observe_ms")
+    @patch("services.network_ops_workflow_service.metrics_recorder.increment")
+    @patch("services.network_ops_workflow_service.log_event")
+    @patch("services.network_ops_workflow_service.response_presenter.build_network_ops_content")
+    @patch("services.network_ops_workflow_service.extract_final_text", return_value="Proposed action: Create ServiceNow change request")
+    @patch("services.network_ops_workflow_service.network_ops_scenario_service.select_scenario", new_callable=AsyncMock, return_value="change_record")
+    @patch("services.network_ops_workflow_service.pending_approval_store.clear")
+    @patch(
+        "services.network_ops_workflow_service.pending_approval_store.get",
+        side_effect=[
+            {
+                "tool_name": "create_servicenow_change_request",
+                "action_label": "Create ServiceNow change request",
+                "fields": {"short_description": "route map update", "ci_name": "arista-ai1"},
+                "original_prompt": "create a change request for arista-ai1 route map update",
+            },
+            None,
+            None,
+        ],
+    )
+    @patch("services.network_ops_workflow_service.status_service.push", new_callable=AsyncMock)
+    @patch("services.network_ops_workflow_service.nornir_client.clear_session_cache")
+    @patch("services.network_ops_workflow_service.session_store.pop")
+    @patch("services.network_ops_workflow_service.memory_manager.clear_pending_context")
+    @patch("services.network_ops_workflow_service.memory_manager.get_pending_context", return_value=(None, None))
+    @patch("services.network_ops_workflow_service.build_agent")
+    async def test_network_ops_workflow_rewrites_pending_approval_for_edits(
+        self,
+        mock_build_agent,
+        _mock_get_pending_context,
+        _mock_clear_pending_context,
+        mock_session_pop,
+        _mock_clear_cache,
+        _mock_status_push,
+        _mock_get_pending_approval,
+        mock_clear_pending_approval,
+        _mock_select_scenario,
+        _mock_extract_final_text,
+        mock_presenter,
+        _mock_log_event,
+        _mock_increment,
+        _mock_observe_ms,
+    ):
+        mock_session_pop.side_effect = [{}, {}]
+        mock_presenter.return_value = {"direct_answer": "updated proposal"}
+        agent = AsyncMock()
+        agent.ainvoke.return_value = {"messages": ["ignored"]}
+        mock_build_agent.return_value = agent
+
+        await network_ops_workflow_service.run(
+            {
+                "prompt": "change the justification to restore routing for business x",
+                "session_id": "s-netops-edit",
+            }
+        )
+
+        forwarded_prompt = mock_build_agent.call_args.args[0]
+        self.assertIn("pending ServiceNow write action", forwarded_prompt)
+        self.assertIn("route map update", forwarded_prompt)
+        self.assertIn("restore routing for business x", forwarded_prompt)
+        mock_clear_pending_approval.assert_called_once_with("s-netops-edit")
 
 
 if __name__ == "__main__":
