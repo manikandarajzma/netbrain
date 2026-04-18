@@ -43,7 +43,7 @@ class ToolRegistry:
 
     Agent builders should ask for profile tools, not hard-code tool lists.
     New tools are added by registering capabilities here.
-    New agents are added by declaring a capability profile here.
+    Agent specs should point at profile names declared here.
     """
 
     def __init__(self) -> None:
@@ -115,6 +115,9 @@ class ToolRegistry:
     def get_network_ops_tools(self):
         return self.get_profile_tools("network_ops")
 
+    def get_network_ops_tools_no_path(self):
+        return self.get_profile_tools("network_ops.no_path")
+
     def _register_default_tools(self) -> None:
         for tool, capabilities in _path_tools.PATH_TOOL_CAPABILITIES:
             self.register_tool(tool, *capabilities)
@@ -177,6 +180,17 @@ class ToolRegistry:
             "network_ops",
             (
                 "workflow.path.trace",
+                "servicenow.search",
+                "servicenow.incident.read",
+                "servicenow.change.read",
+                "servicenow.incident.create",
+                "servicenow.change.create",
+                "servicenow.change.update",
+            ),
+        )
+        self.register_profile(
+            "network_ops.no_path",
+            (
                 "servicenow.search",
                 "servicenow.incident.read",
                 "servicenow.change.read",

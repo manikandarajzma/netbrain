@@ -1,9 +1,9 @@
 """
 Atlas LangGraph state definition.
 
-Only the fields needed by the three-node troubleshoot graph are defined here:
+Only the fields needed by the Atlas graph are defined here:
 
-    classify_intent → troubleshoot_orchestrator → build_final_response
+    classify_intent → dispatch_agent → build_final_response
 
 Fields
 ------
@@ -24,18 +24,18 @@ request_id
     through runtime, graph nodes, and tool-facing logging for observability.
 intent
     Set by ``classify_intent``:
-      - ``"troubleshoot"`` — real query, send to orchestrator
-      - ``"dismiss"``      — bare acknowledgement with nothing pending
+      - any routed agent key such as ``"troubleshoot"`` or ``"network_ops"``
+      - ``"dismiss"`` — bare acknowledgement or unsupported request
 rbac_error
     Non-None when an RBAC check fails; carried through to ``build_final_response``
     so a user-friendly error is returned without calling the LLM.
 final_response
     The completed ``{"role": "assistant", "content": ...}`` dict, possibly
     also containing ``path_hops`` for the PathVisualization component.
-    Set by ``troubleshoot_orchestrator`` (or ``classify_intent`` for early
+    Set by a dispatched workflow runner (or ``classify_intent`` for early
     exits) and surfaced to the caller by ``process_message``.
 """
-from typing import Any, Literal
+from typing import Any
 from typing_extensions import TypedDict
 
 
@@ -49,8 +49,8 @@ class AtlasState(TypedDict, total=False):
     ui_action: dict[str, Any] | None
 
     # ── Routing signals (set by classify_intent) ──────────────────────────
-    intent: Literal["troubleshoot", "network_ops", "dismiss"] | None
+    intent: str | None
     rbac_error: str | None
 
-    # ── Output (set by troubleshoot_orchestrator / classify_intent) ───────
+    # ── Output (set by dispatched workflow / classify_intent) ─────────────
     final_response: dict[str, Any] | None

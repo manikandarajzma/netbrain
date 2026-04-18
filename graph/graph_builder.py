@@ -2,8 +2,7 @@
 Atlas LangGraph graph construction.
 
     classify_intent
-        ├─► call_troubleshoot_agent   (connectivity / device-health investigation)
-        ├─► call_network_ops_agent    (incident, change, and operational workflows)
+        ├─► dispatch_agent          (generic workflow dispatch for routed agents)
         └─► build_final_response      (dismiss / early-exit)
                 │
                END
@@ -15,17 +14,15 @@ try:
     from atlas.graph.graph_state import AtlasState
     from atlas.graph.graph_nodes import (
         build_final_response,
-        call_network_ops_agent,
-        call_troubleshoot_agent,
         classify_intent,
+        dispatch_agent,
     )
 except ImportError:
     from graph.graph_state import AtlasState  # type: ignore[assignment]
     from graph.graph_nodes import (  # type: ignore[assignment]
         build_final_response,
-        call_network_ops_agent,
-        call_troubleshoot_agent,
         classify_intent,
+        dispatch_agent,
     )
 
 
@@ -36,7 +33,8 @@ class GraphBuilder:
         self._graph = self.build()
 
     def _route_intent(self, state: AtlasState) -> str:
-        return state.get("intent") or "dismiss"
+        intent = str(state.get("intent") or "").strip()
+        return "build_final_response" if intent == "dismiss" else "dispatch_agent"
 
     def build(self, checkpointer=None):
         """
@@ -48,8 +46,7 @@ class GraphBuilder:
         g = StateGraph(AtlasState)
 
         g.add_node("classify_intent", classify_intent)
-        g.add_node("call_troubleshoot_agent", call_troubleshoot_agent)
-        g.add_node("call_network_ops_agent", call_network_ops_agent)
+        g.add_node("dispatch_agent", dispatch_agent)
         g.add_node("build_final_response", build_final_response)
 
         g.set_entry_point("classify_intent")
@@ -58,14 +55,12 @@ class GraphBuilder:
             "classify_intent",
             self._route_intent,
             {
-                "troubleshoot": "call_troubleshoot_agent",
-                "network_ops": "call_network_ops_agent",
-                "dismiss": "build_final_response",
+                "dispatch_agent": "dispatch_agent",
+                "build_final_response": "build_final_response",
             },
         )
 
-        g.add_edge("call_troubleshoot_agent", "build_final_response")
-        g.add_edge("call_network_ops_agent", "build_final_response")
+        g.add_edge("dispatch_agent", "build_final_response")
         g.add_edge("build_final_response", END)
 
         return g.compile(checkpointer=checkpointer)

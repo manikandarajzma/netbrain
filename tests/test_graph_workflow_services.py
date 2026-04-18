@@ -1,12 +1,26 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from graph.graph_nodes import call_network_ops_agent, call_troubleshoot_agent
+from graph.graph_nodes import call_network_ops_agent, call_troubleshoot_agent, dispatch_agent
 from services.network_ops_workflow_service import network_ops_workflow_service
 from services.troubleshoot_workflow_service import troubleshoot_workflow_service
 
 
 class GraphWorkflowDelegationTests(unittest.IsolatedAsyncioTestCase):
+    @patch("graph.graph_nodes.workflow_registry.run", new_callable=AsyncMock)
+    @patch("graph.graph_nodes.agent_registry.get")
+    async def test_dispatch_agent_uses_agent_spec_and_workflow_registry(self, mock_get_spec, mock_run):
+        spec = object()
+        mock_get_spec.return_value = spec
+        mock_run.return_value = {"final_response": {"role": "assistant", "content": {"direct_answer": "ok"}}}
+        state = {"prompt": "help me troubleshoot connectivity", "session_id": "s0", "intent": "troubleshoot"}
+
+        result = await dispatch_agent(state)
+
+        self.assertEqual(result["final_response"]["content"]["direct_answer"], "ok")
+        mock_get_spec.assert_called_once_with("troubleshoot")
+        mock_run.assert_awaited_once_with(spec, state)
+
     @patch("graph.graph_nodes.troubleshoot_workflow_service.run", new_callable=AsyncMock)
     async def test_call_troubleshoot_agent_delegates_to_workflow_service(self, mock_run):
         mock_run.return_value = {"final_response": {"role": "assistant", "content": {"direct_answer": "ok"}}}

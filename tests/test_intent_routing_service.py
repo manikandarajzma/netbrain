@@ -6,6 +6,13 @@ from services.intent_routing_service import intent_routing_service
 
 
 class IntentRoutingServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_router_prompt_uses_registered_agent_routes(self):
+        prompt = intent_routing_service._router_system_prompt()
+
+        self.assertIn("- troubleshoot:", prompt)
+        self.assertIn("- network_ops:", prompt)
+        self.assertIn("- dismiss:", prompt)
+
     def test_parse_decision_rejects_invalid_payload(self):
         self.assertIsNone(intent_routing_service._parse_decision("not json"))
         self.assertIsNone(intent_routing_service._parse_decision('{"intent":"other","confidence":1.0}'))

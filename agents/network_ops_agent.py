@@ -11,80 +11,49 @@ outside the agent layer.
 from __future__ import annotations
 
 import logging
-import pathlib
-import re
 
 try:
     from atlas.agents.agent_factory import agent_factory
-    from atlas.tools.tool_registry import tool_registry
+    from atlas.agents.agent_registry import agent_registry, build_agent_from_spec
 except ImportError:
     from agents.agent_factory import agent_factory  # type: ignore
-    from tools.tool_registry import tool_registry          # type: ignore
+    from agents.agent_registry import agent_registry, build_agent_from_spec  # type: ignore
 
 logger = logging.getLogger("atlas.network_ops_agent")
 
-PROFILE_NAME = "network_ops"
-NETWORK_OPS_TOOLS = tool_registry.get_profile_tools(PROFILE_NAME)
-NETWORK_OPS_TOOLS_NO_PATH = tuple(
-    tool
-    for tool in NETWORK_OPS_TOOLS
-    if getattr(tool, "name", getattr(tool, "__name__", "")) != "trace_path"
-)
-
-_SKILLS_DIR = pathlib.Path(__file__).parent.parent / "skills"
-_CORE_PROMPT = _SKILLS_DIR / "network_ops.md"
-_SCENARIOS_DIR = _SKILLS_DIR / "network_ops_scenarios"
-_EXPLICIT_CI_RE = re.compile(
-    r"\b(?:ci\s*name|configuration\s*item|cmdb[_\s-]*ci)\s*:\s*\S+",
-    re.IGNORECASE,
-)
-
-_SCENARIO_FILES = {
-    "incident_record": "incident_record.md",
-    "record_lookup": "record_lookup.md",
-    "change_record": "change_record.md",
-    "change_update": "change_update.md",
-    "access_change": "access_change.md",
-}
+SPEC_NAME = "network_ops"
+SPEC = agent_registry.get(SPEC_NAME)
+PROFILE_NAME = SPEC.default_tool_profile
+NETWORK_OPS_TOOLS = SPEC.resolve_tools("", "general")
+NETWORK_OPS_TOOLS_NO_PATH = SPEC.resolve_tools("ci name: arista-ai1", "record_lookup")
 
 
 def _get_scenario_path(scenario: str) -> str | None:
-    fname = _SCENARIO_FILES.get(str(scenario or "").strip())
-    if not fname:
-        return None
-    path = _SCENARIOS_DIR / fname
-    return str(path) if path.exists() else None
+    path = SPEC.resolve_scenario_path(scenario)
+    return str(path) if path else None
 
 
 def load_system_prompt(scenario: str = "general") -> str:
-    core = _CORE_PROMPT.read_text(encoding="utf-8").strip() if _CORE_PROMPT.exists() else ""
     scenario_path = _get_scenario_path(scenario)
     if scenario_path:
-        scenario_text = pathlib.Path(scenario_path).read_text(encoding="utf-8").strip()
         logger.info("Loaded network-ops scenario: %s", scenario_path)
-        return core + "\n\n---\n\n" + scenario_text
-    return core
+    return SPEC.load_system_prompt(scenario)
 
 
 def _has_explicit_ci(prompt: str) -> bool:
-    return bool(_EXPLICIT_CI_RE.search(prompt or ""))
+    return SPEC.resolve_tool_profile(prompt, "incident_record") == "network_ops.no_path"
 
 
 def _select_tools(prompt: str, scenario: str) -> tuple:
-    scenario_name = str(scenario or "").strip().lower()
-    if scenario_name in {"record_lookup", "change_update"}:
-        return NETWORK_OPS_TOOLS_NO_PATH
-    if scenario_name in {"incident_record", "change_record"} and _has_explicit_ci(prompt):
-        return NETWORK_OPS_TOOLS_NO_PATH
-    return NETWORK_OPS_TOOLS
+    return SPEC.resolve_tools(prompt, scenario)
 
 
 def build_agent(prompt: str = "", scenario: str = "general", *, llm=None):
     """Return a pure specialized network-ops agent ready for ainvoke."""
-    llm = llm or agent_factory.build_network_ops_llm()
-    return agent_factory.create_specialized_agent(
-        llm,
-        _select_tools(prompt, scenario),
-        load_system_prompt(scenario),
-        "network_ops",
+    return build_agent_from_spec(
+        SPEC,
+        prompt=prompt,
+        scenario=scenario,
+        llm=llm,
+        factory=agent_factory,
     )

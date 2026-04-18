@@ -9,34 +9,43 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 try:
+    from atlas.agents.agent_registry import agent_registry
     from atlas.agents.agent_factory import agent_factory
 except ImportError:
+    from agents.agent_registry import agent_registry  # type: ignore
     from agents.agent_factory import agent_factory  # type: ignore
 
 logger = logging.getLogger("atlas.intent_routing")
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
-_ROUTER_SYSTEM_PROMPT = """You are Atlas's coarse request router.
-
-Classify the user's request into exactly one intent:
-- troubleshoot: investigate, diagnose, debug, or explain an existing network, device, routing, protocol, or connectivity problem
-- network_ops: create/update/show incidents or changes, request access, ask for an operational action, or retrieve operational records
-- dismiss: unsupported request, casual chat, or a request Atlas should not handle
-
-Important routing rules:
-- If the user is diagnosing why an existing rule, request, policy, or change is not working, choose troubleshoot.
-- If the user wants to create/open/raise/update/close an incident or change, choose network_ops.
-- If the user wants Atlas to write poetry or do unrelated general tasks, choose dismiss.
-- Do not infer nonexistent urgency or hidden intent.
-
-Return ONLY valid JSON, no markdown fences, with this shape:
-{"intent":"troubleshoot|network_ops|dismiss","confidence":0.0,"reason":"short explanation"}
-"""
-
 
 class IntentRoutingService:
     """Owns LLM-based coarse routing decisions for Atlas."""
+
+    @staticmethod
+    def _valid_intents() -> set[str]:
+        return agent_registry.valid_route_keys() | {"dismiss"}
+
+    def _router_system_prompt(self) -> str:
+        route_lines = [
+            f"- {route_key}: {description}"
+            for route_key, description in sorted(agent_registry.route_descriptions().items())
+        ]
+        intent_list = "|".join(sorted(agent_registry.valid_route_keys() | {"dismiss"}))
+        return (
+            "You are Atlas's coarse request router.\n\n"
+            "Classify the user's request into exactly one intent:\n"
+            f"{chr(10).join(route_lines)}\n"
+            "- dismiss: unsupported request, casual chat, or a request Atlas should not handle\n\n"
+            "Important routing rules:\n"
+            "- If the user is diagnosing why an existing rule, request, policy, or change is not working, choose troubleshoot.\n"
+            "- If the user wants to create/open/raise/update/close an incident or change, choose network_ops.\n"
+            "- If the user wants Atlas to write poetry or do unrelated general tasks, choose dismiss.\n"
+            "- Do not infer nonexistent urgency or hidden intent.\n\n"
+            "Return ONLY valid JSON, no markdown fences, with this shape:\n"
+            f'{{"intent":"{intent_list}","confidence":0.0,"reason":"short explanation"}}'
+        )
 
     @staticmethod
     def _extract_text(response: Any) -> str:
@@ -55,8 +64,8 @@ class IntentRoutingService:
             return "\n".join(part for part in parts if part).strip()
         return str(content or "").strip()
 
-    @staticmethod
-    def _parse_decision(text: str) -> dict[str, Any] | None:
+    @classmethod
+    def _parse_decision(cls, text: str) -> dict[str, Any] | None:
         candidate = text.strip()
         if not candidate:
             return None
@@ -70,7 +79,7 @@ class IntentRoutingService:
         except Exception:
             return None
         intent = str(data.get("intent") or "").strip()
-        if intent not in {"troubleshoot", "network_ops", "dismiss"}:
+        if intent not in cls._valid_intents():
             return None
         try:
             confidence = float(data.get("confidence", 0.0))
@@ -85,7 +94,7 @@ class IntentRoutingService:
             llm = agent_factory.build_router_llm()
             response = await llm.ainvoke(
                 [
-                    SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+                    SystemMessage(content=self._router_system_prompt()),
                     HumanMessage(content=prompt),
                 ]
             )

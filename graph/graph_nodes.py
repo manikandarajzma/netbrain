@@ -3,14 +3,14 @@ Atlas LangGraph nodes.
 
 Graph shape:
   classify_intent
-      ├─► call_troubleshoot_agent   (connectivity / device-health investigation)
-      ├─► call_network_ops_agent    (incident, change, and operational request workflows)
+      ├─► dispatch_agent            (generic workflow dispatch for routed agents)
       └─► build_final_response      (dismiss / early-exit)
 """
 import logging
 from typing import Any
 
 try:
+    from atlas.agents.agent_registry import agent_registry
     from atlas.graph.graph_state import AtlasState
     from atlas.application.chat_service import _IP_OR_CIDR_RE
     from atlas.services.intent_routing_service import intent_routing_service
@@ -21,7 +21,9 @@ try:
     from atlas.services.pending_approval import pending_approval_store
     from atlas.services.status_service import status_service
     from atlas.services.troubleshoot_workflow_service import troubleshoot_workflow_service
+    from atlas.services.workflow_registry import workflow_registry
 except ImportError:
+    from agents.agent_registry import agent_registry  # type: ignore
     from graph.graph_state import AtlasState        # type: ignore[assignment]
     from application.chat_service import _IP_OR_CIDR_RE  # type: ignore[assignment]
     from services.intent_routing_service import intent_routing_service  # type: ignore
@@ -32,6 +34,7 @@ except ImportError:
     from services.pending_approval import pending_approval_store  # type: ignore
     from services.status_service import status_service  # type: ignore
     from services.troubleshoot_workflow_service import troubleshoot_workflow_service  # type: ignore
+    from services.workflow_registry import workflow_registry  # type: ignore
 
 logger = logging.getLogger("atlas.graph_nodes")
 
@@ -54,11 +57,11 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
     ---------------
     "troubleshoot"
         Layered connectivity / device-health investigation.
-        → routed to call_troubleshoot_agent
+        → routed through generic dispatch
     "network_ops"
         Operational workflow: firewall change request, policy review,
         spreadsheet generation, etc.
-        → routed to call_network_ops_agent
+        → routed through generic dispatch
     "dismiss"
         Bare acknowledgement with nothing pending — skip LLM entirely.
         → short-circuits to build_final_response
@@ -115,7 +118,7 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
             )
             return {"intent": "network_ops"}
         if not _IP_OR_CIDR_RE.search(prompt) and len(prompt.split()) <= 15:
-            intent = "network_ops" if pending_issue_type == "network_ops" else "troubleshoot"
+            intent = pending_issue_type if pending_issue_type in agent_registry.valid_route_keys() else "troubleshoot"
             log_event(
                 logger,
                 "intent_classified",
@@ -171,25 +174,32 @@ async def classify_intent(state: AtlasState) -> dict[str, Any]:
         },
     }
 # ---------------------------------------------------------------------------
-# Node 2: call_troubleshoot_agent
+# Node 2: dispatch_agent
+# ---------------------------------------------------------------------------
+
+async def dispatch_agent(state: AtlasState) -> dict[str, Any]:
+    """Dispatch to the workflow runner declared by the routed agent spec."""
+    intent = str(state.get("intent") or "").strip()
+    spec = agent_registry.get(intent)
+    return await workflow_registry.run(spec, state)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility wrappers
 # ---------------------------------------------------------------------------
 
 async def call_troubleshoot_agent(state: AtlasState) -> dict[str, Any]:
-    """Delegate troubleshoot orchestration to the owned workflow service."""
+    """Compatibility wrapper for troubleshoot workflow dispatch."""
     return await troubleshoot_workflow_service.run(state)
 
 
-# ---------------------------------------------------------------------------
-# Node 3: call_network_ops_agent
-# ---------------------------------------------------------------------------
-
 async def call_network_ops_agent(state: AtlasState) -> dict[str, Any]:
-    """Delegate network-ops orchestration to the owned workflow service."""
+    """Compatibility wrapper for network-ops workflow dispatch."""
     return await network_ops_workflow_service.run(state)
 
 
 # ---------------------------------------------------------------------------
-# Node 4: build_final_response
+# Node 3: build_final_response
 # ---------------------------------------------------------------------------
 
 async def build_final_response(state: AtlasState) -> dict[str, Any]:
